@@ -14,6 +14,9 @@ strategy("MORB Auto Trader)",
     //  1 contract static size
     // exit all trades by trading hours
     // use ATR for SL and TP
+    // 1:1 breakeven
+    // 1 loss/day stop trading
+    // 150% negates trade
 
 // IDEAS: consider entering at half-entry into zone?
 // if it leaves the zone during cool down, consider that a valid setup still
@@ -220,11 +223,6 @@ var table supportTable = table.new(position.bottom_right, 2, 10, frame_color=col
 var table variableTracker = table.new(position.middle_left, 2, 20, frame_color=#002b80, border_width=1)
 
 
-// myAtr := ta.atr(14)
-// SL := 5 * (math.round(myAtr / 5))
-// TP := SL * 2
-
-
 // === Table Headers & Clear Cells ===
 if showTables
     for i = 0 to 15
@@ -284,13 +282,6 @@ displayZoneTable(arrPrices, arrTimes, tbl) =>
             table.cell(tbl, 0, i + 1, timeStr)
             table.cell(tbl, 1, i + 1, priceStr)
 
-//if showTables
-    //displayZoneTable(resistancePrices, resistanceTimes, resistanceTable)
-    //displayZoneTable(supportPrices, supportTimes, supportTable)
-
-
-
-
 // Looking Session
 if not inTradeSession
     // reset trading variables
@@ -327,10 +318,6 @@ if not inTradeSession
     // check if a pivot, and if so, create zone and boxes
     checkForPivot(pivotHigh, pivotLow)
 
-    // === Create Zones ===
-
-// Spread Cool Down session - to allow spread to shrink to normal size after open
-// 1. lock the latest zones, 2. stop searching for new zones
 if inLockZonesSession 
 
     zonesSet := true // prob can delete this one?
@@ -418,20 +405,6 @@ if inLockZonesSession
     removeZones(resistanceBoxes, resistancePrices, resistanceTimes)
     removeZones(supportBoxes, supportPrices, supportTimes)
 
-    // if price breaks out during the cooldown session, that direction is no longer valid
-    // TODO: test without this characteristic since a trade setup requires open in the zone and close out of it
-
-    // refactor this to utilize next zone
-    // if (close > buyLimitPrice and not alreadyLabeled)
-    //     longTradeValid := false
-    //     label.new(bar_index, buyLimitPrice, "long trade invalidated")
-    //     alreadyLabeled := true
-    
-    // if (close < sellLimitPrice and not alreadyLabeled)
-    //     shortTradeValid := false
-    //     label.new(bar_index, buyLimitPrice, "short trade invalidated")
-    //     alreadyLabeled := true
-
 // Trading Session
 if inTradeSession
 
@@ -445,11 +418,10 @@ if inTradeSession
     // check if there's a trade setup, only one allowed per direction per trade session
 
     // LONG trade setup
-    newLongTrade := (open <= buyLimitPrice and close > buyLimitPrice and not alreadyTradedLong and strategy.opentrades == 0) // and not tradeSetUp and longTradeValid)
-    newShortTrade := (open >= sellLimitPrice and close < sellLimitPrice and not alreadyTradedShort and strategy.opentrades == 0) // and not tradeSetUp and shortTradeValid)
+    newLongTrade := (open <= buyLimitPrice and close > buyLimitPrice and not alreadyTradedLong and strategy.opentrades == 0) 
+    newShortTrade := (open >= sellLimitPrice and close < sellLimitPrice and not alreadyTradedShort and strategy.opentrades == 0) 
 
     if newLongTrade and not alreadyTradedLong
-        // get ATR
         SL := 5 * ((math.round(myAtr / 5)) + 1)
         TP := SL * 2
         alreadyTradedLong := true
@@ -469,8 +441,8 @@ if inTradeSession
             longTradeTP := buyLimitPrice + TP
             longTradeSL := buyLimitPrice - SL
             // strategy.exit(id="Long", profit = buyLimitPrice + takeProfit, stop = buyLimitPrice - stopLoss)
-        box.new(left=bar_index, top=buyLimitPrice+takeProfit, right=bar_index+5, bottom=buyLimitPrice, bgcolor=color.new(#7ab5a2, 63), border_width=0) //border_color = color.new(color = color.green, transp = 0))
-        box.new(left=bar_index, top=buyLimitPrice, right=bar_index+5, bottom=buyLimitPrice-stopLoss, bgcolor=color.new(#dc6c6c, 70), border_width=0)
+        box.new(left=bar_index, top=longTradeTP, right=bar_index+5, bottom=buyLimitPrice, bgcolor=color.new(#54d6ad, 63), border_width=0) //border_color = color.new(color = color.green, transp = 0))
+        box.new(left=bar_index, top=buyLimitPrice, right=bar_index+5, bottom=longTradeSL, bgcolor=color.new(#a23b3b, 70), border_width=0)
     // SHORT trade setup
     if newShortTrade and not alreadyTradedShort
         SL := 5 * ((math.round(myAtr / 5)) + 1)
@@ -492,8 +464,8 @@ if inTradeSession
             shortTradeTP := sellLimitPrice - TP
             shortTradeSL := sellLimitPrice + SL
             // strategy.exit("Short SL", profit = sellLimitPrice - takeProfit, stop = sellLimitPrice + stopLoss)
-        box.new(left=bar_index, top=sellLimitPrice, right=bar_index+5, bottom=sellLimitPrice-takeProfit, bgcolor=color.new(#7ab5a2, 63), border_width=0)
-        box.new(left=bar_index, top=sellLimitPrice+stopLoss, right=bar_index+5, bottom=sellLimitPrice, bgcolor=color.new(#dc6c6c, 70), border_width=0)
+        box.new(left=bar_index, top=sellLimitPrice, right=bar_index+5, bottom=shortTradeTP, bgcolor=color.new(#54d6ad, 63), border_width=0)
+        box.new(left=bar_index, top=shortTradeSL, right=bar_index+5, bottom=sellLimitPrice, bgcolor=color.new(#a23b3b, 70), border_width=0)
     // Handle trade exits
     strategy.exit(id="Long Exit",  from_entry="Long",  limit=longTradeTP, stop=longTradeSL)
     // strategy.exit(id="Long Exit #2",  from_entry="Long",  limit=tradeTarget2, stop=tradeStop, qty_percent=100)
