@@ -112,10 +112,13 @@ var bool noTradesTaken = true
 var bool longTradeSetUp = false
 var bool shortTradeSetUp = false
 var alreadyLabeled = false // for debugging steps
+
 var bool longTradeValid = true
 var bool shortTradeValid = true
 var bool alreadyTradedShort = false
 var bool alreadyTradedLong = false
+var bool lostATrade = false
+
 var bool longSignal = false
 var bool shortSignal = false
 var float i_fx_risk = 0.1 // percentage of risk
@@ -264,8 +267,8 @@ if showTables
     table.cell(variableTracker, 1,11,str.tostring(buyLimitPrice))
     table.cell(variableTracker, 0,12,"debugValue")
     table.cell(variableTracker, 1,12,str.tostring(debugValue))
-    table.cell(variableTracker, 0,13,"inTradeSession")
-    table.cell(variableTracker, 1,13,str.tostring(inTradeSession))
+    table.cell(variableTracker, 0,13,"lostATrade")
+    table.cell(variableTracker, 1,13,str.tostring(lostATrade))
     table.cell(variableTracker, 0,14,"SL")
     table.cell(variableTracker, 1,14,str.tostring(SL))
     table.cell(variableTracker, 0,15,"myAtr")
@@ -295,6 +298,7 @@ if not inTradeSession
     alreadyTradedLong := false
     newLongTrade := false
     newShortTrade := false
+    lostATrade := false
    // buyLimitPrice := 0
     // sellLimitPrice := 0
     alreadyLockedIn := false
@@ -408,6 +412,10 @@ if inLockZonesSession
 // Trading Session
 if inTradeSession
 
+    if (strategy.losstrades[0] > strategy.losstrades[1])
+        // last trade was a loss
+        lostATrade := true
+
     myAtr := ta.atr(14) 
 
     // TODO: keep table of day of trade, result, total count
@@ -418,8 +426,8 @@ if inTradeSession
     // check if there's a trade setup, only one allowed per direction per trade session
 
     // LONG trade setup
-    newLongTrade := (open <= buyLimitPrice and close > buyLimitPrice and not alreadyTradedLong and strategy.opentrades == 0) 
-    newShortTrade := (open >= sellLimitPrice and close < sellLimitPrice and not alreadyTradedShort and strategy.opentrades == 0) 
+    newLongTrade := (open <= buyLimitPrice and close > buyLimitPrice and not alreadyTradedLong and strategy.opentrades == 0 and not lostATrade) 
+    newShortTrade := (open >= sellLimitPrice and close < sellLimitPrice and not alreadyTradedShort and strategy.opentrades == 0 and not lostATrade) 
 
     if newLongTrade and not alreadyTradedLong
         SL := 5 * ((math.round(myAtr / 5)) + 1)
