@@ -320,15 +320,12 @@ if not inTradeSession
     SL := 0
     TP := 0
 
-
-   
     // close any open trades
     if (time == closeAllOpenTrades and strategy.opentrades != 0)
         strategy.close_all(alert_message = "open trade detected, closing", immediately = true)
         
     // check if a pivot, and if so, create zone and boxes
     checkForPivot(pivotHigh, pivotLow)
-
 
     // === Create Zones ===
 
@@ -438,10 +435,6 @@ if inLockZonesSession
 // Trading Session
 if inTradeSession
 
-    // if not zonesSet
-        // set zones
-
-        
     myAtr := ta.atr(14) 
 
     // TODO: keep table of day of trade, result, total count
