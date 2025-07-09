@@ -74,9 +74,11 @@ tradeEndMinute   = int(str.tonumber(input.string(defval="45", title=":", group="
 pivotStrength = input.int(5, title="Pivot Strength (Left & Right Bars)", minval=1)
 zoneWidthTicks = input.int(10, title="Zone Width (Ticks)", minval=1)
 showTables = input.bool(true, title="Show debug tables")
-takeProfit = input.int(defval = 40, title="Take Profit Size", minval = 1)
-stopLoss = input.int(defval = 20, title="Stop Loss Size", minval = 1)
+//takeProfit = input.int(defval = 40, title="Take Profit Size", minval = 1)
+//stopLoss = input.int(defval = 20, title="Stop Loss Size", minval = 1)
+stopLossRatio = input.int(defval = 2, title="Stop Loss ratio 1:? ", minval = 1)
 boxHeight = input.float(defval = 10, title="Height of S/R boxes", minval = .01)
+breakEvenActivated = input.bool(false, title = 'Break Even at 1:1 Activated')
 
 // lockZone timestamp
 lockZoneTimestamp = timestamp(timeZoneInput, year, month, dayofmonth, lockZonesStartHour, lockZonesStartMinute)
@@ -145,6 +147,8 @@ var float myAtr = ta.atr(14)
 var int SL = 0 //5 * (math.round(myAtr / 5))
 var int TP = 0 //SL * 2
 var string debugValue = ''
+var float longBE = 0
+var float shortBE = 0
 
 
 zoneColorSupply = color.new(color.red, 85)
@@ -194,11 +198,6 @@ removeZones(arrBoxes, arrPrices, arrTimes) =>
         array.clear(arrTimes)
         array.clear(arrBoxes)
 
-setTradeMarkers(direction, entry, SL, TP) =>
-    line.new(x1=bar_index,y1=entry, x2=bar_index+15,y2=entry,color=color.navy, style=line.style_dotted)
-    line.new(x1=bar_index,y1=SL, x2=bar_index+15,y2=SL,color=color.maroon, style=line.style_dotted)
-    line.new(x1=bar_index,y1=TP, x2=bar_index+15,y2=TP,color=color.navy, style=line.style_dotted)
-
 invalidateZones(resistanceBoxes, resistancePrices, resistanceTimes)
 invalidateZones(supportBoxes, supportPrices, supportTimes)
 
@@ -211,20 +210,40 @@ pivotLow = ta.pivotlow(low, pivotStrength, pivotStrength)
 plotshape(newLongTrade,  style=shape.triangleup,   color=color.green, location=location.belowbar, title="Long Setup")
 plotshape(newShortTrade, style=shape.triangledown, color=color.red,   location=location.abovebar, title="Short Setup")
 
-// label.new(bar_index, sellLimitPrice, str.tostring(strategy.position_size))
-
 // Draw stops & targets
-plot(strategy.position_size != 0 ? longTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
-plot(strategy.position_size != 0 ? longTradeTP : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size > 0 ? longTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
+plot(strategy.position_size > 0 ? longTradeTP : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size > 0 ? longBE : na, color=color.green, style=plot.style_linebr, title="Break Even")
 
-plot(strategy.position_size != 0 ? shortTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
-plot(strategy.position_size != 0 ? shortTradeTP : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size < 0 ? shortTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
+plot(strategy.position_size < 0 ? shortTradeTP : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size < 0 ? shortBE : na, color=color.green, style=plot.style_linebr, title="Break Even")
+
+// paint active trade indicators
+if (strategy.position_size > 0)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longTradeSL, color=color.new(#a23b3b, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longTradeTP, color=color.new(#2fc016, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longBE, color=color.new(#207611, 50), width=6)
+
+if (strategy.position_size < 0)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortTradeSL, color=color.new(#a23b3b, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortTradeTP, color=color.new(#2fc016, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortBE, color=color.new(#207611, 50), width=6)
 
 // === Tables ===
 var table resistanceTable = table.new(position.top_right, 2, 10, frame_color=color.red, border_width=1)
 var table supportTable = table.new(position.bottom_right, 2, 10, frame_color=color.green, border_width=1)
 var table variableTracker = table.new(position.middle_left, 2, 20, frame_color=#002b80, border_width=1)
 
+// monitor for trade exits
+if (breakEvenActivated and (strategy.position_size > 0) and (high >= longBE))
+    debugValue := 'move to BE'
+    longTradeSL := buyLimitPrice
+    strategy.exit(id="Long", comment="Break even stop", stop=buyLimitPrice)
+if (breakEvenActivated and (strategy.position_size < 0) and (low <= shortBE))
+    debugValue := 'move to BE'
+    shortTradeSL := sellLimitPrice
+    strategy.exit(id="Short", comment="Break even stop", stop=sellLimitPrice)
 
 // === Table Headers & Clear Cells ===
 if showTables
@@ -255,20 +274,20 @@ if showTables
     table.cell(variableTracker, 1,5,str.tostring(shortTradeSL))
     table.cell(variableTracker, 0,6,"shortTradeTP")
     table.cell(variableTracker, 1,6,str.tostring(shortTradeTP))
-    table.cell(variableTracker, 0,7,"strategy.opentrades")
-    table.cell(variableTracker, 1,7,str.tostring(strategy.opentrades))
-    table.cell(variableTracker, 0,8,"open >= sellLimitPrice")
-    table.cell(variableTracker, 1,8,str.tostring(open >= sellLimitPrice))
-    table.cell(variableTracker, 0,9,"close < sellLimitPrice")
-    table.cell(variableTracker, 1,9,str.tostring(close < sellLimitPrice))
+    table.cell(variableTracker, 0,7,"shortBE")
+    table.cell(variableTracker, 1,7,str.tostring(shortBE))
+    table.cell(variableTracker, 0,8,"")
+    table.cell(variableTracker, 1,8,str.tostring(""))
+    table.cell(variableTracker, 0,9,"")
+    table.cell(variableTracker, 1,9,str.tostring(""))
     table.cell(variableTracker, 0,10,"sellLimitPrice")
     table.cell(variableTracker, 1,10,str.tostring(sellLimitPrice))
     table.cell(variableTracker, 0,11,"buyLimitPrice")
     table.cell(variableTracker, 1,11,str.tostring(buyLimitPrice))
     table.cell(variableTracker, 0,12,"debugValue")
     table.cell(variableTracker, 1,12,str.tostring(debugValue))
-    table.cell(variableTracker, 0,13,"lostATrade")
-    table.cell(variableTracker, 1,13,str.tostring(lostATrade))
+    table.cell(variableTracker, 0,13,"syminfo.type")
+    table.cell(variableTracker, 1,13,str.tostring(syminfo.type))
     table.cell(variableTracker, 0,14,"SL")
     table.cell(variableTracker, 1,14,str.tostring(SL))
     table.cell(variableTracker, 0,15,"myAtr")
@@ -284,6 +303,9 @@ displayZoneTable(arrPrices, arrTimes, tbl) =>
             timeStr = str.format("{0,date,yyyy-MM-dd HH:mm}", array.get(arrTimes, i))
             table.cell(tbl, 0, i + 1, timeStr)
             table.cell(tbl, 1, i + 1, priceStr)
+
+myAtr := ta.atr(14) 
+
 
 // Looking Session
 if not inTradeSession
@@ -314,6 +336,9 @@ if not inTradeSession
     longTradeSL := 0
     SL := 0
     TP := 0
+    longBE := 0
+    shortBE := 0
+    debugValue := ''
 
     // close any open trades
     if (time == closeAllOpenTrades and strategy.opentrades != 0)
@@ -374,7 +399,6 @@ if inLockZonesSession
                     rb1Count += 1
 
         resistanceBoxTop = (rb0Count >= rb1Count) ? box.get_top(rb0) : box.get_top(rb1)
-        debugValue := str.tostring(resistanceBoxTop)
         buyLimitPrice := resistanceBoxTop
         resistanceBoxLeft = (rb0Count >= rb1Count) ? box.get_left(rb0) : box.get_left(rb1)
         resistanceBoxBottom = resistanceBoxTop - boxHeight // 0.03 // make user configurable
@@ -416,7 +440,9 @@ if inTradeSession
         // last trade was a loss
         lostATrade := true
 
-    myAtr := ta.atr(14) 
+
+
+
 
     // TODO: keep table of day of trade, result, total count
 
@@ -431,7 +457,7 @@ if inTradeSession
 
     if newLongTrade and not alreadyTradedLong
         SL := 5 * ((math.round(myAtr / 5)) + 1)
-        TP := SL * 2
+        TP := SL * stopLossRatio
         alreadyTradedLong := true
         longTradeSetUp := true
         longSignal := true
@@ -448,13 +474,14 @@ if inTradeSession
             strategy.entry(id="Long", direction=strategy.long, limit = buyLimitPrice, qty = 1.0)
             longTradeTP := buyLimitPrice + TP
             longTradeSL := buyLimitPrice - SL
+            longBE := buyLimitPrice + TP/2
             // strategy.exit(id="Long", profit = buyLimitPrice + takeProfit, stop = buyLimitPrice - stopLoss)
-        box.new(left=bar_index, top=longTradeTP, right=bar_index+5, bottom=buyLimitPrice, bgcolor=color.new(#54d6ad, 63), border_width=0) //border_color = color.new(color = color.green, transp = 0))
-        box.new(left=bar_index, top=buyLimitPrice, right=bar_index+5, bottom=longTradeSL, bgcolor=color.new(#a23b3b, 70), border_width=0)
+        // box.new(left=bar_index, top=longTradeTP, right=bar_index+10, bottom=buyLimitPrice, bgcolor=color.new(#54d6ad, 63), border_width=0) //border_color = color.new(color = color.green, transp = 0))
+        // box.new(left=bar_index, top=buyLimitPrice, right=bar_index+10, bottom=longTradeSL, bgcolor=color.new(#a23b3b, 70), border_width=0)
     // SHORT trade setup
     if newShortTrade and not alreadyTradedShort
         SL := 5 * ((math.round(myAtr / 5)) + 1)
-        TP := SL * 2
+        TP := SL * stopLossRatio
         alreadyTradedShort := true
         noTradesTaken := false
         shortTradeSetUp := true
@@ -471,9 +498,10 @@ if inTradeSession
             strategy.entry(id="Short", direction=strategy.short, limit = sellLimitPrice, qty = 1.0)
             shortTradeTP := sellLimitPrice - TP
             shortTradeSL := sellLimitPrice + SL
+            shortBE := sellLimitPrice - TP/2
             // strategy.exit("Short SL", profit = sellLimitPrice - takeProfit, stop = sellLimitPrice + stopLoss)
-        box.new(left=bar_index, top=sellLimitPrice, right=bar_index+5, bottom=shortTradeTP, bgcolor=color.new(#54d6ad, 63), border_width=0)
-        box.new(left=bar_index, top=shortTradeSL, right=bar_index+5, bottom=sellLimitPrice, bgcolor=color.new(#a23b3b, 70), border_width=0)
+        // box.new(left=bar_index, top=sellLimitPrice, right=bar_index+10, bottom=shortTradeTP, bgcolor=color.new(#54d6ad, 63), border_width=0)
+        // box.new(left=bar_index, top=shortTradeSL, right=bar_index+10, bottom=sellLimitPrice, bgcolor=color.new(#a23b3b, 70), border_width=0)
     // Handle trade exits
     strategy.exit(id="Long Exit",  from_entry="Long",  limit=longTradeTP, stop=longTradeSL)
     // strategy.exit(id="Long Exit #2",  from_entry="Long",  limit=tradeTarget2, stop=tradeStop, qty_percent=100)
