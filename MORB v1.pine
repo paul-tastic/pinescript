@@ -1,12 +1,14 @@
 //@version=5
-strategy("MORB Auto Trader)",
+strategy("MORB Auto Trader v1",
      overlay=true,
      calc_on_order_fills = true,
      use_bar_magnifier = true,
      initial_capital = 500,
      default_qty_type = strategy.percent_of_equity,
      default_qty_value = 100,
-     commission_type = strategy.commission.cash_per_contract)
+     commission_type = strategy.commission.cash_per_contract,
+     commission_value = 1.99,
+     currency = currency.USD)
 
      // set trading hours
      // freeze zones just prior
@@ -59,7 +61,6 @@ timeZoneInput = str.tostring(input.enum(tz.ny, "Session Timezone"))
 
 
 lockZonesHighlightColor = input.color(color.new(#047e2f, 90), title="No Trade cool-off Session Highlight Color", group="Strategy Times")
-
 lockZonesStartHour = int(str.tonumber(input.string(defval="09", title="Lock Zones Time", group="Strategy Times", inline="Lock Zones Time", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
 lockZonesStartMinute = int(str.tonumber(input.string(defval="15", title=":", group="Strategy Times", inline="Lock Zones Time", options = ["00", "15", "30", "45", "59"])))
 
@@ -67,7 +68,7 @@ lockZonesStartMinute = int(str.tonumber(input.string(defval="15", title=":", gro
 tradeHighlightColor = input.color(color.new(#04ff00, 83), title="Trading Session Highlight Color", group="Strategy Times")
 
 tradeStartHour = int(str.tonumber(input.string(defval="09", title="Trading Start Time", group="Strategy Times", inline="Start Trading Times", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
-tradeStartMinute = int(str.tonumber(input.string(defval="30", title=":", group="Strategy Times", inline="Start Trading Times", options = ["00", "15", "30", "35", "45"])))
+tradeStartMinute = int(str.tonumber(input.string(defval="35", title=":", group="Strategy Times", inline="Start Trading Times", options = ["00", "15", "30", "35", "45"])))
 tradeEndHour = int(str.tonumber(input.string(defval="16", title="Trading end time", group="Strategy Times", inline="End Trading Times", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
 tradeEndMinute   = int(str.tonumber(input.string(defval="45", title=":", group="Strategy Times", inline="End Trading Times", options = ["00", "15", "30", "45"])))
 
@@ -358,7 +359,8 @@ if inLockZonesSession
     if (array.size(resistanceBoxes) == 0 and not alreadyLockedIn)
         // if there aren't any valid pivots (because of a bullish premarket) use highest bar in the last pivotStrength rows back
 
-        highBar := ta.highest(high, pivotStrength)
+        // instead, grab the most recent pivot  - look for 
+        highBar := ta.highest(high, pivotStrength * 3)
         highIndex := ta.barssince(high == highBar)
         if not na(highBar)
             top = high
@@ -370,7 +372,7 @@ if inLockZonesSession
 
     if (array.size(supportBoxes) == 0 and not alreadyLockedIn)
         // if there aren't any valid pivots (because of a bearish premarket) use lowest bar in the last pivotStrength rows back
-        lowBar := ta.lowest(low,pivotStrength)
+        lowBar := ta.lowest(low,pivotStrength * 3)
         lowIndex := ta.barssince(low == lowBar)
         if not na(lowBar)
             bottom = low
@@ -435,6 +437,7 @@ if inLockZonesSession
 
 // Trading Session
 if inTradeSession
+    if (strategy.losstrades[0] > strategy.losstrades[1])
 
     if (strategy.losstrades[0] > strategy.losstrades[1])
         // last trade was a loss

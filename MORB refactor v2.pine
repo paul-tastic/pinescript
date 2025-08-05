@@ -1,0 +1,453 @@
+//@version=5
+strategy("MORB Auto Trader v2",
+     overlay=true,
+     calc_on_order_fills = true,
+     use_bar_magnifier = true,
+     initial_capital = 500,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type = strategy.commission.cash_per_contract,
+     commission_value = 1.99,
+     currency = currency.USD)
+
+// this version refactors the code to not compartmentalize the sessions as much
+
+// TODO: size positions better/check math, provide max values
+// toggle only 1 loss per day or not
+// TODO: check if price dipped below zones X bars ago before drawing zones. X = pivot strength
+
+
+enum tz
+    utc  = "UTC"
+    exch = ""
+    ny   = "America/New_York"
+    chi  = "America/Chicago"
+    lon  = "Europe/London"
+    tok  = "Asia/Tokyo"
+
+timeZoneInput = str.tostring(input.enum(tz.ny, "Session Timezone"))
+
+// when do we lock in the hi/lo zones
+lockZonesHighlightColor = input.color(color.new(#047e2f, 90), title="No Trade cool-off Session Highlight Color", group="Strategy Times")
+lockZonesHour = int(str.tonumber(input.string(defval="09", title="Lock Zones Time", group="Strategy Times", inline="Lock Zones Time", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
+lockZonesMinute = int(str.tonumber(input.string(defval="15", title=":", group="Strategy Times", inline="Lock Zones Time", options = ["00", "15", "30", "45", "59"])))
+lockZoneTimestamp = timestamp(timeZoneInput, year, month, dayofmonth, lockZonesHour, lockZonesMinute)
+
+// trade session highlights
+tradeZoneHighlightColor = input.color(color.new(#04ff00, 83), title="Trading Session Highlight Color", group="Strategy Times")
+
+tradeZoneStartHour = int(str.tonumber(input.string(defval="09", title="Trading Start Time", group="Strategy Times", inline="Start Trading Times", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
+tradeZoneStartMinute = int(str.tonumber(input.string(defval="35", title=":", group="Strategy Times", inline="Start Trading Times", options = ["00", "15", "30", "35", "45"])))
+tradeZoneEndHour = int(str.tonumber(input.string(defval="16", title="Trading end time", group="Strategy Times", inline="End Trading Times", options = ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"])))
+tradeZoneEndMinute   = int(str.tonumber(input.string(defval="45", title=":", group="Strategy Times", inline="End Trading Times", options = ["00", "15", "30", "45"])))
+
+// misc variables
+pivotStrength = input.int(5, title="Pivot Strength (Left & Right Bars)", minval=1)
+// zoneWidthTicks = input.int(10, title="Zone Width (Ticks)", minval=1) // this is changing results, need to debug that
+showTables = input.bool(true, title="Show debug tables") // show debug table
+
+stopLossRatio = input.int(defval = 2, title="Stop Loss ratio 1:? ", minval = 1) // sets the SL/TP ratio (note: SL is loosely based off ATR)
+boxHeight = input.float(defval = 10, title="Height of S/R boxes", minval = .01) // sets the height of the boxes to mark the hi/lo zones
+
+breakEvenActivated = input.bool(false, title = 'Break Even at 1:1 Activated') // if true, set SL to BE when TP1 is hit (even with SL)
+
+// trade zone times timestamps
+tradeZoneStart = timestamp(timeZoneInput, year, month, dayofmonth, tradeZoneStartHour, tradeZoneStartMinute)
+tradeZoneEnd  = timestamp(timeZoneInput, year, month, dayofmonth, tradeZoneEndHour, tradeZoneEndMinute)
+
+// fall back (for now) to exit all positions - might delete later after testing
+closeAllOpenTrades  = timestamp(timeZoneInput, year, month, dayofmonth, 16, 55)
+resetAllVariablesTime = timestamp(timeZoneInput, year, month, dayofmonth, (tradeZoneEndHour + 1), 00)
+
+inLockZonesSession = time == lockZoneTimestamp
+inTradeSession = time >= tradeZoneStart and time <= tradeZoneEnd // TODO: check this >= or just >
+
+// initialize all the variables
+zoneColorSupply = color.new(color.red, 85)
+zoneColorDemand = color.new(color.green, 85)
+zoneWidth = 6 * syminfo.mintick // this calculates how hi to draw the intraday pivot zones, setting to constant value for now
+boxHeight := 6 * syminfo.mintick 
+
+var float[] resistancePrices = array.new_float()
+var float[] supportPrices = array.new_float()
+var int[] resistanceTimes = array.new_int()
+var int[] supportTimes = array.new_int()
+var box[] resistanceBoxes = array.new_box()
+var box[] supportBoxes = array.new_box()
+var bool zonesSet = false
+var float buyLimitPrice = 0.0
+var float sellLimitPrice = 0.0
+var bool noTradesTaken = true
+var bool longTradeSetUp = false
+var bool shortTradeSetUp = false
+var alreadyLabeled = false // for debugging steps
+
+var bool longTradeValid = true
+var bool shortTradeValid = true
+var bool alreadyTradedShort = false
+var bool alreadyTradedLong = false
+var bool lostATrade = false
+
+var bool longSignal = false
+var bool shortSignal = false
+var float i_fx_risk = 0.1 // percentage of risk
+var float longTradeTP2 = 0.0
+var float longTradeSL = 0.0
+var float longTradeEntry = 0.0
+var float shortTradeTP2 = 0.0
+var float shortTradeSL = 0.0
+var float shortTradeEntry = 0.0
+var bool newLongTradeSetup = false 
+var bool newShortTradeSetup = false
+var int winningTradeCount = 0
+var int losingTradeCount = 0
+var bool alreadyLockedIn = false
+var int rb0Count = 0
+var int rb1Count = 0
+var int sb0Count = 0
+var int sb1Count = 0
+var float myAtr = 0.0
+var float SL = 0 //5 * (math.round(myAtr / 5))
+var float TP1 = 0 //SL * 2
+var float TP2 = 0 //SL * 2
+var string debugValue = ''
+var float longBE = 0
+var float shortBE = 0
+
+
+bgColor = if inLockZonesSession
+    lockZonesHighlightColor
+else if inTradeSession
+    tradeZoneHighlightColor
+else 
+    na
+
+bgcolor(bgColor)
+
+
+// methods
+checkForPivot(pivotHigh, pivotLow) =>
+    if (not na(pivotHigh))
+        top = pivotHigh
+        bottom = top - zoneWidth
+        b = box.new(left=bar_index - pivotStrength, right=bar_index, top=top, bottom=bottom, bgcolor=zoneColorSupply, border_color=color.red)
+        array.unshift(resistanceBoxes, b)
+        array.unshift(resistancePrices, high[pivotStrength])
+        array.unshift(resistanceTimes, time[pivotStrength])
+
+    if (not na(pivotLow))
+        bottom = pivotLow
+        top = bottom + zoneWidth
+        b = box.new(left=bar_index - pivotStrength, right=bar_index, top=top, bottom=bottom, bgcolor=zoneColorDemand, border_color=color.green)
+        array.unshift(supportBoxes, b)
+        array.unshift(supportPrices, low[pivotStrength])
+        array.unshift(supportTimes, time[pivotStrength])
+
+// === Invalidate Zones if Price closes Through ===
+invalidateZones(arrBoxes, arrPrices, arrTimes) =>
+    if array.size(arrBoxes) > 0
+        for i = array.size(arrBoxes) - 1 to 0
+            b = array.get(arrBoxes, i)
+            top = box.get_top(b)
+            bottom = box.get_bottom(b)
+            cross = high >= bottom and low <= top
+            if cross
+                box.delete(b)
+                array.remove(arrBoxes, i)
+                array.remove(arrPrices, i)
+                array.remove(arrTimes, i)
+
+removeZones(arrBoxes, arrPrices, arrTimes) =>
+    if array.size(arrBoxes) > 0
+        for i = array.size(arrBoxes) - 1 to 0
+            b = array.get(arrBoxes, i)
+            box.delete(b)
+        array.clear(arrPrices)
+        array.clear(arrTimes)
+        array.clear(arrBoxes)
+
+generateResistanceZones() =>
+    highBar = ta.highest(high, pivotStrength * 3)
+    highIndex = ta.barssince(high == highBar)
+    if not na(highBar)
+        top = high
+        bottom = top - zoneWidth
+        b = box.new(left=bar_index[highIndex] - pivotStrength, right=bar_index[highIndex], top=top, bottom=bottom, bgcolor=zoneColorSupply, border_color=color.red)
+        array.unshift(resistanceBoxes, b)
+        array.unshift(resistancePrices, high[pivotStrength])
+        array.unshift(resistanceTimes, time[pivotStrength])
+
+generateSupportZones() =>
+    var lowBar = ta.lowest(low,pivotStrength * 3)
+    var lowIndex = ta.barssince(low == lowBar)
+    if not na(lowBar)
+        bottom = low
+        top = bottom + zoneWidth
+        b = box.new(left=bar_index[lowIndex] - pivotStrength, right=bar_index[lowIndex], top=top, bottom=bottom, bgcolor=zoneColorDemand, border_color=color.green)
+        array.unshift(supportBoxes, b)
+        array.unshift(supportPrices, low[pivotStrength])
+        array.unshift(supportTimes, time[pivotStrength])
+
+
+if (not inTradeSession)
+    // reset trading variables
+    noTradesTaken := true
+    longTradeSetUp := false
+    shortTradeSetUp := false
+    longTradeValid := true
+    shortTradeValid := true
+    alreadyLabeled := false
+    alreadyTradedShort := false
+    alreadyTradedLong := false
+    newLongTradeSetup := false
+    newShortTradeSetup := false
+    lostATrade := false
+    alreadyLockedIn := false
+    rb0Count := 0
+    rb1Count := 0
+    sb0Count := 0
+    sb1Count := 0
+    shortTradeSL := 0
+    longTradeSL := 0
+    SL := 0
+    TP1 := 0
+    TP2 := 0
+    longBE := 0
+    shortBE := 0
+    debugValue := ''
+
+// main logic
+
+pivotHigh = ta.pivothigh(high, pivotStrength, pivotStrength)
+pivotLow = ta.pivotlow(low, pivotStrength, pivotStrength)
+
+// check if a pivot, and if so, create zone and boxes
+if (not inTradeSession) 
+    checkForPivot(pivotHigh, pivotLow)
+
+invalidateZones(resistanceBoxes, resistancePrices, resistanceTimes)
+invalidateZones(supportBoxes, supportPrices, supportTimes)
+
+// lock zones session
+if inLockZonesSession 
+
+    var int sessEndBarIndex = tradeZoneEnd - time
+    barDuration = time - time[1]
+    barsUntilFuture = math.round(sessEndBarIndex / barDuration)
+    estimatedFutureBarIndex = bar_index + barsUntilFuture + 15
+
+    if (array.size(resistanceBoxes) == 0 and not alreadyLockedIn)
+        generateResistanceZones()
+
+    if (array.size(supportBoxes) == 0 and not alreadyLockedIn)
+        generateSupportZones()
+
+    // now that we have populated resistanceBoxes, set the last one for entries
+    if array.size(resistanceBoxes) > 0
+        alreadyLockedIn := true
+        rb0 = array.get(resistanceBoxes, 0)
+        resistanceBox0Top = box.get_top(rb0)
+
+        box rb1 = na
+
+        if array.size(resistanceBoxes) > 1
+            rb1 := array.get(resistanceBoxes, 1)
+            resistanceBox1Top = box.get_top(rb1)
+
+            for i = 0 to 9
+                if (high[i] <= resistanceBox0Top and high[i] >= (resistanceBox0Top - 0.01)) 
+                    rb0Count += 1
+                if (high[i] <= resistanceBox1Top and high[i] >= (resistanceBox1Top - 0.01))
+                    rb1Count += 1
+
+        resistanceBoxTop = (rb0Count >= rb1Count) ? box.get_top(rb0) : box.get_top(rb1)
+        buyLimitPrice := resistanceBoxTop
+        resistanceBoxLeft = (rb0Count >= rb1Count) ? box.get_left(rb0) : box.get_left(rb1)
+        resistanceBoxBottom = resistanceBoxTop - boxHeight // 0.03 // make user configurable
+        resistanceBoxRight = estimatedFutureBarIndex
+        box.new(left=resistanceBoxLeft, right=resistanceBoxRight, top=resistanceBoxTop, bottom=resistanceBoxBottom, bgcolor=zoneColorSupply, border_color=color.red)
+    
+    if array.size(supportBoxes) > 0
+        alreadyLockedIn := true
+        sb0 = array.get(supportBoxes, 0)
+        supportBox0Bottom = box.get_bottom(sb0)
+
+        box sb1 = na 
+
+        if array.size(supportBoxes) > 1
+            sb1 := array.get(supportBoxes, 1)
+            supportBox1Bottom = box.get_bottom(sb1)
+
+            for i = 0 to 9
+                if (low[i] >= supportBox0Bottom and low[i] <= (supportBox0Bottom + 0.01)) 
+                    sb0Count += 1
+                if (low[i] >= supportBox1Bottom and low[i] <= (supportBox1Bottom + 0.01))
+                    sb1Count += 1
+        
+        supportBoxBottom = (sb0Count >= sb1Count) ? box.get_bottom(sb0) : box.get_bottom(sb1)
+        supportBoxLeft = (sb0Count >= sb1Count) ? box.get_left(sb0) : box.get_left(sb1)
+        sellLimitPrice := supportBoxBottom
+        supportBoxTop = supportBoxBottom + boxHeight // 0.03 // make user configurable
+        supportBoxRight = estimatedFutureBarIndex
+        box.new(left=supportBoxLeft, right=supportBoxRight, top=supportBoxTop, bottom=supportBoxBottom, bgcolor=zoneColorDemand, border_color=color.rgb(33, 135, 69))
+
+    // remove all other array values
+    removeZones(resistanceBoxes, resistancePrices, resistanceTimes)
+    removeZones(supportBoxes, supportPrices, supportTimes)
+
+
+// in trading session
+// Draw conditional data
+plotshape(newLongTradeSetup,  style=shape.triangleup,   color=color.green, location=location.belowbar, title="Long Setup")
+plotshape(newShortTradeSetup, style=shape.triangledown, color=color.red,   location=location.abovebar, title="Short Setup")
+
+// Draw stops & targets
+plot(strategy.position_size > 0 ? longTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
+plot(strategy.position_size > 0 ? longTradeTP2 : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size > 0 ? longBE : na, color=color.green, style=plot.style_linebr, title="Break Even")
+
+plot(strategy.position_size < 0 ? shortTradeSL : na,   color=color.red,   style=plot.style_linebr, title="Stop Loss")
+plot(strategy.position_size < 0 ? shortTradeTP2 : na, color=color.green, style=plot.style_linebr, title="Profit Target")
+plot(strategy.position_size < 0 ? shortBE : na, color=color.green, style=plot.style_linebr, title="Break Even")
+
+// paint active trade indicators
+if (strategy.position_size > 0)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longTradeSL, color=color.new(#a23b3b, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longTradeTP2, color=color.new(#2fc016, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=buyLimitPrice, y2=longBE, color=color.new(#207611, 50), width=6)
+
+if (strategy.position_size < 0)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortTradeSL, color=color.new(#a23b3b, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortTradeTP2, color=color.new(#2fc016, 50), width=6)
+    line.new(x1=bar_index, x2=bar_index, y1=sellLimitPrice, y2=shortBE, color=color.new(#207611, 50), width=6)
+
+// stop trading on first loss that day
+if ((strategy.losstrades[0] > strategy.losstrades[1]) and inTradeSession)
+    lostATrade := true
+
+newLongTradeSetup := ((open <= buyLimitPrice) and (close > buyLimitPrice) and (strategy.opentrades == 0) and (not lostATrade) and (not alreadyTradedLong) and inTradeSession) 
+newShortTradeSetup := ((open >= sellLimitPrice) and (close < sellLimitPrice) and (strategy.opentrades == 0) and (not lostATrade) and (not alreadyTradedShort) and inTradeSession) 
+
+
+myAtr := ta.atr(14)
+SL := (myAtr * stopLossRatio) //5 * ((math.round(myAtr / 5)) + 1)
+TP1 := SL
+TP2 := SL * 2
+
+// stop minus limitorder, times price per tick... divided by risk $ (500)
+calculatedPositionSize = syminfo.mintick * syminfo.pointvalue / 5
+
+x = (1/syminfo.mintick) * syminfo.pointvalue // 1000is is the risk per point, so multiply by SL to get risk per trade
+// calculatedPositionSize = math.round(math.max(x, 1))
+
+if newLongTradeSetup and not alreadyTradedLong
+    alreadyTradedLong := true
+
+    // if syminfo.type == "forex"
+    //     longTradeSL := buyLimitPrice - (SL / 100)
+    //     longTradeTP := buyLimitPrice + (TP / 100)
+    //     longTradeEntry := buyLimitPrice
+    //     positionSize = 10.0 //math.floor((strategy.equity * (i_fx_risk / 100)))
+    //     strategy.entry(id="Long", direction=strategy.long, qty=positionSize, limit=buyLimitPrice)
+    // else
+    strategy.entry(id="Long", direction=strategy.long, limit = buyLimitPrice, qty =calculatedPositionSize)
+    longTradeTP2 := buyLimitPrice + TP2
+    longTradeSL := buyLimitPrice - SL
+    longBE := buyLimitPrice + TP1
+
+if newShortTradeSetup and not alreadyTradedShort
+    alreadyTradedShort := true
+
+    // if syminfo.type == "forex"
+    //     shortTradeSL := sellLimitPrice + (SL / 100)
+    //     shortTradeTP := sellLimitPrice - (TP / 100)
+    //     shortTradeEntry := sellLimitPrice
+    //     positionSize = 10.0 //math.floor((strategy.equity * (i_fx_risk / 100)))
+    //     strategy.entry(id="Short", direction=strategy.short, qty=positionSize, limit=sellLimitPrice)
+    // else
+    strategy.entry(id="Short", direction=strategy.short, limit = sellLimitPrice, qty =calculatedPositionSize)
+    shortTradeTP2 := sellLimitPrice - TP2
+    shortTradeSL := sellLimitPrice + SL
+    shortBE := sellLimitPrice - TP1
+
+// set up the exit
+strategy.exit(id="Long Exit",  from_entry="Long",  limit=longTradeTP2, stop=longTradeSL)
+strategy.exit(id="Short Exit", from_entry="Short", limit=shortTradeTP2, stop=shortTradeSL)
+
+
+// set up cancellations
+if (time >= closeAllOpenTrades and strategy.opentrades > 0)
+    strategy.close_all(comment="EOD Exit")
+
+//determine if price moved too far without an entry to invalidate trade
+if (high > buyLimitPrice + .15 and longTradeSetUp and not alreadyTradedLong)
+    longTradeValid := false
+    if not alreadyLabeled 
+        label.new(bar_index, buyLimitPrice, "long trade invalidated")
+        alreadyLabeled := true
+
+if (low < sellLimitPrice - .15 and shortTradeSetUp and not alreadyTradedShort)
+    shortTradeValid := false
+    if not alreadyLabeled 
+        label.new(bar_index, sellLimitPrice, "short trade invalidated")
+        alreadyLabeled := true
+
+
+// Debug and Tables
+var table resistanceTable = table.new(position.top_right, 2, 10, frame_color=color.red, border_width=1)
+var table supportTable = table.new(position.bottom_right, 2, 10, frame_color=color.green, border_width=1)
+var table variableTracker = table.new(position.middle_left, 2, 20, frame_color=#002b80, border_width=1)
+
+if showTables
+    for i = 0 to 17
+        table.cell(variableTracker, 0, i, "")
+        table.cell(variableTracker, 1, i, "")
+
+    table.cell(variableTracker, 0, 0, "var", text_color=color.white, bgcolor=#1c0080)
+    table.cell(variableTracker, 1, 0, "value", text_color=color.white, bgcolor=#1c0080)
+
+    table.cell(variableTracker, 0,1,"newLongTradeSetup")
+    table.cell(variableTracker, 1,1,str.tostring(newLongTradeSetup))
+    table.cell(variableTracker, 0,2,"newShortTradeSetup")
+    table.cell(variableTracker, 1,2,str.tostring(newShortTradeSetup))
+    table.cell(variableTracker, 0,3,"longTradeSL")
+    table.cell(variableTracker, 1,3,str.tostring(longTradeSL))
+    table.cell(variableTracker, 0,4,"longTradeTP2")
+    table.cell(variableTracker, 1,4,str.tostring(longTradeTP2))
+    table.cell(variableTracker, 0,5,"shortTradeSL")
+    table.cell(variableTracker, 1,5,str.tostring(shortTradeSL))
+    table.cell(variableTracker, 0,6,"shortTradeTP2")
+    table.cell(variableTracker, 1,6,str.tostring(shortTradeTP2))
+    table.cell(variableTracker, 0,7,"SL $$")
+    table.cell(variableTracker, 1,7,str.tostring((SL * syminfo.mintick)))
+    table.cell(variableTracker, 0,8,"TP2 $$")
+    table.cell(variableTracker, 1,8,str.tostring((TP2 * syminfo.mintick)))
+    table.cell(variableTracker, 0,9,"trade direction")
+    table.cell(variableTracker, 1,9,str.tostring(strategy.position_size))
+    table.cell(variableTracker, 0,10,"sellLimitPrice")
+    table.cell(variableTracker, 1,10,str.tostring(sellLimitPrice))
+    table.cell(variableTracker, 0,11,"buyLimitPrice")
+    table.cell(variableTracker, 1,11,str.tostring(buyLimitPrice))
+    table.cell(variableTracker, 0,12,"alreadyTradedShort")
+    table.cell(variableTracker, 1,12,str.tostring(alreadyTradedShort))
+    table.cell(variableTracker, 0,13,"calculatedPositionSize")
+    table.cell(variableTracker, 1,13,str.tostring(calculatedPositionSize))
+    table.cell(variableTracker, 0,14,"SL")
+    table.cell(variableTracker, 1,14,str.tostring(SL))
+    table.cell(variableTracker, 0,15,"myAtr")
+    table.cell(variableTracker, 1,15,str.tostring(myAtr))
+    table.cell(variableTracker, 0,16,"mintick * pointvalue")
+    table.cell(variableTracker, 1,16,str.tostring(syminfo.mintick * syminfo.pointvalue)) // 12.50 for ES
+    table.cell(variableTracker, 0,17,"x")
+    table.cell(variableTracker, 1,17,str.tostring(x))
+
+    // === Display Zone Info Sorted (Newest First) ===
+displayZoneTable(arrPrices, arrTimes, tbl) =>
+    if array.size(arrPrices) > 0
+        maxRows = 9
+        zoneCount = math.min(array.size(arrPrices), maxRows)
+        for i = 0 to zoneCount - 1
+            priceStr = str.tostring(array.get(arrPrices, i), format.mintick)
+            timeStr = str.format("{0,date,yyyy-MM-dd HH:mm}", array.get(arrTimes, i))
+            table.cell(tbl, 0, i + 1, timeStr)
+            table.cell(tbl, 1, i + 1, priceStr)
