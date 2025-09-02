@@ -1,0 +1,86 @@
+//@version=5
+strategy("✅ Nasdaq Futures ATR Trend + Trail",
+     overlay=true
+     //margin_long=100, margin_short=100,
+     //initial_capital=150000
+     //default_qty_type=strategy.fixed,
+     //default_qty_value=1
+     //commission_type=strategy.commission.cash_per_contract, 
+     //commission_value=2.00
+     )  // $2 per contract typical for futures
+
+
+
+// ───── Inputs ─────
+atrLen          = input.int(14, "ATR Length")
+stopATRmult     = input.float(2.0, "Stop ATR Multiplier")
+targetATRmult   = input.float(4.0, "Target ATR Multiplier")
+trailEnable     = input.bool(true, "Enable Trailing Stop")
+trailATRmult    = input.float(1.5, "Trail ATR Multiplier")
+trailStartMult  = input.float(2.0, "Trail Start ATRs Before Trail Activates")
+maLen           = input.int(50, "Trend MA Length")
+killDDpercent   = input.float(5.0, "Daily Drawdown % to Stop Trading")
+
+// Session: 09:30–16:00 ET, Mon–Fri
+useRTH = input.bool(true, "Limit to RTH (09:30–16:00 ET)")
+inSession = (not useRTH) or not na(time(timeframe.period, "0930-1600:12345"))
+
+// then gate entries:
+// if inSession and canTrade
+//     if longCond
+//         strategy.entry("Long", strategy.long)
+//     if shortCond
+//         strategy.entry("Short", strategy.short)
+
+
+// ───── Calculations ─────
+atr     = ta.atr(atrLen)
+ma      = ta.sma(close, maLen)
+
+// Entry signals
+longCond = close > ma and ta.crossover(close, ma)
+shortCond = close < ma and ta.crossunder(close, ma)
+
+// Daily drawdown kill
+var float startEquity = na
+if na(startEquity) or ta.change(time("D"))
+    startEquity := strategy.equity
+ddPerc = (strategy.equity - startEquity) / startEquity * 100
+canTrade = ddPerc > -killDDpercent
+
+
+// ───── Entry logic ─────
+if inSession and canTrade
+    if longCond
+        strategy.entry("Long", strategy.long)
+    if shortCond
+        strategy.entry("Short", strategy.short)
+
+// ───── Base Stop & Target ─────
+stopPriceLong  = strategy.position_avg_price - atr * stopATRmult
+targetPriceLong = strategy.position_avg_price + atr * targetATRmult
+
+stopPriceShort  = strategy.position_avg_price + atr * stopATRmult
+targetPriceShort = strategy.position_avg_price - atr * targetATRmult
+
+// ───── Trailing Stop Setup ─────
+trailStart   = atr * trailStartMult
+trailOffsetP = (atr * trailATRmult) / syminfo.mintick  // price → points
+
+// ───── Exits ─────
+if strategy.position_size > 0
+    // Only trigger trailing stop after profit exceeds trailStart
+    trailActive = close >= strategy.position_avg_price + trailStart and trailEnable
+
+    strategy.exit("Exit Long", from_entry="Long",
+         stop=stopPriceLong, limit=targetPriceLong,
+         trail_points = trailActive ? trailOffsetP : na)
+
+if strategy.position_size < 0
+    trailActive = close <= strategy.position_avg_price - trailStart and trailEnable
+
+    strategy.exit("Exit Short", from_entry="Short",
+         stop=stopPriceShort, limit=targetPriceShort,
+         trail_points = trailActive ? trailOffsetP : na)
+
+plot(ma, color=color.orange)

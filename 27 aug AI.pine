@@ -1,0 +1,89 @@
+//@version=5
+strategy("Conservative 5m Futures — Trend + Pullback (ATR stops)", overlay=true,
+  default_qty_type=strategy.percent_of_equity, default_qty_value=1,
+  pyramiding=1, initial_capital=100000, commission_type=strategy.commission.cash_per_contract, commission_value=2)
+
+// === USER INPUTS ===
+higher_tf         = input.timeframe("60", "Higher timeframe (trend)") 
+ema_htf_len       = input.int(89, "HTF EMA length", minval=5)
+ema_len           = input.int(21, "Entry EMA length", minval=2)
+rsi_len           = input.int(14, "RSI length", minval=2)
+rsi_filter        = input.int(50, "RSI threshold (enter only if RSI > this for longs, < for shorts)")
+atr_len           = input.int(14, "ATR length", minval=1)
+atr_stop_mult     = input.float(2.0, "Stop = ATR ×", step=0.1)
+atr_target_mult   = input.float(3.0, "Target = ATR ×", step=0.1)
+use_trailing      = input.bool(true, "Use trailing stop after profit target?")
+trail_atr_mult    = input.float(1.5, "Trail start (ATR ×)", step=0.1)
+trail_offset_mult = input.float(1.0, "Trail offset (ATR ×)", step=0.1)
+day_session       = input.session("0000-2400", "Allowed trading session (exchange time)")
+max_positions     = input.int(1, "Max concurrent positions (pyramiding)", minval=1)
+risk_per_trade_pct = input.float(0.5, "Default order size (% equity)", step=0.1)
+
+// === INDICATORS ===
+emaHTF = request.security(syminfo.tickerid, higher_tf, ta.ema(close, ema_htf_len))
+ema    = ta.ema(close, ema_len)
+rsi    = ta.rsi(close, rsi_len)
+atr    = ta.atr(atr_len)
+vol_sma = ta.sma(volume, 20)
+
+// plot EMAs
+plot(emaHTF, title="HTF EMA", linewidth=2, transp=60)
+plot(ema, title="Entry EMA", linewidth=1)
+
+// === TREND FILTER ===
+trendBull = close > emaHTF
+trendBear = close < emaHTF
+
+// === TIME FILTER ===
+inSession = true // time(timeframe.period, day_session) != na
+
+// === ENTRY RULES ===
+// Conservative momentum/pullback entry:
+longCondition  = inSession and trendBull and ta.crossover(close, ema) and rsi > rsi_filter and volume > vol_sma * 0.5
+shortCondition = inSession and trendBear and ta.crossunder(close, ema) and rsi < (100 - rsi_filter) and volume > vol_sma * 0.5
+
+// Prevent multiple entries: respect pyramiding input (pyramiding=1 in header) but still check open trades
+canEnterLong  = (strategy.position_size == 0) or (strategy.position_size > 0 and strategy.opentrades < max_positions)
+canEnterShort = (strategy.position_size == 0) or (strategy.position_size < 0 and strategy.opentrades < max_positions)
+
+// === INFO LABEL ===
+var label info = na
+if barstate.islast
+    label.delete(info)
+    info := label.new(bar_index, high, text="Order size: " + str.tostring(risk_per_trade_pct, format="%0.2f") + "% eq (set in strategy inputs)", 
+      xloc=xloc.bar_index, yloc=yloc.abovebar, style=label.style_label_left, color=color.new(color.teal, 85), textcolor=color.white)
+
+// === EXECUTE ENTRIES & EXITS ===
+if (longCondition and canEnterLong)
+    strategy.entry("Long", strategy.long, comment="LongPull")
+    stopPrice = close - atr * atr_stop_mult
+    takePrice = close + atr * atr_target_mult
+    strategy.exit("Exit Long", from_entry="Long", stop=stopPrice, limit=takePrice)
+    if use_trailing
+        trail_offset_points = atr * trail_offset_mult
+        strategy.exit("Trail Long", from_entry="Long", trail_points=trail_offset_points, trail_offset=trail_offset_points)
+
+if (shortCondition and canEnterShort)
+    strategy.entry("Short", strategy.short, comment="ShortPull")
+    stopPriceS = close + atr * atr_stop_mult
+    takePriceS = close - atr * atr_target_mult
+    strategy.exit("Exit Short", from_entry="Short", stop=stopPriceS, limit=takePriceS)
+    if use_trailing
+        trail_offset_pointsS = atr * trail_offset_mult
+        strategy.exit("Trail Short", from_entry="Short", trail_points=trail_offset_pointsS, trail_offset=trail_offset_pointsS)
+
+// === SAFETY: prevent trading too close to ATR extremes ===
+noisyMarket = atr > ta.sma(atr, 50) * 2.0
+plotshape(noisyMarket, title="Noisy ATR", location=location.top, style=shape.triangledown, size=size.tiny, color=color.new(color.red, 80), transp=80)
+
+// === VISUALS & INFO ===
+plotshape(longCondition, title="Long Signal", text="LONG", location=location.belowbar, color=color.new(color.green, 0), style=shape.labelup, size=size.tiny)
+plotshape(shortCondition, title="Short Signal", text="SHORT", location=location.abovebar, color=color.new(color.red, 0), style=shape.labeldown, size=size.tiny)
+
+hline(rsi_filter, title="RSI threshold", color=color.gray, linestyle=hline.style_dashed)
+plot(rsi, title="RSI", color=color.orange, linewidth=1, transp=60, display=display.none) // hidden by default
+plot(atr, title="ATR", display=display.none)
+plotchar(longCondition,  title="LongCond",  char="▲", location=location.belowbar, color=color.green)
+plotchar(shortCondition, title="ShortCond", char="▼", location=location.abovebar, color=color.red)
+
+

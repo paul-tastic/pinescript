@@ -1,6 +1,9 @@
+// SERIOUSLY, SET RISK TO $500, MOVE ENTRY TO ACCOMODATE ONLY RISKING 500. TP = 2:1 RR
+
+
 // © mach2fx
 //@version=5
-strategy("Two Aug 25",
+strategy("Two Aug 25 500 SL",
      overlay=true,
      calc_on_order_fills = true,
      use_bar_magnifier = true,
@@ -146,8 +149,8 @@ var float TP = 0
 var string debugValue = ''
 var float longBE = 0
 var float shortBE = 0
-var float amountRisked = SL * syminfo.pointvalue
-var float positionSize = 500 / amountRisked
+var float amountRisked = 0 // SL * syminfo.pointvalue
+var float positionSize = 1 // 500 / amountRisked
 
 zoneColorSupply = color.new(color.red, 85)
 zoneColorDemand = color.new(color.green, 85)
@@ -274,11 +277,10 @@ if not inTradeSession
     sb1Count := 0
     shortTradeSL := 0
     longTradeSL := 0
-    SL := 0
-    TP := 0
     longBE := 0
     shortBE := 0
     debugValue := ''
+    amountRisked := 0
 
     // close any open trades
     if (time >= closeAllOpenTrades and strategy.opentrades != 0)
@@ -386,15 +388,27 @@ else if (strategy.opentrades < 0)
 else if (strategy.opentrades > 0)
     "Long"
 
-SL := (ATR * stopLossRatio)
-TP := SL * 2
+// if ta.atr(14) < 10
+//     SL := ta.atr(14) * 2
+// else if ta.atr(14) < 30
+//     SL := ta.atr(14)
+
+tickValue = syminfo.mintick * syminfo.pointvalue
+
+maxRisk = 500
+
+
+
+SL := math.round(ta.atr(14) * stopLossRatio, 2)
+TP := math.round(SL * 2, 2)
+positionSize := 1
 
 if (not inTradeSession and strategy.opentrades != 0)
     strategy.close_all(alert_message='secondary close all', immediately=true)
 
 
-amountRisked := SL * syminfo.pointvalue
-positionSize := (500 / amountRisked) > 1 ? math.floor(500 / amountRisked) : 1
+
+// positionSize := (500 / amountRisked) > 1 ? math.floor(500 / amountRisked) : 1
 // Trading Session
 if inTradeSession
 
@@ -402,15 +416,14 @@ if inTradeSession
         // last trade was a loss
         lostATrade := true
 
-    // LONG trade setup
     newLongTrade := (open <= buyLimitPrice and close > buyLimitPrice and not alreadyTradedLong and strategy.opentrades == 0 and not lostATrade) 
     newShortTrade := (open >= sellLimitPrice and close < sellLimitPrice and not alreadyTradedShort and strategy.opentrades == 0 and not lostATrade) 
 
     if newLongTrade and not alreadyTradedLong and noTradesTaken
 
-
-        SL := (ATR * stopLossRatio) 
-        TP := SL * 2
+        amountRisked := SL * syminfo.pointvalue
+        // SL := (ta.atr(14) * stopLossRatio) 
+        // TP := SL * 2
         alreadyTradedLong := true
         longTradeSetUp := true
         longSignal := true
@@ -422,10 +435,18 @@ if inTradeSession
             longTradeEntry := buyLimitPrice
             strategy.entry(id="Long", direction=strategy.long, qty=positionSize, limit=buyLimitPrice)
         else
-            strategy.entry(id="Long", direction=strategy.long, limit = buyLimitPrice, qty =positionSize, alert_message="Long buy order for {{ticker}} at {{strategy.order.price}}")
-            longTradeTP := buyLimitPrice + TP
             longTradeSL := buyLimitPrice - SL
+            
+            if amountRisked > 500 // move entry 
+                buyLimitPrice := longTradeSL + (maxRisk / syminfo.pointvalue)
+                // add flag to chart
+                label.new(bar_index-1, buyLimitPrice, str.tostring(buyLimitPrice), color=color.blue)
+
             longBE := buyLimitPrice + TP/2
+            longTradeTP := buyLimitPrice + (maxRisk / syminfo.pointvalue * 2) // consider setting TP to just maxRisk * 2
+
+            strategy.entry(id="Long", direction=strategy.long, limit = buyLimitPrice, qty =positionSize, alert_message="Long buy order for {{ticker}} at {{strategy.order.price}}")
+
 
     // SHORT trade setup
     if newShortTrade and not alreadyTradedShort and noTradesTaken
@@ -433,6 +454,7 @@ if inTradeSession
         noTradesTaken := false
         shortTradeSetUp := true
         shortSignal := true
+        amountRisked := SL * syminfo.pointvalue
 
         if syminfo.type == "forex"
             shortTradeSL := sellLimitPrice + (SL / 100)
@@ -440,10 +462,21 @@ if inTradeSession
             shortTradeEntry := sellLimitPrice
             strategy.entry(id="Short", direction=strategy.short, qty=positionSize, limit=sellLimitPrice)
         else
-            strategy.entry(id="Short", direction=strategy.short, limit = sellLimitPrice, qty =positionSize, alert_message="Short sell order for {{ticker}} at {{strategy.order.price}}")
-            shortTradeTP := sellLimitPrice - TP
+
             shortTradeSL := sellLimitPrice + SL
+            
+            if amountRisked > 500 // move entry 
+                sellLimitPrice := shortTradeSL - (maxRisk / syminfo.pointvalue)
+                // add flag to chart
+                label.new(bar_index-1, sellLimitPrice, str.tostring(sellLimitPrice), color=color.red)
+
             shortBE := sellLimitPrice - TP/2
+            shortTradeTP := sellLimitPrice - (maxRisk / syminfo.pointvalue * 2)// TP // consider setting TP to just maxRisk * 2
+
+            strategy.entry(id="Short", direction=strategy.short, limit = sellLimitPrice, qty =positionSize, alert_message="Short sell order for {{ticker}} at {{strategy.order.price}}")
+            // shortTradeTP := sellLimitPrice - TP
+            // shortTradeSL := sellLimitPrice + SL
+            // shortBE := sellLimitPrice - TP/2
 
     // Handle trade exits
     strategy.exit(id="Long Exit",  from_entry="Long",  limit=longTradeTP, stop=longTradeSL)
@@ -480,8 +513,8 @@ if showTables
     table.cell(variableTracker, 1,3,str.tostring(""))
     table.cell(variableTracker, 0,4,"")
     table.cell(variableTracker, 1,4,str.tostring(""))
-    table.cell(variableTracker, 0,5,"")
-    table.cell(variableTracker, 1,5,str.tostring(""))
+    table.cell(variableTracker, 0,5,"Tick Value")
+    table.cell(variableTracker, 1,5,str.tostring(tickValue))
     table.cell(variableTracker, 0,6,"")
     table.cell(variableTracker, 1,6,str.tostring(""))
     table.cell(variableTracker, 0,7,"")
@@ -497,7 +530,7 @@ if showTables
     table.cell(variableTracker, 0,12,"Trade set up")
     table.cell(variableTracker, 1,12,str.tostring(newLongTrade or newShortTrade))
     table.cell(variableTracker, 0,13,"TP")
-    table.cell(variableTracker, 1,13,str.tostring(TP))
+    table.cell(variableTracker, 1,13,str.tostring(math.round(TP,2)))
     table.cell(variableTracker, 0,14,"SL")
     table.cell(variableTracker, 1,14,str.tostring(SL))
     table.cell(variableTracker, 0,15,"ATR")

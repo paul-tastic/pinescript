@@ -1,6 +1,6 @@
 // © mach2fx
 //@version=5
-strategy("Two Aug 25",
+strategy("Eleven Aug 25",
      overlay=true,
      calc_on_order_fills = true,
      use_bar_magnifier = true,
@@ -76,6 +76,8 @@ pivotStrength = input.int(5, title="Pivot Strength (Left & Right Bars)", minval=
 showTables = input.bool(true, title="Show debug tables")
 stopLossRatio = input.int(defval = 2, title="Stop Loss / ATR ratio 1:? ", minval = 1)
 breakEvenActivated = input.bool(false, title = 'Break Even at 1:1 Activated')
+reduceSL = input.bool(true, title="reduce stop loss to $500 risk?")
+
 
 // lockZone timestamp
 lockZoneTimestamp = timestamp(timeZoneInput, year, month, dayofmonth, lockZonesStartHour, lockZonesStartMinute)
@@ -148,6 +150,7 @@ var float longBE = 0
 var float shortBE = 0
 var float amountRisked = SL * syminfo.pointvalue
 var float positionSize = 500 / amountRisked
+var float modifiedEntry = 0
 
 zoneColorSupply = color.new(color.red, 85)
 zoneColorDemand = color.new(color.green, 85)
@@ -411,21 +414,29 @@ if inTradeSession
 
         SL := (ATR * stopLossRatio) 
         TP := SL * 2
+
+        // change up entry if large SL
+        if (amountRisked > 500.00) and reduceSL
+            fiveHondoRiskSL = 500/syminfo.pointvalue
+            modifiedEntry = newLongTrade ? buyLimitPrice - fiveHondoRiskSL : sellLimitPrice + fiveHondoRiskSL 
+        else 
+            modifiedEntry = newLongTrade ? buyLimitPrice : sellLimitPrice
+        
         alreadyTradedLong := true
         longTradeSetUp := true
         longSignal := true
         noTradesTaken := false
 
         if syminfo.type == "forex"
-            longTradeSL := buyLimitPrice - (SL / 100)
-            longTradeTP := buyLimitPrice + (TP / 100)
-            longTradeEntry := buyLimitPrice
+            longTradeSL := modifiedEntry - (SL / 100)
+            longTradeTP := modifiedEntry + (TP / 100)
+            longTradeEntry := modifiedEntry
             strategy.entry(id="Long", direction=strategy.long, qty=positionSize, limit=buyLimitPrice)
         else
-            strategy.entry(id="Long", direction=strategy.long, limit = buyLimitPrice, qty =positionSize, alert_message="Long buy order for {{ticker}} at {{strategy.order.price}}")
-            longTradeTP := buyLimitPrice + TP
-            longTradeSL := buyLimitPrice - SL
-            longBE := buyLimitPrice + TP/2
+            strategy.entry(id="Long", direction=strategy.long, limit = modifiedEntry, qty =positionSize, alert_message="Long buy order for {{ticker}} at {{strategy.order.price}}")
+            longTradeTP := modifiedEntry + TP
+            longTradeSL := modifiedEntry - SL
+            longBE := modifiedEntry + TP/2
 
     // SHORT trade setup
     if newShortTrade and not alreadyTradedShort and noTradesTaken
@@ -435,15 +446,15 @@ if inTradeSession
         shortSignal := true
 
         if syminfo.type == "forex"
-            shortTradeSL := sellLimitPrice + (SL / 100)
-            shortTradeTP := sellLimitPrice - (TP / 100)
-            shortTradeEntry := sellLimitPrice
-            strategy.entry(id="Short", direction=strategy.short, qty=positionSize, limit=sellLimitPrice)
+            shortTradeSL := modifiedEntry + (SL / 100)
+            shortTradeTP := modifiedEntry - (TP / 100)
+            shortTradeEntry := modifiedEntry
+            strategy.entry(id="Short", direction=strategy.short, qty=positionSize, limit=modifiedEntry)
         else
-            strategy.entry(id="Short", direction=strategy.short, limit = sellLimitPrice, qty =positionSize, alert_message="Short sell order for {{ticker}} at {{strategy.order.price}}")
-            shortTradeTP := sellLimitPrice - TP
-            shortTradeSL := sellLimitPrice + SL
-            shortBE := sellLimitPrice - TP/2
+            strategy.entry(id="Short", direction=strategy.short, limit = modifiedEntry, qty =positionSize, alert_message="Short sell order for {{ticker}} at {{strategy.order.price}}")
+            shortTradeTP := modifiedEntry - TP
+            shortTradeSL := modifiedEntry + SL
+            shortBE := modifiedEntry - TP/2
 
     // Handle trade exits
     strategy.exit(id="Long Exit",  from_entry="Long",  limit=longTradeTP, stop=longTradeSL)
@@ -482,8 +493,8 @@ if showTables
     table.cell(variableTracker, 1,4,str.tostring(""))
     table.cell(variableTracker, 0,5,"")
     table.cell(variableTracker, 1,5,str.tostring(""))
-    table.cell(variableTracker, 0,6,"")
-    table.cell(variableTracker, 1,6,str.tostring(""))
+    table.cell(variableTracker, 0,6,"modified Entry")
+    table.cell(variableTracker, 1,6,str.tostring(modifiedEntry))
     table.cell(variableTracker, 0,7,"")
     table.cell(variableTracker, 1,7,str.tostring(""))
     table.cell(variableTracker, 0,8,"$ amount risking")
