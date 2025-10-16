@@ -1,0 +1,527 @@
+//@version=5
+strategy("Supply & Demand Zone Strategy", overlay=true, max_boxes_count=500, max_labels_count=500, dynamic_requests=true)
+
+// ============================================================================
+// INPUT SETTINGS
+// ============================================================================
+
+// Higher Timeframe Settings
+htf = input.timeframe("60", "Higher Timeframe for Zones", tooltip="Select timeframe for supply/demand zones (e.g., 60 for 1 hour)")
+zoneStrength = input.int(3, "Zone Strength (Bars)", minval=1, tooltip="Number of bars to confirm zone strength")
+maxZones = input.int(5, "Max Zones to Display", minval=1, maxval=20)
+
+// Pattern Selection
+useEngulfing = input.bool(true, "Use Engulfing Pattern", group="Patterns")
+useHammer = input.bool(true, "Use Hammer/Shooting Star", group="Patterns")
+usePinBar = input.bool(true, "Use Pin Bar", group="Patterns")
+useMorningStar = input.bool(true, "Use Morning/Evening Star", group="Patterns")
+useInsideBar = input.bool(true, "Use Inside Bar Breakout", group="Patterns")
+
+// Risk Management
+riskReward = input.float(2.0, "Risk:Reward Ratio", minval=0.5, maxval=10, step=0.1, group="Risk Management")
+useAtrSl = input.bool(false, "Use ATR for Stop Loss", group="Risk Management")
+atrMultiplier = input.float(1.5, "ATR Multiplier", minval=0.5, maxval=5, step=0.1, group="Risk Management")
+atrLength = input.int(14, "ATR Length", minval=1, group="Risk Management")
+maxTradesPerZone = input.int(3, "Max Trades Per Zone", minval=1, maxval=10, tooltip="Maximum number of trades to take from the same zone", group="Risk Management")
+stopOnOppositeZone = input.bool(true, "Stop Trading on Opposite Zone Touch", tooltip="Stop taking trades from current zone when price touches an opposite zone", group="Risk Management")
+exitOnOppositePattern = input.bool(true, "Exit on Opposite Pattern", tooltip="Close position when opposite direction pattern forms", group="Risk Management")
+
+// Visual Settings
+demandColor = input.color(color.new(color.green, 85), "Demand Zone Color", group="Visual")
+supplyColor = input.color(color.new(color.red, 85), "Supply Zone Color", group="Visual")
+showAllPatterns = input.bool(true, "Show All Pattern Signals", tooltip="Show labels for all detected patterns, even if trade not taken", group="Visual")
+showRejectionReason = input.bool(true, "Show Rejection Reason", tooltip="Display why a pattern was rejected", group="Visual")
+
+// ============================================================================
+// VARIABLES & ARRAYS
+// ============================================================================
+
+var box[] demandZones = array.new_box()
+var box[] supplyZones = array.new_box()
+var label[] tradeLabels = array.new_label()
+var int[] demandZoneTrades = array.new_int()
+var int[] supplyZoneTrades = array.new_int()
+var bool[] demandZoneExited = array.new_bool()
+var bool[] supplyZoneExited = array.new_bool()
+var int activeZoneIndex = -1
+var bool activeZoneIsSupply = false
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// ATR Calculation
+atrValue = ta.atr(atrLength)
+
+// Detect supply zone (swing high with rejection)
+isSupplyZone(idx) =>
+    if idx < 2
+        false
+    else
+        currentHigh = high[idx]
+        leftHigher = high[idx-1] < currentHigh and high[idx-2] < currentHigh
+        rightHigher = high[idx+1] < currentHigh and (idx+2 > bar_index ? true : high[idx+2] < currentHigh)
+        leftHigher and rightHigher
+
+// Detect demand zone (swing low with rejection)
+isDemandZone(idx) =>
+    if idx < 2
+        false
+    else
+        currentLow = low[idx]
+        leftLower = low[idx-1] > currentLow and low[idx-2] > currentLow
+        rightLower = low[idx+1] > currentLow and (idx+2 > bar_index ? true : low[idx+2] > currentLow)
+        leftLower and rightLower
+
+// ============================================================================
+// CANDLESTICK PATTERN DETECTION
+// ============================================================================
+
+// Bullish Engulfing
+bullishEngulfing() =>
+    close[1] < open[1] and close > open and open <= close[1] and close >= open[1] and close - open > open[1] - close[1]
+
+// Bearish Engulfing
+bearishEngulfing() =>
+    close[1] > open[1] and close < open and open >= close[1] and close <= open[1] and open - close > close[1] - open[1]
+
+// Hammer (bullish)
+isHammer() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(close, open) - low
+    upperWick = high - math.max(close, open)
+    lowerWick > bodySize * 2 and upperWick < bodySize and close > open
+
+// Shooting Star (bearish)
+isShootingStar() =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(close, open)
+    lowerWick = math.min(close, open) - low
+    upperWick > bodySize * 2 and lowerWick < bodySize and close < open
+
+// Pin Bar Bullish
+isPinBarBullish() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(close, open) - low
+    totalRange = high - low
+    lowerWick > totalRange * 0.6 and bodySize < totalRange * 0.3
+
+// Pin Bar Bearish
+isPinBarBearish() =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(close, open)
+    totalRange = high - low
+    upperWick > totalRange * 0.6 and bodySize < totalRange * 0.3
+
+// Morning Star (bullish)
+isMorningStar() =>
+    downCandle = close[2] < open[2]
+    smallBody = math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.3
+    upCandle = close > open and close > (open[2] + close[2]) / 2
+    downCandle and smallBody and upCandle
+
+// Evening Star (bearish)
+isEveningStar() =>
+    upCandle = close[2] > open[2]
+    smallBody = math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.3
+    downCandle = close < open and close < (open[2] + close[2]) / 2
+    upCandle and smallBody and downCandle
+
+// Inside Bar (current bar is completely inside previous bar's range)
+isInsideBar() =>
+    high < high[1] and low > low[1]
+
+// Inside Bar Bullish Breakout (inside bar followed by bullish break above mother bar)
+isInsideBarBullishBreakout() =>
+    wasInsideBar = high[1] < high[2] and low[1] > low[2]
+    bullishBreak = close > high[2] and close > open
+    wasInsideBar and bullishBreak
+
+// Inside Bar Bearish Breakout (inside bar followed by bearish break below mother bar)
+isInsideBarBearishBreakout() =>
+    wasInsideBar = high[1] < high[2] and low[1] > low[2]
+    bearishBreak = close < low[2] and close < open
+    wasInsideBar and bearishBreak
+
+// Detect any bullish pattern
+detectBullishPattern() =>
+    pattern = ""
+    initial = ""
+    if useEngulfing and bullishEngulfing()
+        pattern := "Bullish Engulfing"
+        initial := "BE"
+    else if useHammer and isHammer()
+        pattern := "Hammer"
+        initial := "H"
+    else if usePinBar and isPinBarBullish()
+        pattern := "Bullish Pin Bar"
+        initial := "BPB"
+    else if useMorningStar and isMorningStar()
+        pattern := "Morning Star"
+        initial := "MS"
+    else if useInsideBar and isInsideBarBullishBreakout()
+        pattern := "Inside Bar Bullish"
+        initial := "IBB"
+    [pattern, initial]
+
+// Detect any bearish pattern
+detectBearishPattern() =>
+    pattern = ""
+    initial = ""
+    if useEngulfing and bearishEngulfing()
+        pattern := "Bearish Engulfing"
+        initial := "BE"
+    else if useHammer and isShootingStar()
+        pattern := "Shooting Star"
+        initial := "SS"
+    else if usePinBar and isPinBarBearish()
+        pattern := "Bearish Pin Bar"
+        initial := "BPB"
+    else if useMorningStar and isEveningStar()
+        pattern := "Evening Star"
+        initial := "ES"
+    else if useInsideBar and isInsideBarBearishBreakout()
+        pattern := "Inside Bar Bearish"
+        initial := "IBB"
+    [pattern, initial]
+
+// ============================================================================
+// ZONE CREATION (HTF)
+// ============================================================================
+
+// Get HTF data - fetch all data at once before conditionals
+htfSwingHighSeries = request.security(syminfo.tickerid, htf, ta.pivothigh(high, zoneStrength, zoneStrength), barmerge.gaps_off, barmerge.lookahead_off)
+htfSwingLowSeries = request.security(syminfo.tickerid, htf, ta.pivotlow(low, zoneStrength, zoneStrength), barmerge.gaps_off, barmerge.lookahead_off)
+htfHighSeries = request.security(syminfo.tickerid, htf, high, barmerge.gaps_off, barmerge.lookahead_off)
+htfLowSeries = request.security(syminfo.tickerid, htf, low, barmerge.gaps_off, barmerge.lookahead_off)
+htfPivotLowAtSwing = request.security(syminfo.tickerid, htf, low[zoneStrength], barmerge.gaps_off, barmerge.lookahead_off)
+htfPivotHighAtSwing = request.security(syminfo.tickerid, htf, high[zoneStrength], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Identify HTF swing points and create zones
+var float lastSupplyHigh = na
+var float lastDemandLow = na
+var int lastSupplyBar = 0
+var int lastDemandBar = 0
+
+// Check for HTF swing high (supply zone) - using HTF data only
+htfSwingHigh = htfSwingHighSeries
+if not na(htfSwingHigh)
+    // Calculate zone boundaries (base of the rejection candle to the high)
+    zoneHigh = htfSwingHigh
+    zoneLow = htfPivotLowAtSwing
+    
+    // Only create if doesn't overlap with existing demand zones
+    canCreate = true
+    if array.size(demandZones) > 0
+        for i = 0 to array.size(demandZones) - 1
+            existingZone = array.get(demandZones, i)
+            existingTop = box.get_top(existingZone)
+            existingBottom = box.get_bottom(existingZone)
+            if not (zoneHigh < existingBottom or zoneLow > existingTop)
+                canCreate := false
+                break
+    
+    if canCreate and (na(lastSupplyHigh) or zoneHigh != lastSupplyHigh or (bar_index - lastSupplyBar) > 10)
+        if array.size(supplyZones) >= maxZones
+            oldBox = array.shift(supplyZones)
+            box.delete(oldBox)
+            array.shift(supplyZoneTrades)
+            array.shift(supplyZoneExited)
+        
+        zoneBox = box.new(bar_index - zoneStrength, zoneHigh, bar_index + 100, zoneLow, border_color=supplyColor, bgcolor=supplyColor, border_width=1, extend=extend.right)
+        array.push(supplyZones, zoneBox)
+        array.push(supplyZoneTrades, 0)
+        array.push(supplyZoneExited, false)
+        lastSupplyHigh := zoneHigh
+        lastSupplyBar := bar_index
+
+// Check for HTF swing low (demand zone) - using HTF data only
+htfSwingLow = htfSwingLowSeries
+if not na(htfSwingLow)
+    // Calculate zone boundaries (low to the top of the rejection candle)
+    zoneLow = htfSwingLow
+    zoneHigh = htfPivotHighAtSwing
+    
+    // Only create if doesn't overlap with existing supply zones
+    canCreate = true
+    if array.size(supplyZones) > 0
+        for i = 0 to array.size(supplyZones) - 1
+            existingZone = array.get(supplyZones, i)
+            existingTop = box.get_top(existingZone)
+            existingBottom = box.get_bottom(existingZone)
+            if not (zoneHigh < existingBottom or zoneLow > existingTop)
+                canCreate := false
+                break
+    
+    if canCreate and (na(lastDemandLow) or zoneLow != lastDemandLow or (bar_index - lastDemandBar) > 10)
+        if array.size(demandZones) >= maxZones
+            oldBox = array.shift(demandZones)
+            box.delete(oldBox)
+            array.shift(demandZoneTrades)
+            array.shift(demandZoneExited)
+        
+        zoneBox = box.new(bar_index - zoneStrength, zoneHigh, bar_index + 100, zoneLow, border_color=demandColor, bgcolor=demandColor, border_width=1, extend=extend.right)
+        array.push(demandZones, zoneBox)
+        array.push(demandZoneTrades, 0)
+        array.push(demandZoneExited, false)
+        lastDemandLow := zoneLow
+        lastDemandBar := bar_index
+
+// Remove zones that have been breached (invalidated)
+// Supply zones are invalidated when price closes ABOVE the zone HIGH (completely through it)
+if array.size(supplyZones) > 0
+    for i = array.size(supplyZones) - 1 to 0
+        zoneBox = array.get(supplyZones, i)
+        zoneTop = box.get_top(zoneBox)
+        if close > zoneTop
+            box.delete(zoneBox)
+            array.remove(supplyZones, i)
+            array.remove(supplyZoneTrades, i)
+            array.remove(supplyZoneExited, i)
+            if activeZoneIndex == i and activeZoneIsSupply
+                activeZoneIndex := -1
+
+// Demand zones are invalidated when price closes BELOW the zone LOW (completely through it)
+if array.size(demandZones) > 0
+    for i = array.size(demandZones) - 1 to 0
+        zoneBox = array.get(demandZones, i)
+        zoneBottom = box.get_bottom(zoneBox)
+        if close < zoneBottom
+            box.delete(zoneBox)
+            array.remove(demandZones, i)
+            array.remove(demandZoneTrades, i)
+            array.remove(demandZoneExited, i)
+            if activeZoneIndex == i and not activeZoneIsSupply
+                activeZoneIndex := -1
+
+// ============================================================================
+// TRADE LOGIC
+// ============================================================================
+
+// Check if price is in a zone and identify which one
+inDemandZone = false
+inSupplyZone = false
+currentDemandZoneIndex = -1
+currentSupplyZoneIndex = -1
+
+demandSize = array.size(demandZones)
+if demandSize > 0
+    for i = 0 to demandSize - 1
+        zoneBox = array.get(demandZones, i)
+        zoneTop = box.get_top(zoneBox)
+        zoneBottom = box.get_bottom(zoneBox)
+        if low <= zoneTop and high >= zoneBottom
+            inDemandZone := true
+            currentDemandZoneIndex := i
+            break
+
+supplySize = array.size(supplyZones)
+if supplySize > 0
+    for i = 0 to supplySize - 1
+        zoneBox = array.get(supplyZones, i)
+        zoneTop = box.get_top(zoneBox)
+        zoneBottom = box.get_bottom(zoneBox)
+        if low <= zoneTop and high >= zoneBottom
+            inSupplyZone := true
+            currentSupplyZoneIndex := i
+            break
+
+// Track zone exits to increment trade counter
+if demandSize > 0
+    for i = 0 to demandSize - 1
+        zoneBox = array.get(demandZones, i)
+        zoneTop = box.get_top(zoneBox)
+        wasInZone = not array.get(demandZoneExited, i)
+        nowOutOfZone = close > zoneTop
+        if wasInZone and nowOutOfZone
+            array.set(demandZoneExited, i, true)
+
+if supplySize > 0
+    for i = 0 to supplySize - 1
+        zoneBox = array.get(supplyZones, i)
+        zoneBottom = box.get_bottom(zoneBox)
+        wasInZone = not array.get(supplyZoneExited, i)
+        nowOutOfZone = close < zoneBottom
+        if wasInZone and nowOutOfZone
+            array.set(supplyZoneExited, i, true)
+
+// Reset exit flag when price re-enters zone
+if inDemandZone and currentDemandZoneIndex >= 0
+    array.set(demandZoneExited, currentDemandZoneIndex, false)
+
+if inSupplyZone and currentSupplyZoneIndex >= 0
+    array.set(supplyZoneExited, currentSupplyZoneIndex, false)
+
+// Check if we should stop trading from current active zone
+stopTradingFromZone = false
+if stopOnOppositeZone
+    if activeZoneIsSupply and inDemandZone
+        stopTradingFromZone := true
+        activeZoneIndex := -1
+    if not activeZoneIsSupply and inSupplyZone
+        stopTradingFromZone := true
+        activeZoneIndex := -1
+
+// Detect patterns and place trades
+[bullPattern, bullInitial] = detectBullishPattern()
+[bearPattern, bearInitial] = detectBearishPattern()
+
+// Exit on opposite pattern if enabled
+if exitOnOppositePattern
+    if strategy.position_size > 0 and bearPattern != ""
+        strategy.close("Long", comment="Opposite Pattern: " + bearPattern)
+        if showAllPatterns
+            lbl = label.new(bar_index, high, bearInitial + " 🚪\nExit Long", color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip="Exit Long: " + bearPattern)
+            array.push(tradeLabels, lbl)
+            if array.size(tradeLabels) > 100
+                oldLabel = array.shift(tradeLabels)
+                label.delete(oldLabel)
+    
+    if strategy.position_size < 0 and bullPattern != ""
+        strategy.close("Short", comment="Opposite Pattern: " + bullPattern)
+        if showAllPatterns
+            lbl = label.new(bar_index, low, bullInitial + " 🚪\nExit Short", color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_up, size=size.small, tooltip="Exit Short: " + bullPattern)
+            array.push(tradeLabels, lbl)
+            if array.size(tradeLabels) > 100
+                oldLabel = array.shift(tradeLabels)
+                label.delete(oldLabel)
+
+// Long Entry - ONLY from demand zones
+if inDemandZone and currentDemandZoneIndex >= 0 and bullPattern != ""
+    // Check trade count and exit status
+    tradeCount = array.get(demandZoneTrades, currentDemandZoneIndex)
+    hasExited = array.get(demandZoneExited, currentDemandZoneIndex)
+    
+    // Determine rejection reasons
+    rejectionReason = ""
+    canTrade = true
+    
+    if strategy.position_size != 0
+        canTrade := false
+        rejectionReason := "In Position"
+    else if stopTradingFromZone
+        canTrade := false
+        rejectionReason := "Opposite Zone"
+    else if hasExited and tradeCount >= maxTradesPerZone
+        canTrade := false
+        rejectionReason := "Max Trades (" + str.tostring(tradeCount) + ")"
+    else if activeZoneIsSupply
+        canTrade := false
+        rejectionReason := "Active Supply Zone"
+    
+    if canTrade
+        stopLoss = useAtrSl ? close - (atrValue * atrMultiplier) : low
+        stopDistance = close - stopLoss
+        takeProfit = close + (stopDistance * riskReward)
+        
+        strategy.entry("Long", strategy.long)
+        strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+        
+        // Only increment trade count if we've exited the zone before
+        if hasExited
+            array.set(demandZoneTrades, currentDemandZoneIndex, tradeCount + 1)
+        
+        activeZoneIndex := currentDemandZoneIndex
+        activeZoneIsSupply := false
+        
+        displayCount = hasExited ? str.tostring(tradeCount + 1) + "/" + str.tostring(maxTradesPerZone) : "In Zone"
+        tradeLabel = bullInitial + " ⬆\n" + displayCount
+        lbl = label.new(bar_index, low, tradeLabel, color=color.new(color.green, 20), textcolor=color.white, style=label.style_label_up, size=size.small, tooltip=bullPattern)
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+    else if showAllPatterns
+        // Show rejected pattern
+        labelText = bullInitial + " ✗"
+        if showRejectionReason and rejectionReason != ""
+            labelText := labelText + "\n" + rejectionReason
+        lbl = label.new(bar_index, low, labelText, color=color.new(color.gray, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip=bullPattern + " (Rejected)")
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+
+// Short Entry - ONLY from supply zones
+if inSupplyZone and currentSupplyZoneIndex >= 0 and bearPattern != ""
+    // Check trade count and exit status
+    tradeCount = array.get(supplyZoneTrades, currentSupplyZoneIndex)
+    hasExited = array.get(supplyZoneExited, currentSupplyZoneIndex)
+    
+    // Determine rejection reasons
+    rejectionReason = ""
+    canTrade = true
+    
+    if strategy.position_size != 0
+        canTrade := false
+        rejectionReason := "In Position"
+    else if stopTradingFromZone
+        canTrade := false
+        rejectionReason := "Opposite Zone"
+    else if hasExited and tradeCount >= maxTradesPerZone
+        canTrade := false
+        rejectionReason := "Max Trades (" + str.tostring(tradeCount) + ")"
+    else if not activeZoneIsSupply and activeZoneIndex >= 0
+        canTrade := false
+        rejectionReason := "Active Demand Zone"
+    
+    if canTrade
+        stopLoss = useAtrSl ? close + (atrValue * atrMultiplier) : high
+        stopDistance = stopLoss - close
+        takeProfit = close - (stopDistance * riskReward)
+        
+        strategy.entry("Short", strategy.short)
+        strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+        
+        // Only increment trade count if we've exited the zone before
+        if hasExited
+            array.set(supplyZoneTrades, currentSupplyZoneIndex, tradeCount + 1)
+        
+        activeZoneIndex := currentSupplyZoneIndex
+        activeZoneIsSupply := true
+        
+        displayCount = hasExited ? str.tostring(tradeCount + 1) + "/" + str.tostring(maxTradesPerZone) : "In Zone"
+        tradeLabel = bearInitial + " ⬇\n" + displayCount
+        lbl = label.new(bar_index, high, tradeLabel, color=color.new(color.red, 20), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip=bearPattern)
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+    else if showAllPatterns
+        // Show rejected pattern
+        labelText = bearInitial + " ✗"
+        if showRejectionReason and rejectionReason != ""
+            labelText := labelText + "\n" + rejectionReason
+        lbl = label.new(bar_index, high, labelText, color=color.new(color.gray, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip=bearPattern + " (Rejected)")
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+
+// Show patterns outside zones if enabled
+if showAllPatterns
+    if bullPattern != "" and not inDemandZone
+        lbl = label.new(bar_index, low, bullInitial + " ✗\nNo Zone", color=color.new(color.gray, 70), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip=bullPattern + " (No Demand Zone)")
+        array.push(tradeLabels, lbl)
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+    
+    if bearPattern != "" and not inSupplyZone
+        lbl = label.new(bar_index, high, bearInitial + " ✗\nNo Zone", color=color.new(color.gray, 70), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip=bearPattern + " (No Supply Zone)")
+        array.push(tradeLabels, lbl)
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+// Plot pattern detection for debugging
+plotshape(bullPattern != "", "Bullish Pattern", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.tiny)
+plotshape(bearPattern != "", "Bearish Pattern", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.tiny)

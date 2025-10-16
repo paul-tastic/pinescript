@@ -1,0 +1,1286 @@
+//@version=5
+// © mach2fx
+strategy("10-13 Enhanced S&D Strategy", overlay=true, max_boxes_count=500, max_labels_count=500, dynamic_requests=true)
+
+// ============================================================================
+// INPUT SETTINGS
+// ============================================================================
+
+// Higher Timeframe Settings
+htf = input.timeframe("60", "Higher Timeframe for Zones", tooltip="Select timeframe for supply/demand zones")
+zoneStrength = input.int(3, "Zone Strength (Bars)", minval=1)
+maxZones = input.int(5, "Max Zones to Display", minval=1, maxval=20)
+
+// === EXTENDED ZONE SETTINGS ===
+useExtendedZones = input.bool(true, "Use Extended Zones", group="Extended Zones", tooltip="Enable extended zones after original zone is entered")
+extendedZoneMultiplier = input.float(1.5, "Extended Zone Multiplier", minval=1.0, maxval=5.0, step=0.1, group="Extended Zones", tooltip="Multiplier for extended zone size")
+maxExtendedTrades = input.int(2, "Max Trades in Extended Zone", minval=1, maxval=10, group="Extended Zones", tooltip="Maximum number of trades allowed in extended zone")
+
+// === POST-EXIT TRADING (Alternative to Extended Zones) ===
+usePostExitTrading = input.bool(false, "Use Post-Exit Trading", group="Post-Exit Trading", tooltip="Allow trades after price exits original zone (alternative to extended zones)")
+maxPostExitTrades = input.int(2, "Max Post-Exit Trades", minval=1, maxval=10, group="Post-Exit Trading", tooltip="Maximum trades after exiting original zone")
+postExitRequireReentry = input.bool(true, "Require Re-entry to Zone", group="Post-Exit Trading", tooltip="Price must re-enter the zone area for post-exit trades")
+
+// Pattern Selection
+useEngulfing = input.bool(true, "Use Engulfing Pattern", group="Patterns")
+useHammer = input.bool(true, "Use Hammer/Shooting Star", group="Patterns")
+usePinBar = input.bool(true, "Use Pin Bar", group="Patterns")
+useMorningStar = input.bool(true, "Use Morning/Evening Star", group="Patterns")
+useInsideBar = input.bool(true, "Use Inside Bar Breakout", group="Patterns")
+
+// === ENGULFING ENHANCEMENTS ===
+engulfingMinBodyRatio = input.float(1.5, "Engulfing: Min Body Ratio", minval=1.0, maxval=5.0, step=0.1, group="Engulfing Filter")
+engulfingRequireVolume = input.bool(true, "Engulfing: Require Volume", group="Engulfing Filter")
+engulfingVolumeMultiplier = input.float(1.2, "Engulfing: Volume Multiplier", minval=1.0, maxval=3.0, step=0.1, group="Engulfing Filter")
+engulfingCheckTrend = input.bool(true, "Engulfing: Check Trend", group="Engulfing Filter")
+engulfingTrendLength = input.int(10, "Engulfing: Trend Length", minval=5, maxval=50, group="Engulfing Filter")
+engulfingRequireClose = input.bool(true, "Engulfing: Strong Close", group="Engulfing Filter")
+engulfingMaxWickRatio = input.float(0.4, "Engulfing: Max Wick Ratio", minval=0.1, maxval=1.0, step=0.05, group="Engulfing Filter")
+
+// === HAMMER/SHOOTING STAR ENHANCEMENTS ===
+hammerMinWickRatio = input.float(2.5, "Hammer: Min Wick/Body Ratio", minval=2.0, maxval=5.0, step=0.1, group="Hammer Filter")
+hammerRequireVolume = input.bool(true, "Hammer: Require Volume", group="Hammer Filter")
+hammerCheckPriorTrend = input.bool(true, "Hammer: Check Prior Trend", group="Hammer Filter")
+hammerMaxUpperWick = input.float(0.3, "Hammer: Max Upper Wick", minval=0.1, maxval=0.5, step=0.05, group="Hammer Filter")
+
+// === PIN BAR ENHANCEMENTS ===
+pinBarMinWickRatio = input.float(0.65, "Pin Bar: Min Wick Ratio", minval=0.5, maxval=0.8, step=0.05, group="Pin Bar Filter")
+pinBarMaxBodyRatio = input.float(0.25, "Pin Bar: Max Body Ratio", minval=0.1, maxval=0.4, step=0.05, group="Pin Bar Filter")
+pinBarRequireVolume = input.bool(true, "Pin Bar: Require Volume", group="Pin Bar Filter")
+pinBarCheckTrend = input.bool(true, "Pin Bar: Check Trend", group="Pin Bar Filter")
+
+// === MORNING/EVENING STAR ENHANCEMENTS ===
+starRequireGap = input.bool(true, "Star: Require Gap", group="Star Filter")
+starMinGapPercent = input.float(0.2, "Star: Min Gap %", minval=0.1, maxval=1.0, step=0.1, group="Star Filter")
+starMaxMiddleBody = input.float(0.25, "Star: Max Middle Body", minval=0.1, maxval=0.5, step=0.05, group="Star Filter")
+starRequireVolume = input.bool(true, "Star: Require Volume", group="Star Filter")
+
+// === INSIDE BAR ENHANCEMENTS ===
+insideBarMinMotherSize = input.float(1.5, "Inside Bar: Min Mother Size", minval=1.0, maxval=3.0, step=0.1, group="Inside Bar Filter")
+insideBarRequireVolume = input.bool(true, "Inside Bar: Breakout Volume", group="Inside Bar Filter")
+insideBarCheckTrend = input.bool(true, "Inside Bar: Check Trend", group="Inside Bar Filter")
+
+// === ZONE POSITION FILTERS ===
+useZonePositionFilter = input.bool(true, "Filter by Zone Position", group="Zone Filters")
+zoneOptimalPercent = input.float(0.4, "Optimal Zone % (from edge)", minval=0.2, maxval=0.6, step=0.05, group="Zone Filters")
+useMAConfluence = input.bool(true, "Require MA Confluence", group="Zone Filters")
+useRSIFilter = input.bool(true, "Use RSI Filter", group="Zone Filters")
+rsiOversoldLevel = input.int(40, "RSI Oversold Level", minval=20, maxval=50, group="Zone Filters")
+rsiOverboughtLevel = input.int(60, "RSI Overbought Level", minval=50, maxval=80, group="Zone Filters")
+
+// Risk Management
+riskReward = input.float(2.0, "Risk:Reward Ratio", minval=0.5, maxval=10, step=0.1, group="Risk Management")
+useAtrSl = input.bool(false, "Use ATR for Stop Loss", group="Risk Management")
+atrMultiplier = input.float(1.5, "ATR Multiplier", minval=0.5, maxval=5, step=0.1, group="Risk Management")
+atrLength = input.int(14, "ATR Length", minval=1, group="Risk Management")
+maxTradesPerZone = input.int(3, "Max Trades Per Zone", minval=1, maxval=10, group="Risk Management")
+stopOnOppositeZone = input.bool(true, "Stop on Opposite Zone", group="Risk Management")
+exitOnOppositePattern = input.bool(true, "Exit on Opposite Pattern", group="Risk Management")
+riskPerTrade = input.float(500, "Risk Per Trade ($)", minval=10, maxval=5000, step=10, group="Risk Management", tooltip="Maximum USD risk per trade")
+maxContractsPerTrade = input.int(50, "Max Contracts Per Trade", minval=1, maxval=100, group="Risk Management", tooltip="Maximum number of contracts to trade")
+
+// === NO TRADE ZONES (New York Time) ===
+useNoTradeZone1 = input.bool(true, "Enable No-Trade Zone 1", group="No-Trade Times")
+noTradeStart1 = input.int(1655, "Zone 1 Start (HHMM)", minval=0, maxval=2359, group="No-Trade Times", tooltip="New York time in HHMM format")
+noTradeEnd1 = input.int(1800, "Zone 1 End (HHMM)", minval=0, maxval=2359, group="No-Trade Times")
+
+useNoTradeZone2 = input.bool(true, "Enable No-Trade Zone 2", group="No-Trade Times")
+noTradeStart2 = input.int(0000, "Zone 2 Start (HHMM)", minval=0, maxval=2359, group="No-Trade Times")
+noTradeEnd2 = input.int(0930, "Zone 2 End (HHMM)", minval=0, maxval=2359, group="No-Trade Times")
+
+useNoTradeZone3 = input.bool(true, "Enable No-Trade Zone 3", group="No-Trade Times")
+noTradeStart3 = input.int(1800, "Zone 3 Start (HHMM)", minval=0, maxval=2359, group="No-Trade Times")
+noTradeEnd3 = input.int(2359, "Zone 3 End (HHMM)", minval=0, maxval=2359, group="No-Trade Times")
+
+closePositionInNoTrade = input.bool(true, "Close Positions in No-Trade Times", group="No-Trade Times", tooltip="Automatically close open positions when no-trade time starts")
+
+// Visual Settings
+demandColor = input.color(color.new(color.green, 85), "Demand Zone Color", group="Visual")
+supplyColor = input.color(color.new(color.red, 85), "Supply Zone Color", group="Visual")
+extendedDemandColor = input.color(color.new(color.blue, 85), "Extended Demand Color", group="Visual")
+extendedSupplyColor = input.color(color.new(color.orange, 85), "Extended Supply Color", group="Visual")
+showAllPatterns = input.bool(true, "Show All Pattern Signals", group="Visual")
+showRejectionReason = input.bool(true, "Show Rejection Reason", group="Visual")
+displayStatsTable = input.bool(true, "Show Statistics Table", group="Visual")
+
+// ============================================================================
+// VARIABLES & ARRAYS
+// ============================================================================
+
+var box[] demandZones = array.new_box()
+var box[] supplyZones = array.new_box()
+var label[] tradeLabels = array.new_label()
+var int[] demandZoneTrades = array.new_int()
+var int[] supplyZoneTrades = array.new_int()
+var bool[] demandZoneExited = array.new_bool()
+var bool[] supplyZoneExited = array.new_bool()
+var bool[] demandZoneEntered = array.new_bool()
+var bool[] supplyZoneEntered = array.new_bool()
+var int[] demandZoneCreationTime = array.new_int()
+var int[] supplyZoneCreationTime = array.new_int()
+var int activeZoneIndex = -1
+var bool activeZoneIsSupply = false
+var int activeZoneCreationTime = 0
+
+// Extended zone tracking - only ONE active extended zone at a time
+var box activeExtendedZone = na
+var int activeExtendedZoneTrades = 0
+var bool activeExtendedIsSupply = false
+var int activeExtendedParentIndex = -1
+
+// Post-exit trading tracking
+var int[] demandPostExitTrades = array.new_int()
+var int[] supplyPostExitTrades = array.new_int()
+var bool[] demandAllowPostExit = array.new_bool()
+var bool[] supplyAllowPostExit = array.new_bool()
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+atrValue = ta.atr(atrLength)
+rsiValue = ta.rsi(close, 14)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+
+// HTF MA Direction
+htfEma20 = request.security(syminfo.tickerid, htf, ta.ema(close, 20), barmerge.gaps_off, barmerge.lookahead_off)
+htfEma20Previous = request.security(syminfo.tickerid, htf, ta.ema(close[1], 20), barmerge.gaps_off, barmerge.lookahead_off)
+htfMaDirection = htfEma20 > htfEma20Previous ? "UP" : htfEma20 < htfEma20Previous ? "DOWN" : "FLAT"
+
+getCurrentNYTime() =>
+    currentHour = hour(time, "America/New_York")
+    currentMinute = minute(time, "America/New_York")
+    currentHour * 100 + currentMinute
+
+isInNoTradeZone(startTime, endTime) =>
+    currentTime = getCurrentNYTime()
+    if startTime > endTime
+        currentTime >= startTime or currentTime <= endTime
+    else
+        currentTime >= startTime and currentTime <= endTime
+
+isNoTradeTime() =>
+    inZone1 = useNoTradeZone1 and isInNoTradeZone(noTradeStart1, noTradeEnd1)
+    inZone2 = useNoTradeZone2 and isInNoTradeZone(noTradeStart2, noTradeEnd2)
+    inZone3 = useNoTradeZone3 and isInNoTradeZone(noTradeStart3, noTradeEnd3)
+    inZone1 or inZone2 or inZone3
+
+calculatePositionSize(stopLossPrice, entryPrice, isBullish) =>
+    stopDist = math.abs(entryPrice - stopLossPrice)
+    
+    contractMultiplier = 50.0
+    if str.contains(syminfo.ticker, "MES")
+        contractMultiplier := 5.0
+    else if str.contains(syminfo.ticker, "MNQ")
+        contractMultiplier := 2.0
+    else if str.contains(syminfo.ticker, "MYM")
+        contractMultiplier := 0.5
+    else if str.contains(syminfo.ticker, "M2K")
+        contractMultiplier := 5.0
+    else if str.contains(syminfo.ticker, "YM")
+        contractMultiplier := 5.0
+    else if str.contains(syminfo.ticker, "ES") or str.contains(syminfo.ticker, "NQ") or str.contains(syminfo.ticker, "RTY")
+        contractMultiplier := 50.0
+    
+    riskPerContract = stopDist * contractMultiplier
+    numContracts = 0
+    if riskPerContract > 0
+        numContracts := math.floor(riskPerTrade / riskPerContract)
+    else
+        numContracts := 1
+    numContracts := math.max(1, math.min(numContracts, maxContractsPerTrade))
+    numContracts
+
+var bool wasInNoTradeZone = false
+currentlyInNoTradeZone = isNoTradeTime()
+
+if closePositionInNoTrade and not wasInNoTradeZone and currentlyInNoTradeZone
+    if strategy.position_size > 0
+        strategy.close("Long", comment="No-Trade Zone")
+    if strategy.position_size < 0
+        strategy.close("Short", comment="No-Trade Zone")
+
+wasInNoTradeZone := currentlyInNoTradeZone
+
+isBullishTrend(length) =>
+    ta.sma(close, length) > ta.sma(close, length)[5] and close > ema20
+
+isBearishTrend(length) =>
+    ta.sma(close, length) < ta.sma(close, length)[5] and close < ema20
+
+isAtOptimalZonePosition(zoneTop, zoneBottom, isSupply) =>
+    if not useZonePositionFilter
+        true
+    else
+        zoneRange = zoneTop - zoneBottom
+        if isSupply
+            distanceFromTop = zoneTop - close
+            distanceFromTop / zoneRange <= zoneOptimalPercent
+        else
+            distanceFromBottom = close - zoneBottom
+            distanceFromBottom / zoneRange <= zoneOptimalPercent
+
+hasMAConfluence(isBullish) =>
+    if not useMAConfluence
+        true
+    else if isBullish
+        close > ema20 or (low <= ema20 and close > ema20) or (low <= ema50 and close > ema50)
+    else
+        close < ema20 or (high >= ema20 and close < ema20) or (high >= ema50 and close < ema50)
+
+hasRSIConfluence(isBullish) =>
+    if not useRSIFilter
+        true
+    else if isBullish
+        rsiValue < rsiOverboughtLevel and rsiValue > 25
+    else
+        rsiValue > rsiOversoldLevel and rsiValue < 75
+
+// ============================================================================
+// ENHANCED PATTERN DETECTION
+// ============================================================================
+
+bullishEngulfing() =>
+    priorBearish = close[1] < open[1]
+    currentBullish = close > open
+    engulfsBody = open <= close[1] and close >= open[1]
+    
+    if not (priorBearish and currentBullish and engulfsBody)
+        false
+    else
+        priorBody = open[1] - close[1]
+        currentBody = close - open
+        bodyRatio = currentBody / priorBody
+        bodyRatioOk = bodyRatio >= engulfingMinBodyRatio
+        
+        volumeOk = true
+        if engulfingRequireVolume
+            avgVolume = ta.sma(volume, 20)
+            volumeOk := volume > volume[1] * engulfingVolumeMultiplier and volume > avgVolume
+        
+        trendOk = true
+        if engulfingCheckTrend
+            trendOk := isBearishTrend(engulfingTrendLength) or low < ta.lowest(low, engulfingTrendLength)[1]
+        
+        closeOk = true
+        if engulfingRequireClose
+            candleRange = high - low
+            closePosition = (close - low) / candleRange
+            closeOk := closePosition >= 0.70
+        
+        wickOk = true
+        upperWick = high - close
+        lowerWick = open - low
+        maxWick = math.max(upperWick, lowerWick)
+        wickOk := maxWick / currentBody <= engulfingMaxWickRatio
+        
+        bodyRatioOk and volumeOk and trendOk and closeOk and wickOk
+
+bearishEngulfing() =>
+    priorBullish = close[1] > open[1]
+    currentBearish = close < open
+    engulfsBody = open >= close[1] and close <= open[1]
+    
+    if not (priorBullish and currentBearish and engulfsBody)
+        false
+    else
+        priorBody = close[1] - open[1]
+        currentBody = open - close
+        bodyRatio = currentBody / priorBody
+        bodyRatioOk = bodyRatio >= engulfingMinBodyRatio
+        
+        volumeOk = true
+        if engulfingRequireVolume
+            avgVolume = ta.sma(volume, 20)
+            volumeOk := volume > volume[1] * engulfingVolumeMultiplier and volume > avgVolume
+        
+        trendOk = true
+        if engulfingCheckTrend
+            trendOk := isBullishTrend(engulfingTrendLength) or high > ta.highest(high, engulfingTrendLength)[1]
+        
+        closeOk = true
+        if engulfingRequireClose
+            candleRange = high - low
+            closePosition = (close - low) / candleRange
+            closeOk := closePosition <= 0.30
+        
+        wickOk = true
+        upperWick = high - open
+        lowerWick = close - low
+        maxWick = math.max(upperWick, lowerWick)
+        wickOk := maxWick / currentBody <= engulfingMaxWickRatio
+        
+        bodyRatioOk and volumeOk and trendOk and closeOk and wickOk
+
+isHammer() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(close, open) - low
+    upperWick = high - math.max(close, open)
+    
+    basicStructure = lowerWick > bodySize * hammerMinWickRatio and close > open
+    upperWickOk = upperWick < bodySize * hammerMaxUpperWick
+    
+    if not (basicStructure and upperWickOk)
+        false
+    else
+        volumeOk = true
+        if hammerRequireVolume
+            volumeOk := volume > ta.sma(volume, 20)
+        
+        trendOk = true
+        if hammerCheckPriorTrend
+            trendOk := close[1] < close[2] and close[2] < close[3]
+        
+        volumeOk and trendOk
+
+isShootingStar() =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(close, open)
+    lowerWick = math.min(close, open) - low
+    
+    basicStructure = upperWick > bodySize * hammerMinWickRatio and close < open
+    lowerWickOk = lowerWick < bodySize * hammerMaxUpperWick
+    
+    if not (basicStructure and lowerWickOk)
+        false
+    else
+        volumeOk = true
+        if hammerRequireVolume
+            volumeOk := volume > ta.sma(volume, 20)
+        
+        trendOk = true
+        if hammerCheckPriorTrend
+            trendOk := close[1] > close[2] and close[2] > close[3]
+        
+        volumeOk and trendOk
+
+isPinBarBullish() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(close, open) - low
+    totalRange = high - low
+    
+    wickRatioOk = lowerWick > totalRange * pinBarMinWickRatio
+    bodyRatioOk = bodySize < totalRange * pinBarMaxBodyRatio
+    
+    if not (wickRatioOk and bodyRatioOk)
+        false
+    else
+        volumeOk = true
+        if pinBarRequireVolume
+            volumeOk := volume > ta.sma(volume, 20) * 0.8
+        
+        trendOk = true
+        if pinBarCheckTrend
+            trendOk := isBearishTrend(10) or low < ta.lowest(low, 5)[1]
+        
+        volumeOk and trendOk
+
+isPinBarBearish() =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(close, open)
+    totalRange = high - low
+    
+    wickRatioOk = upperWick > totalRange * pinBarMinWickRatio
+    bodyRatioOk = bodySize < totalRange * pinBarMaxBodyRatio
+    
+    if not (wickRatioOk and bodyRatioOk)
+        false
+    else
+        volumeOk = true
+        if pinBarRequireVolume
+            volumeOk := volume > ta.sma(volume, 20) * 0.8
+        
+        trendOk = true
+        if pinBarCheckTrend
+            trendOk := isBullishTrend(10) or high > ta.highest(high, 5)[1]
+        
+        volumeOk and trendOk
+
+isMorningStar() =>
+    downCandle = close[2] < open[2]
+    middleBody = math.abs(close[1] - open[1])
+    firstBody = math.abs(close[2] - open[2])
+    smallBody = middleBody < firstBody * starMaxMiddleBody
+    upCandle = close > open and close > (open[2] + close[2]) / 2
+    
+    if not (downCandle and smallBody and upCandle)
+        false
+    else
+        gapOk = true
+        if starRequireGap
+            gap1 = math.max(open[1], close[1]) < close[2]
+            gap2 = open > math.max(open[1], close[1])
+            gapOk := gap1 or gap2
+        
+        volumeOk = true
+        if starRequireVolume
+            volumeOk := volume > ta.sma(volume, 20)
+        
+        gapOk and volumeOk
+
+isEveningStar() =>
+    upCandle = close[2] > open[2]
+    middleBody = math.abs(close[1] - open[1])
+    firstBody = math.abs(close[2] - open[2])
+    smallBody = middleBody < firstBody * starMaxMiddleBody
+    downCandle = close < open and close < (open[2] + close[2]) / 2
+    
+    if not (upCandle and smallBody and downCandle)
+        false
+    else
+        gapOk = true
+        if starRequireGap
+            gap1 = math.min(open[1], close[1]) > close[2]
+            gap2 = open < math.min(open[1], close[1])
+            gapOk := gap1 or gap2
+        
+        volumeOk = true
+        if starRequireVolume
+            volumeOk := volume > ta.sma(volume, 20)
+        
+        gapOk and volumeOk
+
+isInsideBarBullishBreakout() =>
+    wasInsideBar = high[1] < high[2] and low[1] > low[2]
+    motherRange = high[2] - low[2]
+    motherBody = math.abs(close[2] - open[2])
+    motherSizeOk = motherRange >= atrValue * insideBarMinMotherSize
+    bullishBreak = close > high[2] and close > open
+    
+    if not (wasInsideBar and motherSizeOk and bullishBreak)
+        false
+    else
+        volumeOk = true
+        if insideBarRequireVolume
+            volumeOk := volume > math.max(volume[1], volume[2])
+        
+        trendOk = true
+        if insideBarCheckTrend
+            trendOk := isBullishTrend(10) or close[3] > close[4]
+        
+        volumeOk and trendOk
+
+isInsideBarBearishBreakout() =>
+    wasInsideBar = high[1] < high[2] and low[1] > low[2]
+    motherRange = high[2] - low[2]
+    motherSizeOk = motherRange >= atrValue * insideBarMinMotherSize
+    bearishBreak = close < low[2] and close < open
+    
+    if not (wasInsideBar and motherSizeOk and bearishBreak)
+        false
+    else
+        volumeOk = true
+        if insideBarRequireVolume
+            volumeOk := volume > math.max(volume[1], volume[2])
+        
+        trendOk = true
+        if insideBarCheckTrend
+            trendOk := isBearishTrend(10) or close[3] < close[4]
+        
+        volumeOk and trendOk
+
+detectBullishPattern() =>
+    pattern = ""
+    initial = ""
+    if useEngulfing and bullishEngulfing()
+        pattern := "Bullish Engulfing"
+        initial := "BE"
+    else if useHammer and isHammer()
+        pattern := "Hammer"
+        initial := "H"
+    else if usePinBar and isPinBarBullish()
+        pattern := "Bullish Pin Bar"
+        initial := "BPB"
+    else if useMorningStar and isMorningStar()
+        pattern := "Morning Star"
+        initial := "MS"
+    else if useInsideBar and isInsideBarBullishBreakout()
+        pattern := "Inside Bar Bullish"
+        initial := "IBB"
+    [pattern, initial]
+
+detectBearishPattern() =>
+    pattern = ""
+    initial = ""
+    if useEngulfing and bearishEngulfing()
+        pattern := "Bearish Engulfing"
+        initial := "BE"
+    else if useHammer and isShootingStar()
+        pattern := "Shooting Star"
+        initial := "SS"
+    else if usePinBar and isPinBarBearish()
+        pattern := "Bearish Pin Bar"
+        initial := "BPB"
+    else if useMorningStar and isEveningStar()
+        pattern := "Evening Star"
+        initial := "ES"
+    else if useInsideBar and isInsideBarBearishBreakout()
+        pattern := "Inside Bar Bearish"
+        initial := "IBB"
+    [pattern, initial]
+
+// ============================================================================
+// ZONE CREATION (HTF)
+// ============================================================================
+
+htfSwingHighSeries = request.security(syminfo.tickerid, htf, ta.pivothigh(high, zoneStrength, zoneStrength), barmerge.gaps_off, barmerge.lookahead_off)
+htfSwingLowSeries = request.security(syminfo.tickerid, htf, ta.pivotlow(low, zoneStrength, zoneStrength), barmerge.gaps_off, barmerge.lookahead_off)
+htfPivotLowAtSwing = request.security(syminfo.tickerid, htf, low[zoneStrength], barmerge.gaps_off, barmerge.lookahead_off)
+htfPivotHighAtSwing = request.security(syminfo.tickerid, htf, high[zoneStrength], barmerge.gaps_off, barmerge.lookahead_off)
+
+var float lastSupplyHigh = na
+var float lastDemandLow = na
+var int lastSupplyBar = 0
+var int lastDemandBar = 0
+
+htfSwingHigh = htfSwingHighSeries
+if not na(htfSwingHigh)
+    zoneHigh = htfSwingHigh
+    zoneLow = htfPivotLowAtSwing
+    
+    canCreate = true
+    if array.size(demandZones) > 0
+        for i = 0 to array.size(demandZones) - 1
+            existingZone = array.get(demandZones, i)
+            existingTop = box.get_top(existingZone)
+            existingBottom = box.get_bottom(existingZone)
+            if not (zoneHigh < existingBottom or zoneLow > existingTop)
+                canCreate := false
+                break
+    
+    if canCreate and (na(lastSupplyHigh) or zoneHigh != lastSupplyHigh or (bar_index - lastSupplyBar) > 10)
+        if array.size(supplyZones) >= maxZones
+            oldBox = array.shift(supplyZones)
+            box.delete(oldBox)
+            array.shift(supplyZoneTrades)
+            array.shift(supplyZoneExited)
+            array.shift(supplyZoneEntered)
+            array.shift(supplyPostExitTrades)
+            array.shift(supplyAllowPostExit)
+        
+        zoneBox = box.new(bar_index - zoneStrength, zoneHigh, bar_index + 100, zoneLow, border_color=supplyColor, bgcolor=supplyColor, border_width=1, extend=extend.right)
+        array.push(supplyZones, zoneBox)
+        array.push(supplyZoneTrades, 0)
+        array.push(supplyZoneExited, false)
+        array.push(supplyZoneEntered, false)
+        array.push(supplyPostExitTrades, 0)
+        array.push(supplyAllowPostExit, false)
+        lastSupplyHigh := zoneHigh
+        lastSupplyBar := bar_index
+
+htfSwingLow = htfSwingLowSeries
+if not na(htfSwingLow)
+    zoneLow = htfSwingLow
+    zoneHigh = htfPivotHighAtSwing
+    
+    canCreate = true
+    if array.size(supplyZones) > 0
+        for i = 0 to array.size(supplyZones) - 1
+            existingZone = array.get(supplyZones, i)
+            existingTop = box.get_top(existingZone)
+            existingBottom = box.get_bottom(existingZone)
+            if not (zoneHigh < existingBottom or zoneLow > existingTop)
+                canCreate := false
+                break
+    
+    if canCreate and (na(lastDemandLow) or zoneLow != lastDemandLow or (bar_index - lastDemandBar) > 10)
+        if array.size(demandZones) >= maxZones
+            oldBox = array.shift(demandZones)
+            box.delete(oldBox)
+            array.shift(demandZoneTrades)
+            array.shift(demandZoneExited)
+            array.shift(demandZoneEntered)
+            array.shift(demandPostExitTrades)
+            array.shift(demandAllowPostExit)
+        
+        zoneBox = box.new(bar_index - zoneStrength, zoneHigh, bar_index + 100, zoneLow, border_color=demandColor, bgcolor=demandColor, border_width=1, extend=extend.right)
+        array.push(demandZones, zoneBox)
+        array.push(demandZoneTrades, 0)
+        array.push(demandZoneExited, false)
+        array.push(demandZoneEntered, false)
+        array.push(demandPostExitTrades, 0)
+        array.push(demandAllowPostExit, false)
+        lastDemandLow := zoneLow
+        lastDemandBar := bar_index
+
+// ============================================================================
+// EXTENDED ZONE MANAGEMENT - SINGLE ZONE ONLY
+// ============================================================================
+
+if useExtendedZones
+    int demandSizeExt = array.size(demandZones)
+    if demandSizeExt > 0
+        for i = 0 to demandSizeExt - 1
+            if i >= 0 and i < array.size(demandZones)
+                zoneBox = array.get(demandZones, i)
+                zoneTop = box.get_top(zoneBox)
+                zoneBottom = box.get_bottom(zoneBox)
+                wasEntered = array.get(demandZoneEntered, i)
+                wasExited = array.get(demandZoneExited, i)
+                
+                currentlyInZone = low <= zoneTop and high >= zoneBottom
+                
+                if currentlyInZone and not wasEntered
+                    array.set(demandZoneEntered, i, true)
+                    wasEntered := true
+                
+                if wasEntered and not wasExited and not currentlyInZone and close > zoneTop
+                    array.set(demandZoneExited, i, true)
+                    
+                    if not na(activeExtendedZone)
+                        box.delete(activeExtendedZone)
+                    
+                    zoneRange = zoneTop - zoneBottom
+                    extendedTop = zoneTop + (zoneRange * (extendedZoneMultiplier - 1.0))
+                    
+                    activeExtendedZone := box.new(bar_index, extendedTop, bar_index + 100, zoneTop, border_color=extendedDemandColor, bgcolor=extendedDemandColor, border_width=1, extend=extend.right, border_style=line.style_dashed)
+                    activeExtendedZoneTrades := 0
+                    activeExtendedIsSupply := false
+                    activeExtendedParentIndex := i
+
+if useExtendedZones
+    int supplySizeExt = array.size(supplyZones)
+    if supplySizeExt > 0
+        for i = 0 to supplySizeExt - 1
+            if i >= 0 and i < array.size(supplyZones)
+                zoneBox = array.get(supplyZones, i)
+                zoneTop = box.get_top(zoneBox)
+                zoneBottom = box.get_bottom(zoneBox)
+                wasEntered = array.get(supplyZoneEntered, i)
+                wasExited = array.get(supplyZoneExited, i)
+                
+                currentlyInZone = low <= zoneTop and high >= zoneBottom
+                
+                if currentlyInZone and not wasEntered
+                    array.set(supplyZoneEntered, i, true)
+                    wasEntered := true
+                
+                if wasEntered and not wasExited and not currentlyInZone and close < zoneBottom
+                    array.set(supplyZoneExited, i, true)
+                    
+                    if not na(activeExtendedZone)
+                        box.delete(activeExtendedZone)
+                    
+                    zoneRange = zoneTop - zoneBottom
+                    extendedBottom = zoneBottom - (zoneRange * (extendedZoneMultiplier - 1.0))
+                    
+                    activeExtendedZone := box.new(bar_index, zoneBottom, bar_index + 100, extendedBottom, border_color=extendedSupplyColor, bgcolor=extendedSupplyColor, border_width=1, extend=extend.right, border_style=line.style_dashed)
+                    activeExtendedZoneTrades := 0
+                    activeExtendedIsSupply := true
+                    activeExtendedParentIndex := i
+
+// ============================================================================
+// POST-EXIT TRADING MANAGEMENT
+// ============================================================================
+
+if usePostExitTrading
+    int demandSizePostExit = array.size(demandZones)
+    if demandSizePostExit > 0
+        for i = 0 to demandSizePostExit - 1
+            if i >= 0 and i < array.size(demandZones)
+                zoneBox = array.get(demandZones, i)
+                zoneTop = box.get_top(zoneBox)
+                zoneBottom = box.get_bottom(zoneBox)
+                wasEntered = array.get(demandZoneEntered, i)
+                wasExited = array.get(demandZoneExited, i)
+                
+                currentlyInZone = low <= zoneTop and high >= zoneBottom
+                
+                if currentlyInZone and not wasEntered
+                    array.set(demandZoneEntered, i, true)
+                
+                if wasEntered and not wasExited and not currentlyInZone and close > zoneTop
+                    array.set(demandZoneExited, i, true)
+                    array.set(demandAllowPostExit, i, true)
+
+if usePostExitTrading
+    int supplySizePostExit = array.size(supplyZones)
+    if supplySizePostExit > 0
+        for i = 0 to supplySizePostExit - 1
+            if i >= 0 and i < array.size(supplyZones)
+                zoneBox = array.get(supplyZones, i)
+                zoneTop = box.get_top(zoneBox)
+                zoneBottom = box.get_bottom(zoneBox)
+                wasEntered = array.get(supplyZoneEntered, i)
+                wasExited = array.get(supplyZoneExited, i)
+                
+                currentlyInZone = low <= zoneTop and high >= zoneBottom
+                
+                if currentlyInZone and not wasEntered
+                    array.set(supplyZoneEntered, i, true)
+                
+                if wasEntered and not wasExited and not currentlyInZone and close < zoneBottom
+                    array.set(supplyZoneExited, i, true)
+                    array.set(supplyAllowPostExit, i, true)
+
+// Clean up zones
+int supplySizeCleanup = array.size(supplyZones)
+if supplySizeCleanup > 0
+    for i = supplySizeCleanup - 1 to 0
+        int currentSupplySize = array.size(supplyZones)
+        if i >= 0 and i < currentSupplySize
+            zoneBox = array.get(supplyZones, i)
+            zoneTop = box.get_top(zoneBox)
+            if close > zoneTop
+                if activeExtendedIsSupply and activeExtendedParentIndex == i and not na(activeExtendedZone)
+                    box.delete(activeExtendedZone)
+                    activeExtendedZone := na
+                    activeExtendedZoneTrades := 0
+                    activeExtendedParentIndex := -1
+                
+                if activeExtendedIsSupply and activeExtendedParentIndex > i
+                    activeExtendedParentIndex := activeExtendedParentIndex - 1
+                
+                if activeZoneIndex == i and activeZoneIsSupply
+                    activeZoneIndex := -1
+                else if activeZoneIndex > i and activeZoneIsSupply
+                    activeZoneIndex := activeZoneIndex - 1
+                
+                box.delete(zoneBox)
+                array.remove(supplyZones, i)
+                array.remove(supplyZoneTrades, i)
+                array.remove(supplyZoneExited, i)
+                array.remove(supplyZoneEntered, i)
+                array.remove(supplyPostExitTrades, i)
+                array.remove(supplyAllowPostExit, i)
+
+int demandSizeCleanup = array.size(demandZones)
+if demandSizeCleanup > 0
+    for i = demandSizeCleanup - 1 to 0
+        int currentDemandSize = array.size(demandZones)
+        if i >= 0 and i < currentDemandSize
+            zoneBox = array.get(demandZones, i)
+            zoneBottom = box.get_bottom(zoneBox)
+            if close < zoneBottom
+                if not activeExtendedIsSupply and activeExtendedParentIndex == i and not na(activeExtendedZone)
+                    box.delete(activeExtendedZone)
+                    activeExtendedZone := na
+                    activeExtendedZoneTrades := 0
+                    activeExtendedParentIndex := -1
+                
+                if not activeExtendedIsSupply and activeExtendedParentIndex > i
+                    activeExtendedParentIndex := activeExtendedParentIndex - 1
+                
+                if activeZoneIndex == i and not activeZoneIsSupply
+                    activeZoneIndex := -1
+                else if activeZoneIndex > i and not activeZoneIsSupply
+                    activeZoneIndex := activeZoneIndex - 1
+                
+                box.delete(zoneBox)
+                array.remove(demandZones, i)
+                array.remove(demandZoneTrades, i)
+                array.remove(demandZoneExited, i)
+                array.remove(demandZoneEntered, i)
+                array.remove(demandPostExitTrades, i)
+                array.remove(demandAllowPostExit, i)
+
+// ============================================================================
+// TRADE LOGIC
+// ============================================================================
+
+inDemandZone = false
+inSupplyZone = false
+inExtendedZone = false
+currentDemandZoneIndex = -1
+currentSupplyZoneIndex = -1
+demandZoneTop = 0.0
+demandZoneBottom = 0.0
+supplyZoneTop = 0.0
+supplyZoneBottom = 0.0
+
+int demandSizeTrade = array.size(demandZones)
+if demandSizeTrade > 0
+    for i = 0 to demandSizeTrade - 1
+        zoneBox = array.get(demandZones, i)
+        zoneTop = box.get_top(zoneBox)
+        zoneBottom = box.get_bottom(zoneBox)
+        if low <= zoneTop and high >= zoneBottom
+            inDemandZone := true
+            currentDemandZoneIndex := i
+            demandZoneTop := zoneTop
+            demandZoneBottom := zoneBottom
+            break
+
+int supplySizeTrade = array.size(supplyZones)
+if supplySizeTrade > 0
+    for i = 0 to supplySizeTrade - 1
+        zoneBox = array.get(supplyZones, i)
+        zoneTop = box.get_top(zoneBox)
+        zoneBottom = box.get_bottom(zoneBox)
+        if low <= zoneTop and high >= zoneBottom
+            inSupplyZone := true
+            currentSupplyZoneIndex := i
+            supplyZoneTop := zoneTop
+            supplyZoneBottom := zoneBottom
+            break
+
+if useExtendedZones and not na(activeExtendedZone)
+    extTop = box.get_top(activeExtendedZone)
+    extBottom = box.get_bottom(activeExtendedZone)
+    if low <= extTop and high >= extBottom
+        if activeExtendedIsSupply and not inSupplyZone
+            inExtendedZone := true
+        else if not activeExtendedIsSupply and not inDemandZone
+            inExtendedZone := true
+
+if demandSizeTrade > 0 and currentDemandZoneIndex >= 0 and currentDemandZoneIndex < demandSizeTrade
+    if inDemandZone
+        array.set(demandZoneExited, currentDemandZoneIndex, false)
+
+if supplySizeTrade > 0 and currentSupplyZoneIndex >= 0 and currentSupplyZoneIndex < supplySizeTrade
+    if inSupplyZone
+        array.set(supplyZoneExited, currentSupplyZoneIndex, false)
+
+stopTradingFromZone = false
+stopTradingFromZoneReason = ""
+if stopOnOppositeZone and activeZoneIndex >= 0
+    if activeZoneIsSupply and inDemandZone
+        stopTradingFromZone := true
+        stopTradingFromZoneReason := "Active in Supply, entered Demand"
+        activeZoneIndex := -1
+    else if not activeZoneIsSupply and inSupplyZone
+        stopTradingFromZone := true
+        stopTradingFromZoneReason := "Active in Demand, entered Supply"
+        activeZoneIndex := -1
+
+[bullPattern, bullInitial] = detectBullishPattern()
+[bearPattern, bearInitial] = detectBearishPattern()
+
+if exitOnOppositePattern
+    if strategy.position_size > 0 and bearPattern != ""
+        strategy.close("Long", comment="Opposite Pattern")
+        if showAllPatterns
+            lbl = label.new(bar_index, high, bearInitial + " 🚪", color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_down, size=size.small)
+            array.push(tradeLabels, lbl)
+    
+    if strategy.position_size < 0 and bullPattern != ""
+        strategy.close("Short", comment="Opposite Pattern")
+        if showAllPatterns
+            lbl = label.new(bar_index, low, bullInitial + " 🚪", color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_up, size=size.small)
+            array.push(tradeLabels, lbl)
+
+// Long Entry
+if bullPattern != ""
+    rejectionReason = ""
+    canTrade = true
+    isExtendedTrade = false
+    isPostExitTrade = false
+    postExitZoneIndex = -1
+    
+    if currentlyInNoTradeZone
+        canTrade := false
+        rejectionReason := "No-Trade Time"
+    else if not inDemandZone and not inExtendedZone
+        if usePostExitTrading and not useExtendedZones
+            if demandSizeTrade > 0
+                for i = 0 to demandSizeTrade - 1
+                    if i < array.size(demandAllowPostExit) and array.get(demandAllowPostExit, i)
+                        zoneBox = array.get(demandZones, i)
+                        zoneTop = box.get_top(zoneBox)
+                        zoneBottom = box.get_bottom(zoneBox)
+                        
+                        inPostExitArea = false
+                        if postExitRequireReentry
+                            inPostExitArea := low <= zoneTop and high >= zoneBottom
+                        else
+                            inPostExitArea := close >= zoneBottom
+                        
+                        if inPostExitArea
+                            postExitTrades = array.get(demandPostExitTrades, i)
+                            if postExitTrades < maxPostExitTrades
+                                isPostExitTrade := true
+                                postExitZoneIndex := i
+                                break
+        
+        if not isPostExitTrade
+            canTrade := false
+            rejectionReason := "No Demand Zone"
+    else if inSupplyZone
+        canTrade := false
+        rejectionReason := "In Supply Zone"
+    else if strategy.position_size != 0
+        canTrade := false
+        rejectionReason := "In Position"
+    else if stopTradingFromZone and activeZoneIsSupply
+        canTrade := false
+        rejectionReason := "Opp Zone Active"
+    else
+        if inExtendedZone and not inDemandZone and not activeExtendedIsSupply
+            isExtendedTrade := true
+            if activeExtendedZoneTrades >= maxExtendedTrades
+                canTrade := false
+                rejectionReason := "Max Ext Trades"
+        else if inDemandZone and currentDemandZoneIndex >= 0 and currentDemandZoneIndex < array.size(demandZones)
+            tradeCount = array.get(demandZoneTrades, currentDemandZoneIndex)
+            hasExited = array.get(demandZoneExited, currentDemandZoneIndex)
+            
+            if hasExited and tradeCount >= maxTradesPerZone
+                canTrade := false
+                rejectionReason := "Max Trades"
+            else if activeZoneIsSupply and activeZoneIndex >= 0
+                canTrade := false
+                rejectionReason := "Active Supply"
+            else if not isAtOptimalZonePosition(demandZoneTop, demandZoneBottom, false)
+                canTrade := false
+                rejectionReason := "Zone Position"
+        else if inDemandZone
+            canTrade := false
+            rejectionReason := "Invalid Zone"
+        
+        if canTrade and not hasMAConfluence(true)
+            canTrade := false
+            rejectionReason := "No MA Confluence"
+        else if canTrade and not hasRSIConfluence(true)
+            canTrade := false
+            rejectionReason := "RSI Filter"
+    
+    if canTrade
+        stopLoss = useAtrSl ? close - (atrValue * atrMultiplier) : low
+        stopDistance = close - stopLoss
+        takeProfit = close + (stopDistance * riskReward)
+        
+        positionSize = calculatePositionSize(stopLoss, close, true)
+        
+        strategy.entry("Long", strategy.long, qty=positionSize)
+        strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+        
+        if isExtendedTrade
+            activeExtendedZoneTrades := activeExtendedZoneTrades + 1
+            displayCount = str.tostring(activeExtendedZoneTrades) + "/" + str.tostring(maxExtendedTrades) + " EXT"
+            tradeLabel = bullInitial + " ⬆\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, low, tradeLabel, color=color.new(color.blue, 20), textcolor=color.white, style=label.style_label_up, size=size.small, tooltip=bullPattern + " (Extended Zone)")
+            array.push(tradeLabels, lbl)
+        else if isPostExitTrade and postExitZoneIndex >= 0
+            postExitTrades = array.get(demandPostExitTrades, postExitZoneIndex)
+            array.set(demandPostExitTrades, postExitZoneIndex, postExitTrades + 1)
+            displayCount = str.tostring(postExitTrades + 1) + "/" + str.tostring(maxPostExitTrades) + " PE"
+            tradeLabel = bullInitial + " ⬆\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, low, tradeLabel, color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.small, tooltip=bullPattern + " (Post-Exit)")
+            array.push(tradeLabels, lbl)
+        else if currentDemandZoneIndex >= 0 and currentDemandZoneIndex < array.size(demandZones)
+            tradeCount = array.get(demandZoneTrades, currentDemandZoneIndex)
+            hasExited = array.get(demandZoneExited, currentDemandZoneIndex)
+            
+            if hasExited
+                array.set(demandZoneTrades, currentDemandZoneIndex, tradeCount + 1)
+            
+            activeZoneIndex := currentDemandZoneIndex
+            activeZoneIsSupply := false
+            
+            displayCount = hasExited ? str.tostring(tradeCount + 1) + "/" + str.tostring(maxTradesPerZone) : "In Zone"
+            tradeLabel = bullInitial + " ⬆\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, low, tradeLabel, color=color.new(color.green, 20), textcolor=color.white, style=label.style_label_up, size=size.small, tooltip=bullPattern)
+            array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+    else if showAllPatterns
+        labelText = bullInitial + " ✗"
+        if showRejectionReason and rejectionReason != ""
+            labelText := labelText + "\n" + rejectionReason
+        lbl = label.new(bar_index, low, labelText, color=color.new(color.gray, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip=bullPattern + " (Rejected: " + rejectionReason + ")")
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+
+// Short Entry
+if bearPattern != ""
+    rejectionReason = ""
+    canTrade = true
+    isExtendedTrade = false
+    isPostExitTrade = false
+    postExitZoneIndex = -1
+    
+    if currentlyInNoTradeZone
+        canTrade := false
+        rejectionReason := "No-Trade Time"
+    else if not inSupplyZone and not inExtendedZone
+        if usePostExitTrading and not useExtendedZones
+            if supplySizeTrade > 0
+                for i = 0 to supplySizeTrade - 1
+                    if i < array.size(supplyAllowPostExit) and array.get(supplyAllowPostExit, i)
+                        zoneBox = array.get(supplyZones, i)
+                        zoneTop = box.get_top(zoneBox)
+                        zoneBottom = box.get_bottom(zoneBox)
+                        
+                        inPostExitArea = false
+                        if postExitRequireReentry
+                            inPostExitArea := low <= zoneTop and high >= zoneBottom
+                        else
+                            inPostExitArea := close <= zoneTop
+                        
+                        if inPostExitArea
+                            postExitTrades = array.get(supplyPostExitTrades, i)
+                            if postExitTrades < maxPostExitTrades
+                                isPostExitTrade := true
+                                postExitZoneIndex := i
+                                break
+        
+        if not isPostExitTrade
+            canTrade := false
+            rejectionReason := "No Supply Zone"
+    else if inDemandZone
+        canTrade := false
+        rejectionReason := "In Demand Zone"
+    else if strategy.position_size != 0
+        canTrade := false
+        rejectionReason := "In Position"
+    else if stopTradingFromZone and not activeZoneIsSupply
+        canTrade := false
+        rejectionReason := "Opp Zone Active"
+    else
+        if inExtendedZone and not inSupplyZone and activeExtendedIsSupply
+            isExtendedTrade := true
+            if activeExtendedZoneTrades >= maxExtendedTrades
+                canTrade := false
+                rejectionReason := "Max Ext Trades"
+        else if inSupplyZone and currentSupplyZoneIndex >= 0 and currentSupplyZoneIndex < array.size(supplyZones)
+            tradeCount = array.get(supplyZoneTrades, currentSupplyZoneIndex)
+            hasExited = array.get(supplyZoneExited, currentSupplyZoneIndex)
+            
+            if hasExited and tradeCount >= maxTradesPerZone
+                canTrade := false
+                rejectionReason := "Max Trades"
+            else if not activeZoneIsSupply and activeZoneIndex >= 0
+                canTrade := false
+                rejectionReason := "Active Demand"
+            else if not isAtOptimalZonePosition(supplyZoneTop, supplyZoneBottom, true)
+                canTrade := false
+                rejectionReason := "Zone Position"
+        else if inSupplyZone
+            canTrade := false
+            rejectionReason := "Invalid Zone"
+        
+        if canTrade and not hasMAConfluence(false)
+            canTrade := false
+            rejectionReason := "No MA Confluence"
+        else if canTrade and not hasRSIConfluence(false)
+            canTrade := false
+            rejectionReason := "RSI Filter"
+    
+    if canTrade
+        stopLoss = useAtrSl ? close + (atrValue * atrMultiplier) : high
+        stopDistance = stopLoss - close
+        takeProfit = close - (stopDistance * riskReward)
+        
+        positionSize = calculatePositionSize(stopLoss, close, false)
+        
+        strategy.entry("Short", strategy.short, qty=positionSize)
+        strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+        
+        if isExtendedTrade
+            activeExtendedZoneTrades := activeExtendedZoneTrades + 1
+            displayCount = str.tostring(activeExtendedZoneTrades) + "/" + str.tostring(maxExtendedTrades) + " EXT"
+            tradeLabel = bearInitial + " ⬇\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, high, tradeLabel, color=color.new(color.orange, 20), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip=bearPattern + " (Extended Zone)")
+            array.push(tradeLabels, lbl)
+        else if isPostExitTrade and postExitZoneIndex >= 0
+            postExitTrades = array.get(supplyPostExitTrades, postExitZoneIndex)
+            array.set(supplyPostExitTrades, postExitZoneIndex, postExitTrades + 1)
+            displayCount = str.tostring(postExitTrades + 1) + "/" + str.tostring(maxPostExitTrades) + " PE"
+            tradeLabel = bearInitial + " ⬇\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, high, tradeLabel, color=color.new(color.purple, 20), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip=bearPattern + " (Post-Exit)")
+            array.push(tradeLabels, lbl)
+        else if currentSupplyZoneIndex >= 0 and currentSupplyZoneIndex < array.size(supplyZones)
+            tradeCount = array.get(supplyZoneTrades, currentSupplyZoneIndex)
+            hasExited = array.get(supplyZoneExited, currentSupplyZoneIndex)
+            
+            if hasExited
+                array.set(supplyZoneTrades, currentSupplyZoneIndex, tradeCount + 1)
+            
+            activeZoneIndex := currentSupplyZoneIndex
+            activeZoneIsSupply := true
+            
+            displayCount = hasExited ? str.tostring(tradeCount + 1) + "/" + str.tostring(maxTradesPerZone) : "In Zone"
+            tradeLabel = bearInitial + " ⬇\n" + displayCount + "\n(" + str.tostring(positionSize) + ")"
+            lbl = label.new(bar_index, high, tradeLabel, color=color.new(color.red, 20), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip=bearPattern)
+            array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+    else if showAllPatterns
+        labelText = bearInitial + " ✗"
+        if showRejectionReason and rejectionReason != ""
+            labelText := labelText + "\n" + rejectionReason
+        lbl = label.new(bar_index, high, labelText, color=color.new(color.gray, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip=bearPattern + " (Rejected: " + rejectionReason + ")")
+        array.push(tradeLabels, lbl)
+        
+        if array.size(tradeLabels) > 100
+            oldLabel = array.shift(tradeLabels)
+            label.delete(oldLabel)
+
+// ============================================================================
+// STATISTICS TABLE
+// ============================================================================
+
+if displayStatsTable and barstate.islast
+    var table statsTable = table.new(position.top_right, 4, 16, border_width=2, border_color=color.gray, frame_color=color.new(color.black, 30), frame_width=2, bgcolor=color.new(#363a45, 15))
+    
+    table.cell(statsTable, 0, 0, "Metric", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 0, "Value", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 0, "Demand", bgcolor=color.new(color.green, 70), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 3, 0, "Supply", bgcolor=color.new(color.red, 70), text_color=color.white, text_size=size.small)
+    
+    netProfit = strategy.netprofit
+    totalTrades = strategy.closedtrades
+    winningTrades = strategy.wintrades
+    losingTrades = strategy.losstrades
+    winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0
+    profitFactor = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0
+    avgWin = winningTrades > 0 ? strategy.grossprofit / winningTrades : 0
+    avgLoss = losingTrades > 0 ? strategy.grossloss / losingTrades : 0
+    maxDD = strategy.max_drawdown
+    
+    table.cell(statsTable, 0, 1, "Net Profit", text_color=color.white, text_size=size.small)
+    profitColor = netProfit > 0 ? color.new(color.green, 80) : color.new(color.red, 80)
+    table.cell(statsTable, 1, 1, str.tostring(netProfit, "#.##"), bgcolor=profitColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 1, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 1, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 2, "Total Trades", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 2, str.tostring(totalTrades), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 2, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 2, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 3, "Win Rate", text_color=color.white, text_size=size.small)
+    winRateColor = winRate >= 50 ? color.new(color.green, 80) : color.new(color.orange, 80)
+    table.cell(statsTable, 1, 3, str.tostring(winRate, "#.##") + "%", bgcolor=winRateColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 3, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 3, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 4, "Profit Factor", text_color=color.white, text_size=size.small)
+    pfColor = profitFactor >= 1.5 ? color.new(color.green, 80) : profitFactor >= 1.0 ? color.new(color.orange, 80) : color.new(color.red, 80)
+    table.cell(statsTable, 1, 4, str.tostring(profitFactor, "#.##"), bgcolor=pfColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 4, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 4, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 5, "Avg Win", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 5, str.tostring(avgWin, "#.##"), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 5, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 5, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 6, "Avg Loss", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 6, str.tostring(avgLoss, "#.##"), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 6, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 6, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 7, "Max Drawdown", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 7, str.tostring(maxDD, "#.##"), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 7, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 7, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 8, "Active Zones", text_color=color.white, text_size=size.small)
+    totalZones = array.size(demandZones) + array.size(supplyZones)
+    table.cell(statsTable, 1, 8, str.tostring(totalZones), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 8, str.tostring(array.size(demandZones)), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 3, 8, str.tostring(array.size(supplyZones)), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
+    
+    table.cell(statsTable, 0, 9, "Zone Trades", text_color=color.white, text_size=size.small)
+    demandTotalTrades = 0
+    supplyTotalTrades = 0
+    if array.size(demandZoneTrades) > 0
+        for i = 0 to array.size(demandZoneTrades) - 1
+            demandTotalTrades += array.get(demandZoneTrades, i)
+    if array.size(supplyZoneTrades) > 0
+        for i = 0 to array.size(supplyZoneTrades) - 1
+            supplyTotalTrades += array.get(supplyZoneTrades, i)
+    table.cell(statsTable, 1, 9, str.tostring(demandTotalTrades + supplyTotalTrades), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 9, str.tostring(demandTotalTrades), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 3, 9, str.tostring(supplyTotalTrades), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
+    
+    table.cell(statsTable, 0, 10, "Current Zone", text_color=color.white, text_size=size.small)
+    string zoneStatusText = "None"
+    color zoneStatusColor = color.new(color.gray, 90)
+    if inDemandZone
+        zoneStatusText := "Demand Zone"
+        zoneStatusColor := color.new(color.green, 70)
+    else if inSupplyZone
+        zoneStatusText := "Supply Zone"
+        zoneStatusColor := color.new(color.red, 70)
+    else if inExtendedZone
+        if activeExtendedIsSupply
+            zoneStatusText := "Extended Supply"
+            zoneStatusColor := color.new(color.orange, 70)
+        else
+            zoneStatusText := "Extended Demand"
+            zoneStatusColor := color.new(color.blue, 70)
+    table.cell(statsTable, 1, 10, zoneStatusText, bgcolor=zoneStatusColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 10, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 10, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 11, "HTF MA Direction", text_color=color.white, text_size=size.small)
+    htfMaColor = htfMaDirection == "UP" ? color.new(color.green, 70) : htfMaDirection == "DOWN" ? color.new(color.red, 70) : color.new(color.gray, 80)
+    table.cell(statsTable, 1, 11, htfMaDirection, bgcolor=htfMaColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 11, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 11, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 12, "Ext Zone Active", text_color=color.white, text_size=size.small)
+    extZoneActiveText = na(activeExtendedZone) ? "NO" : "YES"
+    extZoneActiveColor = na(activeExtendedZone) ? color.new(color.gray, 90) : color.new(color.yellow, 70)
+    table.cell(statsTable, 1, 12, extZoneActiveText, bgcolor=extZoneActiveColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 12, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 12, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 13, "Ext Zone Bounds", text_color=color.white, text_size=size.small)
+    if not na(activeExtendedZone)
+        extTop = box.get_top(activeExtendedZone)
+        extBottom = box.get_bottom(activeExtendedZone)
+        extBoundsText = str.tostring(extTop, "#.####") + " / " + str.tostring(extBottom, "#.####")
+        extBoundsColor = activeExtendedIsSupply ? color.new(color.orange, 80) : color.new(color.blue, 80)
+        table.cell(statsTable, 1, 13, extBoundsText, bgcolor=extBoundsColor, text_color=color.white, text_size=size.small)
+    else
+        table.cell(statsTable, 1, 13, "N/A", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 2, 13, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 13, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 14, "Position", text_color=color.white, text_size=size.small)
+    posText = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    posColor = strategy.position_size > 0 ? color.new(color.green, 70) : strategy.position_size < 0 ? color.new(color.red, 70) : na
+    table.cell(statsTable, 1, 14, posText, bgcolor=posColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 14, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 14, "-", text_color=color.gray, text_size=size.small)
+    
+    table.cell(statsTable, 0, 15, "RSI", text_color=color.white, text_size=size.small)
+    rsiColor = rsiValue > 70 ? color.new(color.red, 80) : rsiValue < 30 ? color.new(color.green, 80) : na
+    table.cell(statsTable, 1, 15, str.tostring(rsiValue, "#.##"), bgcolor=rsiColor, text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 15, "-", text_color=color.gray, text_size=size.small)
+    table.cell(statsTable, 3, 15, "-", text_color=color.gray, text_size=size.small)
+
+// ============================================================================
+// NO-TRADE ZONE VISUALIZATION & EXTENDED ZONE HIGHLIGHT
+// ============================================================================
+
+noTradeZoneBgColor = currentlyInNoTradeZone ? color.new(color.orange, 95) : na
+bgcolor(noTradeZoneBgColor, title="No-Trade Zone Highlight")
+
+var line extendedZoneTopLine = na
+var line extendedZoneBottomLine = na
+
+if not na(extendedZoneTopLine)
+    line.delete(extendedZoneTopLine)
+    extendedZoneTopLine := na
+if not na(extendedZoneBottomLine)
+    line.delete(extendedZoneBottomLine)
+    extendedZoneBottomLine := na
+
+if not na(activeExtendedZone)
+    extTop = box.get_top(activeExtendedZone)
+    extBottom = box.get_bottom(activeExtendedZone)
+    extLeft = box.get_left(activeExtendedZone)
+    
+    lineColor = activeExtendedIsSupply ? color.new(color.orange, 0) : color.new(color.blue, 0)
+    
+    extendedZoneTopLine := line.new(extLeft, extTop, bar_index + 50, extTop, color=lineColor, width=2, style=line.style_dashed, extend=extend.right)
+    extendedZoneBottomLine := line.new(extLeft, extBottom, bar_index + 50, extBottom, color=lineColor, width=2, style=line.style_dashed, extend=extend.right)
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+plotshape(bullPattern != "", "Bullish Pattern", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.tiny)
+plotshape(bearPattern != "", "Bearish Pattern", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.tiny)

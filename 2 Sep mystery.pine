@@ -1,0 +1,182 @@
+//@version=5
+strategy("Mach2FX Trend-Hugger better win%",overlay=true, pyramiding=1, initial_capital=150000, commission_type=strategy.commission.cash_per_contract, commission_value=2)
+
+// === USER INPUTS ===
+higher_tf         = input.timeframe("60", "Higher timeframe (trend)")
+ema_htf_len       = input.int(89, "HTF EMA length", minval=5)
+ema_len           = input.int(21, "Entry EMA length", minval=2)
+rsi_len           = input.int(14, "RSI length", minval=2)
+rsi_filter        = input.int(50, "RSI threshold")
+atr_len           = input.int(14, "ATR length", minval=1)
+atr_stop_mult     = input.float(2.0, "Stop = ATR ×", step=0.1)
+atr_target_mult   = input.float(3.0, "Target = ATR ×", step=0.1)
+volThreshold      = input.float(0.5, "Volume threshold (× SMA)", step=0.1, minval=0.0)
+use_trailing      = input.bool(false, "Use trailing stop?")
+trail_offset_mult = input.float(1.0, "Trail offset (ATR ×)", step=0.1)
+riskPerTrade      = input.float(500.0, "Fixed $ Risk per Trade", step=50)
+max_positions     = input.int(1, "Max concurrent positions", minval=1)
+onlyWithHTF       = input.bool(true, "Only take trades in direction of HTF trend?")
+
+// === SESSION INPUTS (New York time) ===
+tradeSession = input.session("0930-1600", "Trading Hours (entries allowed)")
+closeHour    = input.int(15, "Close Trades Hour (NY Time)", minval=0, maxval=23)
+closeMinute  = input.int(45, "Close Trades Minute (NY Time)", minval=0, maxval=59)
+
+// === INDICATORS ===
+emaHTF   = request.security(syminfo.tickerid, higher_tf, ta.ema(close, ema_htf_len))
+ema      = ta.ema(close, ema_len)
+rsi      = ta.rsi(close, rsi_len)
+atr      = ta.atr(atr_len)
+vol_sma  = ta.sma(volume, 20)
+
+// === TREND FILTERS ===
+trendBull = close > emaHTF
+trendBear = close < emaHTF
+
+// Position size bias: full size if aligned, half if countertrend
+biasLong  = trendBull ? 1.0 : 0.5
+biasShort = trendBear ? 1.0 : 0.5
+
+// === ENTRY CONDITIONS ===
+longCondition  = ta.crossover(close, ema) 
+                 and rsi > rsi_filter 
+                 and volume > vol_sma * volThreshold
+
+shortCondition = ta.crossunder(close, ema) 
+                 and rsi < (100 - rsi_filter) 
+                 and volume > vol_sma * volThreshold
+
+
+// === TRADING HOURS FILTER (New York) ===
+inTradeSession = not na(time(timeframe.period, tradeSession, "America/New_York"))
+longCondition  := longCondition  and inTradeSession and (not onlyWithHTF or trendBull)
+shortCondition := shortCondition and inTradeSession and (not onlyWithHTF or trendBear)
+
+// === LIMIT ENTRY PRICES ===
+longLimitPrice  = ta.valuewhen(longCondition, high, 0)
+shortLimitPrice = ta.valuewhen(shortCondition, low, 0)
+
+var tickValue = syminfo.mintick * syminfo.pointvalue
+var float amountRisked = na // debug only
+amountRisked := (riskPerTrade / (8.7 * syminfo.pointvalue)) //tickValue
+
+// === CALCULATE CONTRACTS BASED ON $ RISK ===
+calcQty(_stopDist) =>
+    _amountRisked = _stopDist * tickValue / 10 //syminfo.pointvalue //tickValue
+    qty = (riskPerTrade / (_stopDist * syminfo.pointvalue)) > 1 ? math.floor(riskPerTrade / (_stopDist * syminfo.pointvalue)) : 1
+    qty > 0 ? qty : na
+
+// === PERSISTENT TRADE LINES ===
+drawTradeLines(_entry, _stop, _target, _isLong) =>
+    if not na(_entry) and not na(_stop) and not na(_target)
+        if _isLong
+            line.new(bar_index, _entry, bar_index + 1, _entry, color=color.green, width=2)
+            line.new(bar_index, _stop,  bar_index + 1, _stop,  color=color.red,   width=1, style=line.style_dashed)
+            line.new(bar_index, _target,bar_index + 1, _target,color=color.blue,  width=1, style=line.style_dashed)
+        else
+            line.new(bar_index, _entry, bar_index + 1, _entry, color=color.red,   width=2)
+            line.new(bar_index, _stop,  bar_index + 1, _stop,  color=color.green, width=1, style=line.style_dashed)
+            line.new(bar_index, _target,bar_index + 1, _target,color=color.blue,  width=1, style=line.style_dashed)
+
+// === TRADE VARIABLES ===
+var float entryPrice = na
+var float stopPrice  = na
+var float takePrice  = na
+var float rr         = na
+var float riskAmt    = na
+var string direction = ""
+var float stopDist   = na // debug only 
+var int qty = na
+
+// === ENTRIES & EXITS ===
+if (longCondition and strategy.opentrades < max_positions)
+    stopPrice := longLimitPrice - atr * atr_stop_mult
+    takePrice := longLimitPrice + atr * atr_target_mult
+    stopDist  := longLimitPrice - stopPrice
+    qty       := calcQty(stopDist) // * biasLong
+    if not na(qty)
+        strategy.entry("Long", strategy.long, qty=qty, limit=longLimitPrice)
+        strategy.exit("Exit Long", from_entry="Long", stop=stopPrice, limit=takePrice,
+                      trail_points= use_trailing ? atr * trail_offset_mult : na)
+        entryPrice := longLimitPrice
+        rr := (takePrice - entryPrice) / (entryPrice - stopPrice)
+        riskAmt := stopDist * qty * syminfo.pointvalue
+        direction := "LONG"
+        drawTradeLines(entryPrice, stopPrice, takePrice, true)
+
+if (shortCondition and strategy.opentrades < max_positions)
+    stopPrice := shortLimitPrice + atr * atr_stop_mult
+    takePrice := shortLimitPrice - atr * atr_target_mult
+    stopDist  := stopPrice - shortLimitPrice
+    qty       := calcQty(stopDist) //* biasShort
+    if not na(qty)
+        strategy.entry("Short", strategy.short, qty=qty, limit=shortLimitPrice)
+        strategy.exit("Exit Short", from_entry="Short", stop=stopPrice, limit=takePrice,
+                      trail_points= use_trailing ? atr * trail_offset_mult : na)
+        entryPrice := shortLimitPrice
+        rr := (entryPrice - takePrice) / (stopPrice - entryPrice)
+        riskAmt := stopDist * qty * syminfo.pointvalue
+        direction := "SHORT"
+        drawTradeLines(entryPrice, stopPrice, takePrice, false)
+
+// === CLOSE ALL OPEN TRADES AT SPECIFIC NY TIME ===
+var bool closedThisSession = false
+barTimeNY = time(timeframe.period) //, "", "America/New_York")
+barHour   = hour(barTimeNY)
+barMinute = minute(barTimeNY)
+isCloseSessionBar =  (barHour == closeHour) and (barMinute == closeMinute)
+
+if isCloseSessionBar and strategy.opentrades != 0 // not closedThisSession
+    strategy.close_all(comment="Session Close", immediately=true)
+    closedThisSession := true
+
+if not isCloseSessionBar
+    closedThisSession := false
+
+
+// === FIXED TABLE WITH HTF TIMEFRAME, TREND ALIGNMENT, AND OPEN PnL ===
+var statsTable = table.new(position.bottom_left, 2, 11, border_width=1)
+
+updateTable() =>
+    table.cell(statsTable, 0, 0, "HTF Timeframe", bgcolor=color.gray, text_color=color.white)
+    table.cell(statsTable, 1, 0, higher_tf, bgcolor=color.gray, text_color=color.yellow)
+
+    table.cell(statsTable, 0, 1, "HTF Trend")
+    table.cell(statsTable, 1, 1, trendBull ? "Bullish" : "Bearish", text_color= trendBull ? color.green : color.red)
+
+    table.cell(statsTable, 0, 2, "HTF Filter Active")
+    table.cell(statsTable, 1, 2, onlyWithHTF ? "Yes" : "No", text_color=onlyWithHTF ? color.green : color.red)
+
+    table.cell(statsTable, 0, 3, "")
+    table.cell(statsTable, 1, 3, str.tostring(""))
+
+    table.cell(statsTable, 0, 4, "Entry")
+    table.cell(statsTable, 1, 4, na(entryPrice) ? "-" : str.tostring(entryPrice, "#.##"))
+
+    table.cell(statsTable, 0, 5, "Stop")
+    table.cell(statsTable, 1, 5, na(stopPrice) ? "-" : str.tostring(stopPrice, "#.##"))
+
+    table.cell(statsTable, 0, 6, "Target")
+    table.cell(statsTable, 1, 6, na(takePrice) ? "-" : str.tostring(takePrice, "#.##"))
+
+    table.cell(statsTable, 0, 7, "Risk / R:R")
+    table.cell(statsTable, 1, 7, na(riskAmt) ? "-" : "$" + str.tostring(riskAmt, "#") + " / " + str.tostring(rr, "#.##"))
+
+    table.cell(statsTable, 0, 8, "Open PnL")
+    openPnL = strategy.opentrades > 0 ? strategy.opentrades.profit(strategy.opentrades - 1) : 0
+    table.cell(statsTable, 1, 8, "$" + str.tostring(openPnL, "#,###.##"), text_color=openPnL >= 0 ? color.green : color.red)
+
+    table.cell(statsTable, 0, 9, "Equity")
+    table.cell(statsTable, 1, 9, "$" + str.tostring(strategy.equity, "#,###.##"), text_color=color.rgb(88, 59, 255))
+
+    table.cell(statsTable, 0, 10, "qty")
+    table.cell(statsTable, 1, 10, str.tostring(qty), text_color=color.rgb(88, 59, 255))
+
+
+updateTable()
+
+// === VISUALS ===
+plot(emaHTF, title="HTF EMA", linewidth=2, color=color.orange)
+plot(ema,    title="Entry EMA", linewidth=1, color=color.blue)
+plotchar(longCondition,  title="Long Signal",  char="▲", location=location.belowbar, color=color.green)
+plotchar(shortCondition, title="Short Signal", char="▼", location=location.abovebar, color=color.red)

@@ -1,0 +1,247 @@
+//@version=5
+strategy("HTF Trend + Candle Patterns", overlay=true, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=1)
+
+// -------------------- INPUTS --------------------
+htf               = input.timeframe("60", "Higher timeframe (trend)")
+ma_fast_len       = input.int(10, "HTF MA fast length", minval=1)
+ma_slow_len       = input.int(20, "HTF MA slow length", minval=1)
+ma_type           = input.string("SMA", "HTF MA type", options=["SMA", "EMA"])
+
+adx_len           = input.int(14, "HTF ADX/DI length", minval=1)
+adx_smooth        = input.int(14, "HTF ADX smoothing", minval=1)
+adx_threshold     = input.float(20.0, "HTF ADX threshold", step=0.5)
+
+// reversal patterns
+use_engulfing     = input.bool(true, "Use Engulfing")
+use_inside        = input.bool(true, "Use Inside-bar breakout")
+use_doji          = input.bool(true, "Use Doji reversal")
+doji_body_pct     = input.float(0.25, "Doji body <= pct of bar range", step=0.01)
+use_three_bar_reversal = input.bool(false, "Use Three-Bar Reversal")
+use_shrinking_candle = input.bool(false, "Use Shrinking Candle Reversal")
+
+// continuation patterns
+use_rising_three = input.bool(false, "Use Rising Three Methods")
+use_falling_three = input.bool(false, "Use Falling Three Methods")
+use_three_white_soldiers = input.bool(false, "Use Three White Soldiers")
+use_three_black_crows = input.bool(false, "Use Three Black Crows")
+use_flag_and_pennant = input.bool(false, "Use Flag and Pennant Breakouts")
+use_cup_and_handle = input.bool(false, "Use Cup and Handle Breakouts")
+use_double_bottom_top = input.bool(false, "Use Double Bottom/Top Breakouts")
+use_three_bar_continuation = input.bool(false, "Use Three-Bar Continuation")
+
+qty               = input.int(1, "Order quantity", minval=1)
+rr_ratio          = input.float(2.0, "RR ratio (TP = entry + RR * risk)", minval=1.0)
+
+no_trade_start_hhmm = input.int(1655, "No-trade start (HHMM NY)", minval=0, maxval=2359)
+no_trade_end_hhmm   = input.int(1805, "No-trade end   (HHMM NY)", minval=0, maxval=2359)
+
+show_labels       = input.bool(true, "Show pattern labels")
+show_table        = input.bool(true, "Show info table")
+
+// -------------------- HELPERS --------------------
+get_ma(src, len, typ) =>
+    typ == "SMA" ? ta.sma(src, len) : ta.ema(src, len)
+
+// -------------------- HTF TREND --------------------
+htf_ma_fast = request.security(syminfo.tickerid, htf, get_ma(close, ma_fast_len, ma_type), lookahead=barmerge.lookahead_off)
+htf_ma_slow = request.security(syminfo.tickerid, htf, get_ma(close, ma_slow_len, ma_type), lookahead=barmerge.lookahead_off)
+
+// DMI/ADX
+[htf_di_plus_raw, htf_di_minus_raw, htf_adx_raw] = request.security(syminfo.tickerid, htf, ta.dmi(adx_len, adx_smooth),lookahead=barmerge.lookahead_off)
+htf_adx = ta.sma(htf_adx_raw, adx_smooth)   
+htf_di_plus = htf_di_plus_raw
+htf_di_minus = htf_di_minus_raw
+
+htf_trend_bull = (htf_ma_fast > htf_ma_slow) and (htf_adx >= adx_threshold)
+htf_trend_bear = (htf_ma_fast < htf_ma_slow) and (htf_adx >= adx_threshold)
+
+
+// -------------------- CHART-TIMEFRAME PATTERNS --------------------
+o = open
+h = high
+l = low
+c = close
+
+// Engulfing
+// bull_engulf = (c > o) and (close[1] < open[1]) and (o <= close[1]) and (c >= open[1])
+// modified bullish engulfing
+bull_engulf = (c > o) and (c[1] < o[1]) and (c >= o[1]) and (o <= c[1])
+// bear_engulf = (c < o) and (close[1] > open[1]) and (o >= close[1]) and (c <= open[1])
+// modified bearish engulfing
+bear_engulf = (c < o) and (c[1] > o[1]) and (c < o[1]) and (o >= c[1])
+
+// Inside-bar breakout: mother at [2], inside at [1], breakout on current bar
+inside_mother = (high[1] < high[2]) and (low[1] > low[2])
+inside_break_long = inside_mother and (high > high[2])
+inside_break_short = inside_mother and (low < low[2])
+    
+is_shrinking_candles(idx) =>
+    c1_size = math.abs((close[idx] - open[idx]))
+    c2_size = math.abs((close[idx + 1] - open[idx + 1]))
+    c3_size = math.abs((close[idx + 2] - open[idx + 2]))
+    c1_size < c2_size and c2_size < c3_size
+
+is_bear_candle(idx) =>
+    close[idx] < open[idx]
+
+is_bull_candle(idx) =>
+    close[idx] > open[idx]
+
+is_engulfing_candle(idx, idx_back, bull_check) =>
+    bull_check 
+         ? (close[idx] > open[idx_back] and open[idx] <= close[idx+1]) 
+         : (close[idx] < open[idx_back] and open[idx] >= close[idx+1])
+
+is_larger_than_average_body(idx, bars) =>
+    body = math.abs(close[idx] - open[idx])
+    sum_body = 0.0
+    for i = 0 to bars - 1
+        sum_body += math.abs(close[idx + i] - open[idx + i])
+    avg_body = sum_body / bars
+    body > avg_body
+
+is_smaller_than_previous_body(idx, percent) =>
+    body = math.abs(close[idx] - open[idx])
+    prev_body = math.abs(close[idx + 1] - open[idx + 1])
+    body < prev_body * (1 - percent / 100)
+
+did_three_previous_close_inside_fourth(bull_check) =>
+    bull_check 
+         ? is_bear_candle(1) and is_bear_candle(2) and is_bear_candle(3) and (close[1] < close[4]) and (close[2] < close[4]) and (close[3] < close[4])
+         : is_bull_candle(1) and is_bull_candle(2) and is_bull_candle(3) and (close[1] > close[4]) and (close[2] > close[4]) and (close[3] > close[4])
+     
+
+shrinking_candle_long = is_shrinking_candles(1) and is_bear_candle(1) and is_bull_candle(2) and is_bear_candle(3) and is_engulfing_candle(0, 3, true)
+shrinking_candle_short = is_shrinking_candles(1) and is_bull_candle(1) and is_bear_candle(2) and is_bull_candle(3) and is_engulfing_candle(0, 3, false)
+three_bar_reversal_long = is_bear_candle(2) and is_bear_candle(1) and is_engulfing_candle(0, 2, true)
+three_bar_reversal_short = is_bull_candle(2) and is_bull_candle(1) and is_engulfing_candle(0, 2, false)
+// three_white_soldiers = 
+// three_black_crows = 
+
+// continuation patterns
+rising_three = is_larger_than_average_body(4, 7) and is_bull_candle(4) and did_three_previous_close_inside_fourth(true) and is_engulfing_candle(0, 1, true)
+falling_three = is_larger_than_average_body(4, 7) and is_bear_candle(4) and did_three_previous_close_inside_fourth(false) and is_engulfing_candle(0, 1, false)
+// flag_and_pennant = 
+// cup_and_handle = 
+// double_bottom_top = 
+three_bar_continuation_long = is_larger_than_average_body(2, 7) and is_smaller_than_previous_body(1, 50) and is_engulfing_candle(0, 1, true)
+three_bar_continuation_short = is_larger_than_average_body(2, 7) and is_smaller_than_previous_body(1, 50) and is_engulfing_candle(0, 1, false)
+
+
+// Doji reversal (doji at prev bar + confirmation on current bar)
+body = math.abs(c - o)
+bar_range = (h - l)
+is_doji = bar_range > 0 and (body <= doji_body_pct * bar_range)
+doji_at_prev = is_doji[1]
+doji_bull_confirm = doji_at_prev and (c > o) and (c > close[1])
+doji_bear_confirm = doji_at_prev and (c < o) and (c < close[1])
+
+// Label text
+label_text_long = (use_engulfing and bull_engulf ? "BE " : "") + (use_inside and inside_break_long ? "IBL " : "") + (use_doji and doji_bull_confirm ? "D" : "")
+label_text_short = (use_engulfing and bear_engulf ? "BE- " : "") + (use_inside and inside_break_short ? "IBS " : "") + (use_doji and doji_bear_confirm ? "D" : "")
+
+// -------------------- NO-TRADE WINDOW --------------------
+start_h = math.floor(no_trade_start_hhmm / 100)
+start_m = no_trade_start_hhmm % 100
+end_h   = math.floor(no_trade_end_hhmm / 100)
+end_m   = no_trade_end_hhmm % 100
+
+start_ts = timestamp("America/New_York", year, month, dayofmonth, start_h, start_m)
+end_ts   = timestamp("America/New_York", year, month, dayofmonth, end_h, end_m)
+
+in_no_trade = false
+if end_ts > start_ts
+    in_no_trade := time >= start_ts and time < end_ts
+else
+    in_no_trade := (time >= start_ts) or (time < end_ts)
+
+// Force-close on entry to no-trade window
+entered_no_trade = in_no_trade and not (time[1] >= start_ts and (end_ts > start_ts ? time[1] < end_ts : (time[1] >= start_ts or time[1] < end_ts)))
+if entered_no_trade and strategy.position_size != 0
+    strategy.close_all(comment="Force Close - No Trade Window")
+
+// -------------------- BACKGROUND COLOR BASED ON HTF TREND --------------------
+bgcolor(htf_trend_bull ? color.new(color.green, 85) : htf_trend_bear ? color.new(color.red, 85) : in_no_trade ? color.new(color.black, 65) : color.new(color.white, 0), title="HTF Trend Background")
+
+
+// -------------------- ENTRY CONDITIONS --------------------
+pattern_long  = 
+     (use_engulfing and bull_engulf) 
+     or (use_inside and inside_break_long) 
+     or (use_doji and doji_bull_confirm)
+     or (use_three_bar_reversal and three_bar_reversal_long)
+     or (use_shrinking_candle and shrinking_candle_long)
+     or (use_three_bar_continuation and three_bar_continuation_long)
+     or (use_rising_three and rising_three)
+    //  or (use_three_white_soldiers and three_white_soldiers)
+    //  or (use_flag_and_pennant and flag_and_pennant)
+    //  or (use_cup_and_handle and cup_and_handle)
+    //  or (use_double_bottom_top and double_bottom_top)
+
+pattern_short = 
+     (use_engulfing and bear_engulf) 
+     or (use_inside and inside_break_short) 
+     or (use_doji and doji_bear_confirm)
+     or (use_three_bar_reversal and three_bar_reversal_short)
+     or (use_shrinking_candle and shrinking_candle_short)
+     or (use_three_bar_continuation and three_bar_continuation_short)
+     or (use_falling_three and falling_three)
+
+long_cond  = htf_trend_bull and not in_no_trade and pattern_long
+short_cond = htf_trend_bear and not in_no_trade and pattern_short
+
+// -------------------- STOP LOSS & TAKE PROFIT --------------------
+compute_risk_prices(isLong) =>
+    float stopp = na
+    float entryp = close
+    if isLong
+        if use_engulfing and bull_engulf
+            stopp := math.min(low, low[1])
+        else if use_inside and inside_mother and inside_break_long
+            stopp := low[2]
+        else if use_doji and doji_bull_confirm
+            stopp := low[1]
+    else
+        if use_engulfing and bear_engulf
+            stopp := math.max(high, high[1])
+        else if use_inside and inside_mother and inside_break_short
+            stopp := high[2]
+        else if use_doji and doji_bear_confirm
+            stopp := high[1]
+
+    if na(stopp)
+        [na, na]
+    else
+        risk = isLong ? (entryp - stopp) : (stopp - entryp)
+        if risk <= 0
+            [na, na]
+        else
+            tp = isLong ? (entryp + rr_ratio * risk) : (entryp - rr_ratio * risk)
+            [stopp, tp]
+
+// -------------------- ORDER EXECUTION --------------------
+if long_cond
+    [stp, tkp] = compute_risk_prices(true)
+    if not na(stp)
+        strategy.entry("Long", strategy.long, qty=qty)
+        strategy.exit("Long_exit", from_entry="Long", stop=stp, limit=tkp)
+        if show_labels
+            label.new(bar_index, low, text=label_text_long, xloc=xloc.bar_index, yloc=yloc.belowbar, style=label.style_label_up, color=color.green, textcolor=color.white)
+
+if short_cond
+    [stp, tkp] = compute_risk_prices(false)
+    if not na(stp)
+        strategy.entry("Short", strategy.short, qty=qty)
+        strategy.exit("Short_exit", from_entry="Short", stop=stp, limit=tkp)
+        if show_labels
+            label.new(bar_index, high, text=label_text_short, xloc=xloc.bar_index, yloc=yloc.abovebar, style=label.style_label_down, color=color.red, textcolor=color.white)
+
+// -------------------- INFO TABLE --------------------
+var table info_tbl = table.new(position.top_right, 1, 5, frame_color=color.gray, frame_width=1, border_width=1)
+
+if show_table
+    table.cell(info_tbl, 0, 0, "HTF Trend: " + (htf_trend_bull ? "Bull" : htf_trend_bear ? "Bear" : "Neutral"), text_color=color.white, bgcolor=color.new(color.blue, 30))
+    table.cell(info_tbl, 0, 1, "ADX: " + str.tostring(htf_adx, "#.##"), text_color=color.white, bgcolor=color.new(color.orange, 30))
+    table.cell(info_tbl, 0, 2, "Patterns: " + (pattern_long ? "LONG" : pattern_short ? "SHORT" : "None"), text_color=color.white, bgcolor=color.new(color.purple, 30))
+    table.cell(info_tbl, 0, 3, "No-Trade: " + (in_no_trade ? "YES" : "NO"), text_color=color.white, bgcolor=color.new(color.red, 30))
+    table.cell(info_tbl, 0, 4, "Position: " + str.tostring(strategy.position_size), text_color=color.white, bgcolor=color.new(color.green, 30))

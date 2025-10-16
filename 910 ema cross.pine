@@ -1,0 +1,203 @@
+//@version=5
+strategy("EMA21 x SMA50", overlay=true,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=5, pyramiding=1)
+
+// === INPUTS ===
+higher_tf = input.timeframe("60", "Higher timeframe (trend)")
+require_htf_align = input.bool(true, "Require HTF alignment")
+ema_len = input.int(21, "EMA length", minval=1)
+sma_len = input.int(50, "SMA length", minval=1)
+pivot_left  = input.int(5, "Pivot left bars", minval=1)
+pivot_right = input.int(5, "Pivot right bars", minval=1)
+fallback_lookback = input.int(50, "Fallback lookback", minval=1)
+stop_buffer = input.float(0.0, "Stop buffer", step=0.1)
+use_trail = input.bool(true, "Enable trailing stop")
+trail_mode = input.string("Points", "Trail mode", options=["Points", "ATR"])
+trail_points = input.float(50.0, "Trail points", step=0.1)
+atr_len = input.int(14, "ATR length", minval=1)
+atr_mult = input.float(2.0, "ATR multiplier", step=0.1)
+rr_ratio = input.float(2.0, "Reward:Risk", step=0.1)
+cross_confirm_bars = input.int(3, "Cross confirmation bars", minval=1)
+
+// Entry window inputs
+entry_start_hour = input.int(9, "Entry Start Hour", minval=0, maxval=23)
+entry_start_min  = input.int(30, "Entry Start Minute", minval=0, maxval=59)
+entry_end_hour   = input.int(16, "Entry End Hour", minval=0, maxval=23)
+entry_end_min    = input.int(0, "Entry End Minute", minval=0, maxval=59)
+
+// Colors and plotting
+ema_color = input.color(color.purple, "EMA Color")
+sma_color = input.color(color.blue, "SMA Color")
+plot_htf_trend = input.bool(true, "Plot HTF trend background")
+show_stops     = input.bool(true, "Plot stop lines")
+show_table     = input.bool(true, "Show debug table")
+
+// === INDICATORS ===
+ema_chart = ta.ema(close, ema_len)
+sma_chart = ta.sma(close, sma_len)
+[htf_ema, htf_sma] = request.security(syminfo.tickerid, higher_tf, [ta.ema(close, ema_len), ta.sma(close, sma_len)], lookahead=barmerge.lookahead_off)
+htf_bull = htf_ema > htf_sma
+htf_bear = htf_ema < htf_sma
+
+// === ENTRY WINDOW ===
+entry_start_time = timestamp("America/New_York", year, month, dayofmonth, entry_start_hour, entry_start_min)
+entry_end_time   = timestamp("America/New_York", year, month, dayofmonth, entry_end_hour, entry_end_min)
+in_entry_window = (time >= entry_start_time) and (time <= entry_end_time)
+barTimeNY = time(timeframe.period)
+barHour   = hour(barTimeNY)
+barMinute = minute(barTimeNY)
+
+// === CROSS CONFIRMATION ===
+var int last_long_cross_bar = na
+var int last_short_cross_bar = na
+var traded_long = false
+var traded_short = false
+var bool exit_long = false
+var bool exit_short = false
+
+if ta.crossover(ema_chart, sma_chart)
+    last_long_cross_bar := bar_index
+
+if ta.crossunder(ema_chart, sma_chart)
+    last_short_cross_bar := bar_index
+
+
+// if strategy.position_size > 0 and ema_chart < sma_chart
+    //exit_long := true
+
+if strategy.position_size < 0 and ema_chart > sma_chart
+    exit_short := true
+
+long_allowed  = not na(last_long_cross_bar) and strategy.position_size == 0 and bar_index <= last_long_cross_bar + cross_confirm_bars
+short_allowed = not na(last_short_cross_bar) and strategy.position_size == 0 and bar_index <= last_short_cross_bar + cross_confirm_bars
+
+avoidOpen = (barHour == 16 and barMinute > 45) or (barHour == 17 and barMinute < 10)
+long_allowed  := long_allowed and not avoidOpen
+short_allowed := short_allowed and not avoidOpen
+
+trade_long  = long_allowed  and in_entry_window and (require_htf_align ? htf_bull : true)
+trade_short = short_allowed and in_entry_window and (require_htf_align ? htf_bear : true)
+
+// === ENTRY ===
+long_id  = "Long"
+short_id = "Short"
+
+
+if trade_long
+    traded_long := true
+    strategy.entry(long_id, strategy.long, qty=6)
+if trade_short
+    traded_short := true
+    strategy.entry(short_id, strategy.short, qty=6)
+
+// === SWING detection ===
+pl = ta.pivotlow(low, pivot_left, pivot_right)
+ph = ta.pivothigh(high, pivot_left, pivot_right)
+var float last_pivot_low = na
+var float last_pivot_high = na
+if not na(pl)
+    last_pivot_low := pl
+if not na(ph)
+    last_pivot_high := ph
+
+fallback_low  = ta.lowest(low, fallback_lookback)
+fallback_high = ta.highest(high, fallback_lookback)
+long_stop_base  = na(last_pivot_low)  ? fallback_low  : last_pivot_low
+short_stop_base = na(last_pivot_high) ? fallback_high : last_pivot_high
+long_stop_price  = long_stop_base  - stop_buffer
+short_stop_price = short_stop_base + stop_buffer
+
+safe_stop(entry_price, stop_price, dir) =>
+    dir == "long" ? math.min(stop_price, entry_price * 0.995) : math.max(stop_price, entry_price * 1.005)
+
+// === TRAILING ===
+atr = ta.atr(atr_len)
+trail_value = trail_mode == "ATR" ? atr * atr_mult : trail_points
+
+// === EXIT MANAGEMENT ===
+var float long_stop_val = na
+var float long_tp_val   = na
+var float short_stop_val = na
+var float short_tp_val   = na
+var float entry_price = na
+
+// Long
+if strategy.position_size > 0
+    entry_price := strategy.position_avg_price
+    stop_price  = safe_stop(entry_price, long_stop_price, "long")
+    risk        = entry_price - stop_price
+    float tp_price    = na // entry_price + risk * rr_ratio
+    long_stop_val := stop_price
+    long_tp_val   := tp_price
+    moveStopPrice = entry_price + long_tp_val
+    if use_trail and (close > (moveStopPrice))
+        moveStopPrice := moveStopPrice + long_tp_val 
+        stop_price := stop_price + long_tp_val
+        strategy.exit("Exit Long", from_entry="Long", stop=stop_price)
+    if exit_long
+        strategy.close_all(comment="cross", immediately=true)
+
+// Short
+if strategy.position_size < 0
+    entry_price := strategy.position_avg_price
+    stop_price  = safe_stop(entry_price, short_stop_price, "short")
+    risk        = stop_price - entry_price
+    float tp_price    = na //entry_price - risk * rr_ratio
+    short_stop_val := stop_price
+    short_tp_val   := tp_price
+    moveStopPrice = entry_price - long_tp_val
+    if use_trail and (close < moveStopPrice)
+        moveStopPrice := moveStopPrice - long_tp_val 
+        stop_price := stop_price - long_tp_val
+        strategy.exit("Exit Short", from_entry="Short", stop=stop_price)
+    if exit_short
+        strategy.close_all(comment="cross", immediately=true)
+
+
+// === FORCE EXIT 16:45 NYT ===
+closeAll = (barHour == 16 and barMinute > 50) or (barHour == 17 and barMinute < 5)
+if closeAll and strategy.opentrades != 0
+    strategy.close_all(comment="Session Close", immediately=true)
+
+
+// === PLOTTING ===
+plot(ema_chart, title="EMA21", color=ema_color, linewidth=2)
+plot(sma_chart, title="SMA50", color=sma_color, linewidth=2)
+bgcolor(plot_htf_trend ? (htf_bull ? color.new(color.green, 92) : color.new(color.red, 92)) : na)
+plot(show_stops ? long_stop_price  : na, "Long stop ref",  color=color.red,   style=plot.style_linebr, linewidth=1)
+plot(show_stops ? short_stop_price : na, "Short stop ref", color=color.green, style=plot.style_linebr, linewidth=1)
+plotshape(ta.crossover(ema_chart, sma_chart),  title="Bull Cross",  location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small, text="▲")
+plotshape(ta.crossunder(ema_chart, sma_chart), title="Bear Cross",  location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small, text="▼")
+
+// === DEBUG TABLE ===
+var table debugTbl = na
+if show_table and na(debugTbl)
+    debugTbl := table.new(position.top_right, 2, 15, border_width=1, frame_color=color.gray)
+if show_table
+    table.cell(debugTbl, 0, 0, "HTF EMA", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 0, str.tostring(htf_ema, format.mintick))
+    table.cell(debugTbl, 0, 1, "HTF SMA", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 1, str.tostring(htf_sma, format.mintick))
+    table.cell(debugTbl, 0, 2, "HTF Trend", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 2, htf_bull ? "BULL" : htf_bear ? "BEAR" : "FLAT")
+    table.cell(debugTbl, 0, 3, "Can Long?", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 3, str.tostring(trade_long))
+    table.cell(debugTbl, 0, 4, "Can Short?", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 4, str.tostring(trade_short))
+    table.cell(debugTbl, 0, 5, "In Entry Window", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 5, str.tostring(in_entry_window))
+    table.cell(debugTbl, 0, 6, "Long Stop", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 6, str.tostring(long_stop_val, format.mintick))
+    table.cell(debugTbl, 0, 7, "Long TP", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 7, str.tostring(long_tp_val, format.mintick))
+    table.cell(debugTbl, 0, 8, "Short Stop", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 8, str.tostring(short_stop_val, format.mintick))
+    table.cell(debugTbl, 0, 9, "Short TP", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 9, str.tostring(short_tp_val, format.mintick))
+    table.cell(debugTbl, 0, 10, "RR Ratio", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 10, str.tostring(rr_ratio, format.mintick))
+    table.cell(debugTbl, 0, 11, "trail_value", bgcolor=color.silver)
+    table.cell(debugTbl, 1, 11, str.tostring(trail_value + entry_price, "#.##"))
+
+
+// add volume increasing and/or engulfing candle check

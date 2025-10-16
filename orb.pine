@@ -1,0 +1,143 @@
+//@version=5
+strategy("ORB Strategy - Fixed $500 Risk, 2:1 R:R, ORB Box & Retest Entry", overlay=true, default_qty_type=strategy.fixed, default_qty_value=1)
+
+enum tz
+    utc  = "UTC"
+    exch = ""
+    ny   = "America/New_York"
+    chi  = "America/Chicago"
+    lon  = "Europe/London"
+    tok  = "Asia/Tokyo"
+
+// === Inputs ===
+orbStartHour   = input.int(9, "ORB Start Hour", minval=0, maxval=23)
+orbStartMinute = input.int(30, "ORB Start Minute", minval=0, maxval=59)
+orbEndHour     = input.int(9, "ORB End Hour", minval=0, maxval=23)
+orbEndMinute   = input.int(45, "ORB End Minute", minval=0, maxval=59)
+timeZoneInput = str.tostring(input.enum(tz.ny, "Session Timezone"))
+
+// === Current time ===
+h = hour(time)
+m = minute(time)
+d = dayofmonth(time)
+
+// === Track ORB High/Low (reset daily) ===
+var float sessionHigh = na
+var float sessionLow  = na
+var box orbBox = na
+var box orbSetBox = na
+var int sessionDay = na
+var bool tradedToday = false
+var bool brokeAbove = false
+var bool brokeBelow = false
+var bool exitedTrade = false
+
+newSession = na(sessionDay) or d != sessionDay
+
+if newSession
+    sessionHigh := na
+    sessionLow := na
+    sessionDay := d
+    tradedToday := false
+    if not na(orbBox)
+        box.delete(orbBox)
+    orbBox := na
+    orbSetBox := na
+    brokeAbove := false
+    brokeBelow := false
+    exitedTrade := false
+
+drawTradeLines(_entry, _stop, _target, _isLong) =>
+    if _isLong
+        line.new(bar_index, _entry, bar_index+1, _entry, color=color.green, width=2)
+        line.new(bar_index, _stop,  bar_index+1, _stop,  color=color.red,   width=2, style=line.style_dashed)
+        //if not use_trailing
+        //    line.new(bar_index, _target, bar_index+1, _target, color=color.blue, style=line.style_dashed)
+    else
+        line.new(bar_index, _entry, bar_index+1, _entry, color=color.red,   width=2)
+        line.new(bar_index, _stop,  bar_index+1, _stop,  color=color.green, width=2, style=line.style_dashed)
+        //if not use_trailing
+        //    line.new(bar_index, _target, bar_index+1, _target, color=color.blue, style=line.style_dashed)
+
+orbCollectStart = timestamp(timeZoneInput, year, month, dayofmonth, orbStartHour, orbStartMinute)
+orbCollectEnd = timestamp(timeZoneInput, year, month, dayofmonth, orbEndHour, orbEndMinute)
+
+inORBCollectionWindow = time > orbCollectStart and time <= orbCollectEnd
+     
+if inORBCollectionWindow
+    sessionHigh := na(sessionHigh) ? high : math.max(sessionHigh, high)
+    sessionLow  := na(sessionLow)  ? low  : math.min(sessionLow, low)
+
+if inORBCollectionWindow // aka trade time
+    orbSetBox := box.new(left=bar_index, top=sessionHigh, right=bar_index, bottom=sessionLow,
+                      border_color=color.red, bgcolor=color.new(color.red, 85))
+
+isORBComplete = time > orbCollectEnd
+
+if (strategy.position_size[1] != 0 and strategy.position_size == 0)
+    exitedTrade := true
+
+// Draw/extend the ORB box
+if isORBComplete and na(orbBox) and not na(sessionHigh) and not na(sessionLow) and not exitedTrade
+    orbBox := box.new(left=bar_index, top=sessionHigh, right=bar_index, bottom=sessionLow,
+                      border_color=color.yellow, bgcolor=color.new(color.yellow, 85))
+if not na(orbBox)
+    box.set_right(orbBox, bar_index)
+
+
+
+if close > sessionHigh and isORBComplete
+    brokeAbove := true
+if not brokeBelow and close < sessionLow and isORBComplete
+    brokeBelow := true
+
+longCondition  = not tradedToday and brokeAbove and close <= sessionHigh and low <= sessionHigh and isORBComplete
+shortCondition = not tradedToday and brokeBelow and close >= sessionLow  and high >= sessionLow and isORBComplete
+
+// === Stops & Targets ===
+longStopLoss   = sessionLow
+longTakeProfit = sessionHigh + 2 * (sessionHigh - sessionLow)
+
+shortStopLoss   = sessionHigh
+shortTakeProfit = sessionLow - 2 * (sessionHigh - sessionLow)
+
+if strategy.position_size > 0
+    drawTradeLines(entryPriceTracked, stopPrice, takePrice, strategy.position_size > 0)
+    
+// === Orders ===
+if (longCondition)
+    strategy.entry("Long", strategy.long, qty=1)
+    strategy.exit("Exit Long", "Long", stop=longStopLoss, limit=longTakeProfit)
+    tradedToday := true
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short, qty=1)
+    strategy.exit("Exit Short", "Short", stop=shortStopLoss, limit=shortTakeProfit)
+    tradedToday := true
+
+// === Alerts ===
+alertcondition(longCondition, title="Long Retest Entry",  message="ORB retest long entry triggered")
+alertcondition(shortCondition, title="Short Retest Entry", message="ORB retest short entry triggered")
+
+// === DEBUG TABLE ===
+var table debug = table.new(position.top_right, 6, 9, border_width=1)
+
+if barstate.islast
+    table.cell(debug, 0, 0, "inORBCollectionWindow", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 0, str.tostring(inORBCollectionWindow))
+    table.cell(debug, 0, 1, "isORBComplete", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 1, str.tostring(isORBComplete))
+    table.cell(debug, 0, 2, "newSession", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 2, str.tostring(newSession))
+    table.cell(debug, 0, 3, "brokeAbove", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 3, str.tostring(close > sessionHigh and isORBComplete))
+    table.cell(debug, 0, 4, "brokeBelow", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 4, str.tostring(brokeBelow))
+    table.cell(debug, 0, 5, "exitedTrade", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 5, str.tostring(exitedTrade))
+    table.cell(debug, 0, 6, "shortCondition", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 6, str.tostring(shortCondition))
+    table.cell(debug, 0, 7, "longStopLoss", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 7, str.tostring(longStopLoss))
+    table.cell(debug, 0, 8, "longTakeProfit", text_color=color.white, bgcolor=color.blue)
+    table.cell(debug, 1, 8, str.tostring(longTakeProfit))

@@ -1,0 +1,128 @@
+//@version=5
+strategy("trailing stop working", 
+     overlay=true, pyramiding=1, initial_capital=150000, 
+     commission_type=strategy.commission.cash_per_contract, commission_value=2)
+
+// === USER INPUTS ===
+higher_tf         = input.timeframe("60", "Higher timeframe (trend)")
+ema_htf_len       = input.int(89, "HTF EMA length", minval=5)
+ema_len           = input.int(21, "Entry EMA length", minval=2)
+rsi_len           = input.int(14, "RSI length", minval=2)
+rsi_filter        = input.int(50, "RSI threshold")
+atr_len           = input.int(14, "ATR length", minval=1)
+atr_stop_mult     = input.float(2.0, "Stop = ATR ×", step=0.1)
+atr_target_mult   = input.float(3.0, "Target = ATR ×", step=0.1)
+use_trailing      = input.bool(true, "Use trailing stop?")
+trail_offset_mult = input.float(1.0, "Trail offset (ATR ×)", step=0.1)
+volThreshold      = input.float(0.5, "Volume threshold (× SMA)", step=0.1, minval=0.0)
+riskPerTrade      = input.float(1500.0, "Fixed $ Risk per Trade", step=50)
+max_positions     = input.int(1, "Max concurrent positions", minval=1)
+onlyWithHTF       = input.bool(true, "Only take trades in direction of HTF trend?")
+
+// === SESSION INPUTS (New York time) ===
+tradeSession = input.session("0930-1600", "Trading Hours (entries allowed)")
+closeHour    = input.int(15, "Close Trades Hour (NY Time)", minval=0, maxval=23)
+closeMinute  = input.int(45, "Close Trades Minute (NY Time)", minval=0, maxval=59)
+
+// === INDICATOR TOGGLES ===
+showEMA_HTF   = input.bool(true, "Show HTF EMA?")
+showTEMA_HTF  = input.bool(true, "Show HTF TEMA?")
+showEMA_Entry = input.bool(true, "Show Entry EMA?")
+showRSI       = input.bool(false, "Show RSI?")
+showATR       = input.bool(false, "Show ATR?")
+showVolume    = input.bool(false, "Show Volume SMA?")
+
+// === INDICATORS ===
+emaHTF   = request.security(syminfo.tickerid, higher_tf, ta.ema(close, ema_htf_len))
+ema      = ta.ema(close, ema_len)
+rsi      = ta.rsi(close, rsi_len)
+atr      = ta.atr(atr_len)
+vol_sma  = ta.sma(volume, 20)
+
+// === TREND FILTERS ===
+trendBull = close > emaHTF
+trendBear = close < emaHTF
+biasLong  = trendBull ? 1.0 : 0.5
+biasShort = trendBear ? 1.0 : 0.5
+
+// === ENTRY CONDITIONS ===
+longCondition  = ta.crossover(close, ema) and rsi > rsi_filter and volume > vol_sma * volThreshold
+shortCondition = ta.crossunder(close, ema) and rsi < (100 - rsi_filter) and volume > vol_sma * volThreshold
+
+longCondition  := longCondition and close > emaHTF
+shortCondition := shortCondition and close < emaHTF
+
+// === TRADING HOURS FILTER ===
+inTradeSession = not na(time(timeframe.period, tradeSession, "America/New_York"))
+longCondition  := longCondition  and inTradeSession and (not onlyWithHTF or trendBull)
+shortCondition := shortCondition and inTradeSession and (not onlyWithHTF or trendBear)
+
+// === LIMIT ENTRY PRICES ===
+longLimitPrice  = ta.valuewhen(longCondition, high, 0)
+shortLimitPrice = ta.valuewhen(shortCondition, low, 0)
+
+// === CALCULATE CONTRACTS BASED ON $ RISK ===
+calcQty(_stopDist) =>
+    qty = 3  // fixed qty for simplicity
+
+// === TRADE VARIABLES ===
+var float entryPriceTracked = na
+var float stopPrice         = na
+var float takePrice         = na
+var string directionTracked = ""
+var line  trailStopLine     = na
+var line  entryLine         = na
+var line  targetLine        = na
+
+// === ENTRIES & EXITS ===
+if longCondition and strategy.opentrades < max_positions
+    stopPrice = longLimitPrice - atr * atr_stop_mult
+    takePrice = longLimitPrice + atr * atr_target_mult
+    qty       = calcQty(longLimitPrice - stopPrice) * biasLong
+    if not na(qty)
+        strategy.entry("Long", strategy.long, qty=qty, limit=longLimitPrice)
+        if use_trailing
+            trailPts = atr * trail_offset_mult
+            if not na(trailPts)
+                strategy.exit("Exit Long", from_entry="Long", trail_price=close, trail_offset=trailPts)
+        else
+            strategy.exit("Exit Long", from_entry="Long", stop=stopPrice, limit=takePrice)
+        entryPriceTracked = longLimitPrice
+        directionTracked  = "LONG"
+        // Draw entry line
+        entryLine := line.new(bar_index, entryPriceTracked, bar_index+1, entryPriceTracked, color=color.green, width=2)
+        // Draw initial target line
+        targetLine := line.new(bar_index, takePrice, bar_index+1, takePrice, color=color.blue, style=line.style_dashed)
+
+// Short entries
+if shortCondition and strategy.opentrades < max_positions
+    stopPrice = shortLimitPrice + atr * atr_stop_mult
+    takePrice = shortLimitPrice - atr * atr_target_mult
+    qty       = calcQty(stopPrice - shortLimitPrice) * biasShort
+    if not na(qty)
+        strategy.entry("Short", strategy.short, qty=qty, limit=shortLimitPrice)
+        if use_trailing
+            trailPts = atr * trail_offset_mult
+            if not na(trailPts)
+                strategy.exit("Exit Short", from_entry="Short", trail_price=close, trail_offset=trailPts)
+        else
+            strategy.exit("Exit Short", from_entry="Short", stop=stopPrice, limit=takePrice)
+        entryPriceTracked = shortLimitPrice
+        directionTracked  = "SHORT"
+        // Draw entry line
+        entryLine := line.new(bar_index, entryPriceTracked, bar_index+1, entryPriceTracked, color=color.red, width=2)
+        // Draw initial target line
+        targetLine := line.new(bar_index, takePrice, bar_index+1, takePrice, color=color.blue, style=line.style_dashed)
+
+// === CLOSE ALL OPEN TRADES AT SPECIFIC NY TIME ===
+barHour   = hour(time(timeframe.period))
+barMinute = minute(time(timeframe.period))
+isCloseSessionBar = (barHour == closeHour) and (barMinute == closeMinute)
+if isCloseSessionBar and strategy.opentrades != 0
+    strategy.close_all(comment="Session Close", immediately=true)
+
+// === VISUALS ===
+plot(showEMA_HTF   ? emaHTF   : na, title="HTF EMA", linewidth=2, color=color.orange)
+plot(showEMA_Entry ? ema      : na, title="Entry EMA", linewidth=1, color=color.blue)
+plotchar(longCondition,  title="Long Signal",  char="▲", location=location.belowbar, color=color.green)
+plotchar(shortCondition, title="Short Signal", char="▼", location=location.abovebar, color=color.red)
