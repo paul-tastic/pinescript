@@ -711,7 +711,7 @@ if bullPattern != ""
     
     // Check no-trade time first
     if currentlyInNoTradeZone
-        canTrade := false
+        canTrade := falseorb
         rejectionReason := "No-Trade Time"
     // CRITICAL: Must be in demand zone and NOT in supply zone
     else if not inDemandZone
