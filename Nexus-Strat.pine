@@ -1,0 +1,2873 @@
+//mach2fx
+//@version=5
+strategy("Nexus Strategy", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Session Time Settings (NY Timezone)
+asian_session = input.session("2000-0000", "Asian Session", group="Session Times", tooltip="Default: 8:00 PM - 12:00 AM NY time")
+london_session = input.session("0300-0700", "London Session", group="Session Times", tooltip="Default: 3:00 AM - 7:00 AM NY time")
+ny_session = input.session("0930-1600", "NY Session", group="Session Times", tooltip="Default: 9:30 AM - 4:00 PM NY time")
+
+// Session High/Low Display Settings
+show_asian_lines = input.bool(true, "Show Asian Session Lines", group="Session Lines")
+show_london_lines = input.bool(true, "Show London Session Lines", group="Session Lines")
+show_ny_lines = input.bool(true, "Show NY Session Lines", group="Session Lines")
+show_labels = input.bool(true, "Show Session Labels", group="Session Lines")
+
+// Visual Settings
+session_high_color = input.color(color.new(color.red, 0), "Session High Color", group="Visual")
+session_low_color = input.color(color.new(color.green, 0), "Session Low Color", group="Visual")
+
+// HTF FVG Settings (Higher Timeframe)
+show_htf_fvg_1h = input.bool(true, "Show 1H FVGs", group="HTF Fair Value Gaps")
+show_htf_fvg_daily = input.bool(true, "Show Daily FVGs", group="HTF Fair Value Gaps")
+htf_fvg_color = input.color(color.new(color.yellow, 85), "HTF FVG Color", group="HTF Fair Value Gaps")
+max_htf_fvg_boxes = input.int(20, "Max HTF FVG Boxes", minval=1, maxval=100, group="HTF Fair Value Gaps")
+
+// Fractal Settings
+show_fractals = input.bool(true, "Show HTF (1H) Fractals", group="Fractals")
+fractal_up_color = input.color(color.new(color.lime, 0), "Fractal Up Color", group="Fractals")
+fractal_down_color = input.color(color.new(color.red, 0), "Fractal Down Color", group="Fractals")
+show_ltf_fractals = input.bool(true, "Show LTF (Chart TF) Fractals", group="Fractals")
+ltf_fractal_up_color = input.color(color.new(color.aqua, 0), "LTF Fractal Up Color", group="Fractals")
+ltf_fractal_down_color = input.color(color.new(color.orange, 0), "LTF Fractal Down Color", group="Fractals")
+
+// HTF Supply & Demand Settings
+show_htf_supply_demand = input.bool(true, "Show HTF Supply & Demand Zones", group="HTF Supply & Demand")
+htf_demand_color = input.color(color.new(color.green, 90), "HTF Demand Zone Color", group="HTF Supply & Demand")
+htf_supply_color = input.color(color.new(color.red, 90), "HTF Supply Zone Color", group="HTF Supply & Demand")
+max_htf_sd_zones = input.int(10, "Max HTF S&D Zones", minval=1, maxval=50, group="HTF Supply & Demand")
+
+// Trade Management Settings
+max_risk_per_trade = input.float(500.0, "Max Risk Per Trade ($)", minval=1.0, group="Trade Management", tooltip="Maximum dollar amount to risk per trade")
+show_trade_zones = input.bool(true, "Show TP/SL Trade Zones", group="Trade Management", tooltip="Display transparent boxes for take profit and stop loss regions")
+
+// No-Trade Time Periods (NY Timezone)
+enable_no_trade_1 = input.bool(true, "Enable No-Trade Period 1", group="No-Trade Times", tooltip="Close trades and prevent entries during this time")
+no_trade_1_start = input.session("1745-1815", "Period 1 Time", group="No-Trade Times")
+enable_no_trade_2 = input.bool(true, "Enable No-Trade Period 2", group="No-Trade Times", tooltip="Close trades and prevent entries during this time")
+no_trade_2_start = input.session("1815-2359", "Period 2 Time", group="No-Trade Times")
+enable_no_trade_3 = input.bool(true, "Enable No-Trade Period 3", group="No-Trade Times", tooltip="Close trades and prevent entries during this time")
+no_trade_3_start = input.session("0000-0930", "Period 3 Time", group="No-Trade Times")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+// Asian Session Variables
+var float prev_asian_high = na
+var float prev_asian_low = na
+var int prev_asian_high_time = na
+var int prev_asian_low_time = na
+var line asian_high_line = na
+var line asian_low_line = na
+var label asian_high_label = na
+var label asian_low_label = na
+var bool asian_high_invalidated = false
+var bool asian_low_invalidated = false
+var float current_asian_high = na
+var float current_asian_low = na
+var int current_asian_high_time = na
+var int current_asian_low_time = na
+var bool in_asian_session = false
+
+// London Session Variables
+var float prev_london_high = na
+var float prev_london_low = na
+var int prev_london_high_time = na
+var int prev_london_low_time = na
+var line london_high_line = na
+var line london_low_line = na
+var label london_high_label = na
+var label london_low_label = na
+var bool london_high_invalidated = false
+var bool london_low_invalidated = false
+var float current_london_high = na
+var float current_london_low = na
+var int current_london_high_time = na
+var int current_london_low_time = na
+var bool in_london_session = false
+
+// NY Session Variables
+var float prev_ny_high = na
+var float prev_ny_low = na
+var int prev_ny_high_time = na
+var int prev_ny_low_time = na
+var line ny_high_line = na
+var line ny_low_line = na
+var label ny_high_label = na
+var label ny_low_label = na
+var bool ny_high_invalidated = false
+var bool ny_low_invalidated = false
+var float current_ny_high = na
+var float current_ny_low = na
+var int current_ny_high_time = na
+var int current_ny_low_time = na
+var bool in_ny_session = false
+
+// Track the current day to detect new days
+var int current_day = na
+
+// Previous Day High/Low Variables
+var float prev_day_high = na
+var float prev_day_low = na
+var int prev_day_high_time = na
+var int prev_day_low_time = na
+var line prev_day_high_line = na
+var line prev_day_low_line = na
+var label prev_day_high_label = na
+var label prev_day_low_label = na
+var bool prev_day_high_invalidated = false
+var bool prev_day_low_invalidated = false
+
+// HTF Supply & Demand Variables
+var array<box> htf_demand_zones = array.new<box>()
+var array<box> htf_supply_zones = array.new<box>()
+
+// Arrays to track fractals for S&D zone creation
+var array<float> fractal_highs = array.new<float>()
+var array<int> fractal_highs_time = array.new<int>()
+var array<float> fractal_highs_low = array.new<float>()  // Low of the fractal candle for zone bottom
+var array<float> fractal_lows = array.new<float>()
+var array<int> fractal_lows_time = array.new<int>()
+var array<float> fractal_lows_high = array.new<float>()  // High of the fractal candle for zone top
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+
+// Check which session we're currently in
+bool is_asian = not na(time(timeframe.period, asian_session, "America/New_York"))
+bool is_london = not na(time(timeframe.period, london_session, "America/New_York"))
+bool is_ny = not na(time(timeframe.period, ny_session, "America/New_York"))
+
+// Detect new day (using NY midnight as the reference)
+int today = dayofweek(time, "America/New_York")
+bool is_new_day = na(current_day) or today != current_day
+
+// Get previous day's high and low (must be called outside conditional blocks)
+float yesterday_high = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+float yesterday_low = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_off)
+int yesterday_high_time = request.security(syminfo.tickerid, "D", time[1], lookahead=barmerge.lookahead_off)
+int yesterday_low_time = request.security(syminfo.tickerid, "D", time[1], lookahead=barmerge.lookahead_off)
+
+// ============================================================================
+// NO-TRADE TIME CHECKER
+// ============================================================================
+
+// Check if current time is within any of the enabled no-trade periods
+bool in_no_trade_time = false
+if enable_no_trade_1 and not na(time(timeframe.period, no_trade_1_start, "America/New_York"))
+    in_no_trade_time := true
+if enable_no_trade_2 and not na(time(timeframe.period, no_trade_2_start, "America/New_York"))
+    in_no_trade_time := true
+if enable_no_trade_3 and not na(time(timeframe.period, no_trade_3_start, "America/New_York"))
+    in_no_trade_time := true
+
+// ============================================================================
+// ASIAN SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering Asian session
+if is_asian and not in_asian_session
+    in_asian_session := true
+    current_asian_high := high
+    current_asian_low := low
+    current_asian_high_time := time
+    current_asian_low_time := time
+
+// Update Asian session high/low during the session
+if in_asian_session and is_asian
+    if high > current_asian_high
+        current_asian_high := high
+        current_asian_high_time := time
+    if low < current_asian_low
+        current_asian_low := low
+        current_asian_low_time := time
+
+// Exiting Asian session - save as previous and draw lines
+if in_asian_session and not is_asian
+    in_asian_session := false
+    prev_asian_high := current_asian_high
+    prev_asian_low := current_asian_low
+    prev_asian_high_time := current_asian_high_time
+    prev_asian_low_time := current_asian_low_time
+    asian_high_invalidated := false
+    asian_low_invalidated := false
+
+    // Draw Asian session lines immediately
+    if show_asian_lines
+        // Delete old Asian lines if they exist
+        if not na(asian_high_line)
+            line.delete(asian_high_line)
+        if not na(asian_low_line)
+            line.delete(asian_low_line)
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+
+        // Draw new Asian high line
+        if not na(prev_asian_high)
+            asian_high_line := line.new(prev_asian_high_time, prev_asian_high, prev_asian_high_time + 1, prev_asian_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "PAH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new Asian low line
+        if not na(prev_asian_low)
+            asian_low_line := line.new(prev_asian_low_time, prev_asian_low, prev_asian_low_time + 1, prev_asian_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "PAL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+// ============================================================================
+// LONDON SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering London session
+if is_london and not in_london_session
+    in_london_session := true
+    current_london_high := high
+    current_london_low := low
+    current_london_high_time := time
+    current_london_low_time := time
+
+// Update London session high/low during the session
+if in_london_session and is_london
+    if high > current_london_high
+        current_london_high := high
+        current_london_high_time := time
+    if low < current_london_low
+        current_london_low := low
+        current_london_low_time := time
+
+// Exiting London session - save as previous and draw lines
+if in_london_session and not is_london
+    in_london_session := false
+    prev_london_high := current_london_high
+    prev_london_low := current_london_low
+    prev_london_high_time := current_london_high_time
+    prev_london_low_time := current_london_low_time
+    london_high_invalidated := false
+    london_low_invalidated := false
+
+    // Draw London session lines immediately
+    if show_london_lines
+        // Delete old London lines if they exist
+        if not na(london_high_line)
+            line.delete(london_high_line)
+        if not na(london_low_line)
+            line.delete(london_low_line)
+        if not na(london_high_label)
+            label.delete(london_high_label)
+        if not na(london_low_label)
+            label.delete(london_low_label)
+
+        // Draw new London high line
+        if not na(prev_london_high)
+            london_high_line := line.new(prev_london_high_time, prev_london_high, prev_london_high_time + 1, prev_london_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                london_high_label := label.new(prev_london_high_time, prev_london_high, "PLH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new London low line
+        if not na(prev_london_low)
+            london_low_line := line.new(prev_london_low_time, prev_london_low, prev_london_low_time + 1, prev_london_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                london_low_label := label.new(prev_london_low_time, prev_london_low, "PLL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+// ============================================================================
+// NY SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering NY session
+if is_ny and not in_ny_session
+    in_ny_session := true
+    current_ny_high := high
+    current_ny_low := low
+    current_ny_high_time := time
+    current_ny_low_time := time
+
+// Update NY session high/low during the session
+if in_ny_session and is_ny
+    if high > current_ny_high
+        current_ny_high := high
+        current_ny_high_time := time
+    if low < current_ny_low
+        current_ny_low := low
+        current_ny_low_time := time
+
+// Exiting NY session - save as previous and draw lines
+if in_ny_session and not is_ny
+    in_ny_session := false
+    prev_ny_high := current_ny_high
+    prev_ny_low := current_ny_low
+    prev_ny_high_time := current_ny_high_time
+    prev_ny_low_time := current_ny_low_time
+    ny_high_invalidated := false
+    ny_low_invalidated := false
+
+    // Draw NY session lines immediately
+    if show_ny_lines
+        // Delete old NY lines if they exist
+        if not na(ny_high_line)
+            line.delete(ny_high_line)
+        if not na(ny_low_line)
+            line.delete(ny_low_line)
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+
+        // Draw new NY high line
+        if not na(prev_ny_high)
+            ny_high_line := line.new(prev_ny_high_time, prev_ny_high, prev_ny_high_time + 1, prev_ny_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "PDH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new NY low line
+        if not na(prev_ny_low)
+            ny_low_line := line.new(prev_ny_low_time, prev_ny_low, prev_ny_low_time + 1, prev_ny_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "PDL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+
+// Update current day tracker and set Previous Day High/Low
+if is_new_day
+    current_day := today
+
+    // Update previous day high/low values using pre-calculated values
+    if not na(yesterday_high)
+        prev_day_high := yesterday_high
+        prev_day_high_time := yesterday_high_time
+        prev_day_high_invalidated := false
+
+    if not na(yesterday_low)
+        prev_day_low := yesterday_low
+        prev_day_low_time := yesterday_low_time
+        prev_day_low_invalidated := false
+
+    // Draw Previous Day High line
+    if show_ny_lines and not na(prev_day_high)
+        // Delete old PDH line if it exists
+        if not na(prev_day_high_line)
+            line.delete(prev_day_high_line)
+        if not na(prev_day_high_label)
+            label.delete(prev_day_high_label)
+
+        // Draw new PDH line
+        prev_day_high_line := line.new(time, prev_day_high, time + 1, prev_day_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_dashed)
+        if show_labels
+            prev_day_high_label := label.new(time, prev_day_high, "PDH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+    // Draw Previous Day Low line
+    if show_ny_lines and not na(prev_day_low)
+        // Delete old PDL line if it exists
+        if not na(prev_day_low_line)
+            line.delete(prev_day_low_line)
+        if not na(prev_day_low_label)
+            label.delete(prev_day_low_label)
+
+        // Draw new PDL line
+        prev_day_low_line := line.new(time, prev_day_low, time + 1, prev_day_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_dashed)
+        if show_labels
+            prev_day_low_label := label.new(time, prev_day_low, "PDL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+// ============================================================================
+// LINE INVALIDATION (Remove when price crosses through the level)
+// ============================================================================
+
+// Asian High invalidation - remove when price breaks ABOVE the high
+if not na(asian_high_line) and not asian_high_invalidated and not na(prev_asian_high)
+    if high > prev_asian_high
+        asian_high_invalidated := true
+        line.delete(asian_high_line)
+        asian_high_line := na
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+            asian_high_label := na
+
+// Asian Low invalidation - remove when price breaks BELOW the low
+if not na(asian_low_line) and not asian_low_invalidated and not na(prev_asian_low)
+    if low < prev_asian_low
+        asian_low_invalidated := true
+        line.delete(asian_low_line)
+        asian_low_line := na
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+            asian_low_label := na
+
+// London High invalidation - remove when price breaks ABOVE the high
+if not na(london_high_line) and not london_high_invalidated and not na(prev_london_high)
+    if high > prev_london_high
+        london_high_invalidated := true
+        line.delete(london_high_line)
+        london_high_line := na
+        if not na(london_high_label)
+            label.delete(london_high_label)
+            london_high_label := na
+
+// London Low invalidation - remove when price breaks BELOW the low
+if not na(london_low_line) and not london_low_invalidated and not na(prev_london_low)
+    if low < prev_london_low
+        london_low_invalidated := true
+        line.delete(london_low_line)
+        london_low_line := na
+        if not na(london_low_label)
+            label.delete(london_low_label)
+            london_low_label := na
+
+// NY High invalidation - remove when price breaks ABOVE the high
+if not na(ny_high_line) and not ny_high_invalidated and not na(prev_ny_high)
+    if high > prev_ny_high
+        ny_high_invalidated := true
+        line.delete(ny_high_line)
+        ny_high_line := na
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+            ny_high_label := na
+
+// NY Low invalidation - remove when price breaks BELOW the low
+if not na(ny_low_line) and not ny_low_invalidated and not na(prev_ny_low)
+    if low < prev_ny_low
+        ny_low_invalidated := true
+        line.delete(ny_low_line)
+        ny_low_line := na
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+            ny_low_label := na
+
+// Previous Day High invalidation - remove when price breaks ABOVE the high
+if not na(prev_day_high_line) and not prev_day_high_invalidated and not na(prev_day_high)
+    if high > prev_day_high
+        prev_day_high_invalidated := true
+        line.delete(prev_day_high_line)
+        prev_day_high_line := na
+        if not na(prev_day_high_label)
+            label.delete(prev_day_high_label)
+            prev_day_high_label := na
+
+// Previous Day Low invalidation - remove when price breaks BELOW the low
+if not na(prev_day_low_line) and not prev_day_low_invalidated and not na(prev_day_low)
+    if low < prev_day_low
+        prev_day_low_invalidated := true
+        line.delete(prev_day_low_line)
+        prev_day_low_line := na
+        if not na(prev_day_low_label)
+            label.delete(prev_day_low_label)
+            prev_day_low_label := na
+
+// ============================================================================
+// HTF FAIR VALUE GAP (FVG) DETECTION - HIGHER TIMEFRAMES
+// ============================================================================
+
+// Arrays to store HTF FVG boxes
+var array<box> htf_fvg_1h_boxes = array.new<box>()
+var array<box> htf_fvg_daily_boxes = array.new<box>()
+
+// Track last FVG times to prevent duplicates
+var int last_1h_fvg_time = 0
+var int last_daily_fvg_time = 0
+
+// Get HTF data using request.security - without gaps for better reliability
+// FVG is a 3-candle pattern, so we need candles 0, 1, and 2
+// Using [1], [2], [3] to get completed/closed 1H bars only (not in-progress bars)
+htf_1h_high_0 = request.security(syminfo.tickerid, "60", high[1], lookahead=barmerge.lookahead_off)
+htf_1h_low_0 = request.security(syminfo.tickerid, "60", low[1], lookahead=barmerge.lookahead_off)
+htf_1h_time_0 = request.security(syminfo.tickerid, "60", time[1], lookahead=barmerge.lookahead_off)
+
+// Get current 1H bar time (not offset) to detect when new 1H bars form
+htf_1h_time_current = request.security(syminfo.tickerid, "60", time, lookahead=barmerge.lookahead_off)
+htf_1h_high_1 = request.security(syminfo.tickerid, "60", high[2], lookahead=barmerge.lookahead_off)
+htf_1h_low_1 = request.security(syminfo.tickerid, "60", low[2], lookahead=barmerge.lookahead_off)
+htf_1h_time_1 = request.security(syminfo.tickerid, "60", time[2], lookahead=barmerge.lookahead_off)
+htf_1h_high_2 = request.security(syminfo.tickerid, "60", high[3], lookahead=barmerge.lookahead_off)
+htf_1h_low_2 = request.security(syminfo.tickerid, "60", low[3], lookahead=barmerge.lookahead_off)
+htf_1h_time_2 = request.security(syminfo.tickerid, "60", time[3], lookahead=barmerge.lookahead_off)
+
+// Using [1], [2], [3] to get completed/closed Daily bars only (not in-progress bars)
+htf_daily_high_0 = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+htf_daily_low_0 = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_off)
+htf_daily_time_0 = request.security(syminfo.tickerid, "D", time[1], lookahead=barmerge.lookahead_off)
+htf_daily_high_1 = request.security(syminfo.tickerid, "D", high[2], lookahead=barmerge.lookahead_off)
+htf_daily_low_1 = request.security(syminfo.tickerid, "D", low[2], lookahead=barmerge.lookahead_off)
+htf_daily_time_1 = request.security(syminfo.tickerid, "D", time[2], lookahead=barmerge.lookahead_off)
+htf_daily_high_2 = request.security(syminfo.tickerid, "D", high[3], lookahead=barmerge.lookahead_off)
+htf_daily_low_2 = request.security(syminfo.tickerid, "D", low[3], lookahead=barmerge.lookahead_off)
+htf_daily_time_2 = request.security(syminfo.tickerid, "D", time[3], lookahead=barmerge.lookahead_off)
+
+// Detect when a new HTF bar starts (to prevent duplicates)
+var int last_1h_bar_time = 0
+var int last_daily_bar_time = 0
+bool new_1h_bar = htf_1h_time_0 != last_1h_bar_time
+bool new_daily_bar = htf_daily_time_0 != last_daily_bar_time
+
+if new_1h_bar
+    last_1h_bar_time := htf_1h_time_0
+
+if new_daily_bar
+    last_daily_bar_time := htf_daily_time_0
+
+// Detect 1H HTF FVGs - only when we have valid HTF data and a new 1H bar
+// FVG = 3-candle pattern where candle[2] and candle[0] don't overlap (gap between them)
+if show_htf_fvg_1h and new_1h_bar and not na(htf_1h_high_0) and not na(htf_1h_low_0) and not na(htf_1h_high_2) and not na(htf_1h_low_2) and not na(htf_1h_time_1) and bar_index > 2
+    // Bullish FVG on 1H: candle[2].high < candle[0].low (gap up)
+    if htf_1h_high_2 < htf_1h_low_0
+        // Create box for bullish HTF FVG
+        htf_fvg_top = htf_1h_low_0
+        htf_fvg_bottom = htf_1h_high_2
+        htf_fvg_left = htf_1h_time_1  // Start from the middle candle
+        htf_fvg_right = time + (60 * 60 * 1000 * 50) // Extend 50 hours into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=1, xloc=xloc.bar_time)
+        array.push(htf_fvg_1h_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_1h_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_1h_boxes)
+            box.delete(htf_old_box)
+
+    // Bearish FVG on 1H: candle[2].low > candle[0].high (gap down)
+    if htf_1h_low_2 > htf_1h_high_0
+        // Create box for bearish HTF FVG
+        htf_fvg_top = htf_1h_low_2
+        htf_fvg_bottom = htf_1h_high_0
+        htf_fvg_left = htf_1h_time_1  // Start from the middle candle
+        htf_fvg_right = time + (60 * 60 * 1000 * 50) // Extend 50 hours into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=1, xloc=xloc.bar_time)
+        array.push(htf_fvg_1h_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_1h_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_1h_boxes)
+            box.delete(htf_old_box)
+
+// Detect Daily HTF FVGs - only when we have valid HTF data and a new Daily bar
+// FVG = 3-candle pattern where candle[2] and candle[0] don't overlap (gap between them)
+if show_htf_fvg_daily and new_daily_bar and not na(htf_daily_high_0) and not na(htf_daily_low_0) and not na(htf_daily_high_2) and not na(htf_daily_low_2) and not na(htf_daily_time_1) and bar_index > 2
+    // Bullish FVG on Daily: candle[2].high < candle[0].low (gap up)
+    if htf_daily_high_2 < htf_daily_low_0
+        // Create box for bullish HTF FVG
+        htf_fvg_top = htf_daily_low_0
+        htf_fvg_bottom = htf_daily_high_2
+        htf_fvg_left = htf_daily_time_1  // Start from the middle candle
+        htf_fvg_right = time + (24 * 60 * 60 * 1000 * 30) // Extend 30 days into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=2, xloc=xloc.bar_time)
+        array.push(htf_fvg_daily_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_daily_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_daily_boxes)
+            box.delete(htf_old_box)
+
+    // Bearish FVG on Daily: candle[2].low > candle[0].high (gap down)
+    if htf_daily_low_2 > htf_daily_high_0
+        // Create box for bearish HTF FVG
+        htf_fvg_top = htf_daily_low_2
+        htf_fvg_bottom = htf_daily_high_0
+        htf_fvg_left = htf_daily_time_1  // Start from the middle candle
+        htf_fvg_right = time + (24 * 60 * 60 * 1000 * 30) // Extend 30 days into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=2, xloc=xloc.bar_time)
+        array.push(htf_fvg_daily_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_daily_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_daily_boxes)
+            box.delete(htf_old_box)
+
+// ============================================================================
+// HTF FVG INVALIDATION - Remove when price moves through them
+// ============================================================================
+
+// Check and remove invalidated 1H FVGs - check on ANY bar (including LTF)
+if array.size(htf_fvg_1h_boxes) > 0
+    for i = array.size(htf_fvg_1h_boxes) - 1 to 0
+        fvg_box = array.get(htf_fvg_1h_boxes, i)
+        box_top = box.get_top(fvg_box)
+        box_bottom = box.get_bottom(fvg_box)
+
+        // Remove FVG when price crosses through to the OTHER SIDE of the gap
+        // For bullish FVG (box_top > box_bottom): remove when price crosses DOWN through the gap (close below bottom)
+        // For bearish FVG (box_bottom > box_top): remove when price crosses UP through the gap (close above bottom which is actually the top)
+        gap_filled = false
+
+        // Bullish FVG (gap up): box_top > box_bottom, remove when close goes below the gap
+        if box_top > box_bottom and close < box_bottom
+            gap_filled := true
+
+        // Bearish FVG (gap down): box_bottom > box_top, remove when close goes above the gap
+        if box_bottom > box_top and close > box_bottom
+            gap_filled := true
+
+        if gap_filled
+            box.delete(fvg_box)
+            array.remove(htf_fvg_1h_boxes, i)
+
+// Check and remove invalidated Daily FVGs - check on ANY bar (including LTF)
+if array.size(htf_fvg_daily_boxes) > 0
+    for i = array.size(htf_fvg_daily_boxes) - 1 to 0
+        fvg_box = array.get(htf_fvg_daily_boxes, i)
+        box_top = box.get_top(fvg_box)
+        box_bottom = box.get_bottom(fvg_box)
+
+        // Remove FVG when price crosses through to the OTHER SIDE of the gap
+        // For bullish FVG (box_top > box_bottom): remove when price crosses DOWN through the gap (close below bottom)
+        // For bearish FVG (box_bottom > box_top): remove when price crosses UP through the gap (close above bottom which is actually the top)
+        gap_filled = false
+
+        // Bullish FVG (gap up): box_top > box_bottom, remove when close goes below the gap
+        if box_top > box_bottom and close < box_bottom
+            gap_filled := true
+
+        // Bearish FVG (gap down): box_bottom > box_top, remove when close goes above the gap
+        if box_bottom > box_top and close > box_bottom
+            gap_filled := true
+
+        if gap_filled
+            box.delete(fvg_box)
+            array.remove(htf_fvg_daily_boxes, i)
+
+// ============================================================================
+// LTF FAIR VALUE GAP (FVG) DETECTION - LOWER TIMEFRAMES
+// (Reserved for future implementation)
+// ============================================================================
+
+// ============================================================================
+// WILLIAMS FRACTALS
+// ============================================================================
+
+// Williams Fractal Up: Middle candle has highest high of 5 candles
+// Williams Fractal Down: Middle candle has lowest low of 5 candles
+
+// Get HTF data for fractals (1H) - use gaps to prevent repainting
+htf_fractal_high_0 = request.security(syminfo.tickerid, "60", high[0], gaps=barmerge.gaps_on)
+htf_fractal_high_1 = request.security(syminfo.tickerid, "60", high[1], gaps=barmerge.gaps_on)
+htf_fractal_high_2 = request.security(syminfo.tickerid, "60", high[2], gaps=barmerge.gaps_on)
+htf_fractal_high_3 = request.security(syminfo.tickerid, "60", high[3], gaps=barmerge.gaps_on)
+htf_fractal_high_4 = request.security(syminfo.tickerid, "60", high[4], gaps=barmerge.gaps_on)
+
+htf_fractal_low_0 = request.security(syminfo.tickerid, "60", low[0], gaps=barmerge.gaps_on)
+htf_fractal_low_1 = request.security(syminfo.tickerid, "60", low[1], gaps=barmerge.gaps_on)
+htf_fractal_low_2 = request.security(syminfo.tickerid, "60", low[2], gaps=barmerge.gaps_on)
+htf_fractal_low_3 = request.security(syminfo.tickerid, "60", low[3], gaps=barmerge.gaps_on)
+htf_fractal_low_4 = request.security(syminfo.tickerid, "60", low[4], gaps=barmerge.gaps_on)
+
+htf_fractal_time_2 = request.security(syminfo.tickerid, "60", time[2], gaps=barmerge.gaps_on)
+
+// Check if current chart timeframe is at or above 60 minutes (1H or higher)
+bool is_htf_chart = timeframe.in_seconds() >= 3600  // 3600 seconds = 60 minutes = 1H
+
+// Detect Fractal Up on 1H HTF (bullish fractal - potential resistance)
+// Detection runs on ALL timeframes for S&D zone creation
+htf_fractal_up_detected = not na(htf_fractal_high_2) and htf_fractal_high_2 > htf_fractal_high_4 and htf_fractal_high_2 > htf_fractal_high_3 and htf_fractal_high_2 > htf_fractal_high_1 and htf_fractal_high_2 > htf_fractal_high_0
+
+// Detect Fractal Down on 1H HTF (bearish fractal - potential support)
+// Detection runs on ALL timeframes for S&D zone creation
+htf_fractal_down_detected = not na(htf_fractal_low_2) and htf_fractal_low_2 < htf_fractal_low_4 and htf_fractal_low_2 < htf_fractal_low_3 and htf_fractal_low_2 < htf_fractal_low_1 and htf_fractal_low_2 < htf_fractal_low_0
+
+// Only plot fractals when chart timeframe is 1H or higher (to avoid clutter on LTF)
+htf_fractal_up = show_fractals and is_htf_chart and htf_fractal_up_detected
+htf_fractal_down = show_fractals and is_htf_chart and htf_fractal_down_detected
+
+// Store HTF fractals for S&D zone creation (runs on ALL timeframes)
+if htf_fractal_up_detected
+    array.push(fractal_highs, htf_fractal_high_2)
+    array.push(fractal_highs_time, htf_fractal_time_2)
+    array.push(fractal_highs_low, htf_fractal_low_2)
+    // Keep only last 50 fractals
+    if array.size(fractal_highs) > 50
+        array.shift(fractal_highs)
+        array.shift(fractal_highs_time)
+        array.shift(fractal_highs_low)
+
+if htf_fractal_down_detected
+    array.push(fractal_lows, htf_fractal_low_2)
+    array.push(fractal_lows_time, htf_fractal_time_2)
+    array.push(fractal_lows_high, htf_fractal_high_2)
+    // Keep only last 50 fractals
+    if array.size(fractal_lows) > 50
+        array.shift(fractal_lows)
+        array.shift(fractal_lows_time)
+        array.shift(fractal_lows_high)
+
+// Plot HTF fractals with small triangles
+plotshape(htf_fractal_up, title="HTF Fractal Up", style=shape.triangledown, location=location.abovebar, color=fractal_down_color, size=size.tiny, offset=-2)
+plotshape(htf_fractal_down, title="HTF Fractal Down", style=shape.triangleup, location=location.belowbar, color=fractal_up_color, size=size.tiny, offset=-2)
+
+// ============================================================================
+// LTF FRACTALS (CHART TIMEFRAME)
+// ============================================================================
+
+// Williams Fractal on current chart timeframe (LTF)
+// Only show when chart timeframe is LESS than 60 minutes (i.e., on LTF charts)
+// Fractal Up: Middle candle has highest high of 5 candles
+// Fractal Down: Middle candle has lowest low of 5 candles
+
+// Check if current chart timeframe is less than 60 minutes
+bool is_ltf_chart = timeframe.in_seconds() < 3600  // 3600 seconds = 60 minutes = 1H
+
+// Detect Fractal Up on LTF (current chart timeframe) - only when on LTF chart
+ltf_fractal_up = show_ltf_fractals and is_ltf_chart and bar_index > 4 and high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
+
+// Detect Fractal Down on LTF (current chart timeframe) - only when on LTF chart
+ltf_fractal_down = show_ltf_fractals and is_ltf_chart and bar_index > 4 and low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low[0]
+
+// Plot LTF fractals with smaller triangles to differentiate from HTF
+plotshape(ltf_fractal_up, title="LTF Fractal Up", style=shape.triangledown, location=location.abovebar, color=ltf_fractal_down_color, size=size.auto, offset=-2)
+plotshape(ltf_fractal_down, title="LTF Fractal Down", style=shape.triangleup, location=location.belowbar, color=ltf_fractal_up_color, size=size.auto, offset=-2)
+
+// Store LTF fractals for MSS detection (runs on ALL timeframes)
+var array<float> ltf_fractal_highs = array.new<float>()
+var array<int> ltf_fractal_highs_bar = array.new<int>()
+var array<float> ltf_fractal_lows = array.new<float>()
+var array<int> ltf_fractal_lows_bar = array.new<int>()
+
+if ltf_fractal_up
+    array.push(ltf_fractal_highs, high[2])
+    array.push(ltf_fractal_highs_bar, bar_index - 2)  // Store actual bar index of fractal
+    // Keep only last 30 fractals
+    if array.size(ltf_fractal_highs) > 30
+        array.shift(ltf_fractal_highs)
+        array.shift(ltf_fractal_highs_bar)
+
+if ltf_fractal_down
+    array.push(ltf_fractal_lows, low[2])
+    array.push(ltf_fractal_lows_bar, bar_index - 2)  // Store actual bar index of fractal
+    // Keep only last 30 fractals
+    if array.size(ltf_fractal_lows) > 30
+        array.shift(ltf_fractal_lows)
+        array.shift(ltf_fractal_lows_bar)
+
+// ============================================================================
+// HTF SUPPLY & DEMAND ZONES
+// ============================================================================
+
+// Get 1H close data for HTF analysis (using completed bar)
+htf_1h_close = request.security(syminfo.tickerid, "60", close[1], lookahead=barmerge.lookahead_off)
+
+// Arrays to track which fractals we've already created zones for
+var array<int> broken_highs = array.new<int>()
+var array<int> broken_lows = array.new<int>()
+
+// Arrays to track which fractals have been invalidated (price closed through them)
+var array<int> invalidated_highs = array.new<int>()
+var array<int> invalidated_lows = array.new<int>()
+
+// Detect when a new 1H bar forms (used for performance optimization across multiple sections)
+// Use current bar time (not offset) to detect bar changes on LTF charts
+bool is_new_1h_bar = htf_1h_time_current != htf_1h_time_current[1]
+
+// Track the last 1H bar time we processed for S&D zones to ensure we only create zones once per 1H bar
+var int last_sd_processed_1h_time = 0
+bool should_process_sd = is_new_1h_bar and htf_1h_time_0 != last_sd_processed_1h_time
+
+if should_process_sd
+    last_sd_processed_1h_time := htf_1h_time_0
+
+if show_htf_supply_demand and bar_index > 2 and should_process_sd
+    // Track fractal invalidations - only on new 1H bar to reduce computation
+    // When a new 1H bar forms, check if price closed through any fractals
+
+    // Check fractal lows: if 1H closes below a fractal low, mark it as invalidated
+    if array.size(fractal_lows) > 0
+        for i = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+            fractal_low_price = array.get(fractal_lows, i)
+            fractal_low_time = array.get(fractal_lows_time, i)
+
+            // Check if this fractal is already marked as invalidated
+            bool already_invalidated = false
+            if array.size(invalidated_lows) > 0
+                for k = array.size(invalidated_lows) - 1 to math.max(0, array.size(invalidated_lows) - 20)
+                    if array.get(invalidated_lows, k) == fractal_low_time
+                        already_invalidated := true
+                        break
+
+            // If 1H closes below this fractal low and it's not already invalidated, mark it
+            if htf_1h_close < fractal_low_price and not already_invalidated
+                array.push(invalidated_lows, fractal_low_time)
+                // Keep only last 50 invalidated fractals
+                if array.size(invalidated_lows) > 50
+                    array.shift(invalidated_lows)
+
+    // Check fractal highs: if 1H closes above a fractal high, mark it as invalidated
+    if array.size(fractal_highs) > 0
+        for i = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+            fractal_high_price = array.get(fractal_highs, i)
+            fractal_high_time = array.get(fractal_highs_time, i)
+
+            // Check if this fractal is already marked as invalidated
+            bool already_invalidated = false
+            if array.size(invalidated_highs) > 0
+                for k = array.size(invalidated_highs) - 1 to math.max(0, array.size(invalidated_highs) - 20)
+                    if array.get(invalidated_highs, k) == fractal_high_time
+                        already_invalidated := true
+                        break
+
+            // If 1H closes above this fractal high and it's not already invalidated, mark it
+            if htf_1h_close > fractal_high_price and not already_invalidated
+                array.push(invalidated_highs, fractal_high_time)
+                // Keep only last 50 invalidated fractals
+                if array.size(invalidated_highs) > 50
+                    array.shift(invalidated_highs)
+
+    // DEMAND ZONE: When 1H closes above ANY fractal high (red), mark demand zone
+    // Only check on new 1H bars to reduce computation
+    if array.size(fractal_highs) >= 1 and array.size(fractal_lows) >= 1
+        // Track if we created a zone this bar to prevent multiple zones
+        bool demand_zone_created = false
+
+        // Loop through recent fractal highs to see if we just broke above any of them
+        // Only check last 20 fractals to improve performance
+        for i = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+            if not demand_zone_created
+                fractal_high_price = array.get(fractal_highs, i)
+                fractal_high_time = array.get(fractal_highs_time, i)
+
+                // Check if we closed above this fractal high AND haven't already created a zone for it
+                bool already_broken = false
+                if array.size(broken_highs) > 0
+                    for k = array.size(broken_highs) - 1 to math.max(0, array.size(broken_highs) - 20)
+                        if array.get(broken_highs, k) == fractal_high_time
+                            already_broken := true
+                            break
+
+                if htf_1h_close > fractal_high_price and not already_broken
+                    // Find the MOST RECENT fractal low (opposite color) that came BEFORE this fractal high was broken
+                    // This defines the height of the demand zone
+                    // We search backwards from the current position to find the last fractal low before the break
+                    bool found_opposite_fractal = false
+                    float demand_level_low = na
+                    int demand_time = na
+
+                    // Loop backwards through recent fractal lows to find the most recent one BEFORE the break
+                    for j = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+                        demand_low_time = array.get(fractal_lows_time, j)
+
+                        // We want a fractal low that came AFTER the fractal high formed, but BEFORE or AT the time of the break
+                        // This ensures we capture the zone at the moment of the break, not waiting for future fractals
+                        if demand_low_time > fractal_high_time
+                            // Check if this fractal low has been invalidated BEFORE the current bar
+                            bool fractal_is_invalidated = false
+                            if array.size(invalidated_lows) > 0
+                                for n = array.size(invalidated_lows) - 1 to math.max(0, array.size(invalidated_lows) - 20)
+                                    if array.get(invalidated_lows, n) == demand_low_time
+                                        fractal_is_invalidated := true
+                                        break
+
+                            // Skip this fractal if it's been invalidated - continue to next one
+                            if fractal_is_invalidated
+                                continue
+
+                            // This is a valid opposite color fractal - use it for zone height
+                            demand_level_low := array.get(fractal_lows, j)
+                            demand_time := demand_low_time
+                            found_opposite_fractal := true
+                            break  // Use the most recent valid fractal low
+
+                    // Only create zone if we found a valid opposite fractal
+                    if found_opposite_fractal and not na(demand_level_low)
+                        // The top of the zone is the fractal high (red) that was just broken
+                        zone_top = fractal_high_price
+                        zone_bottom = demand_level_low
+
+                        // Before creating, check for overlapping or engulfing zones
+                        bool has_overlap = false
+                        if array.size(htf_demand_zones) > 0
+                            for m = array.size(htf_demand_zones) - 1 to 0
+                                existing_box = array.get(htf_demand_zones, m)
+                                existing_top = box.get_top(existing_box)
+                                existing_bottom = box.get_bottom(existing_box)
+
+                                new_zone_height = zone_top - zone_bottom
+                                existing_zone_height = existing_top - existing_bottom
+
+                                // Check if new zone engulfs existing zone (new zone is larger and contains existing)
+                                bool new_engulfs_existing = zone_top >= existing_top and zone_bottom <= existing_bottom and new_zone_height > existing_zone_height
+
+                                // Check if existing zone engulfs new zone (existing is larger and contains new) - skip creating new zone
+                                bool existing_engulfs_new = existing_top >= zone_top and existing_bottom <= zone_bottom and existing_zone_height > new_zone_height
+
+                                if new_engulfs_existing
+                                    // New zone is larger - remove existing and use new
+                                    box.delete(existing_box)
+                                    array.remove(htf_demand_zones, m)
+                                    has_overlap := true
+                                else if existing_engulfs_new
+                                    // Existing zone is larger - don't create new zone
+                                    demand_zone_created := true
+                                    break
+                                else
+                                    // Calculate overlap percentage for partial overlaps
+                                    overlap_top = math.min(zone_top, existing_top)
+                                    overlap_bottom = math.max(zone_bottom, existing_bottom)
+                                    overlap_height = overlap_top - overlap_bottom
+
+                                    if overlap_height > 0 and new_zone_height > 0
+                                        overlap_pct = overlap_height / new_zone_height
+
+                                        // If >90% overlap, remove the older zone and use the new one
+                                        if overlap_pct > 0.90
+                                            box.delete(existing_box)
+                                            array.remove(htf_demand_zones, m)
+                                            has_overlap := true
+
+                        // Only create the zone if we haven't already set the flag (engulfing check didn't skip it)
+                        if not demand_zone_created
+                            // Create demand zone box starting from the fractal high
+                            demand_box = box.new(fractal_high_time, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_demand_zones, demand_box)
+
+                            // Track that we created a zone for this fractal high
+                            array.push(broken_highs, fractal_high_time)
+                            // Keep only last 50 broken fractals
+                            if array.size(broken_highs) > 50
+                                array.shift(broken_highs)
+
+                            // Manage zone limit (only if we didn't just remove an overlapping zone)
+                            if not has_overlap and array.size(htf_demand_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_demand_zones)
+                                box.delete(old_box)
+
+                            demand_zone_created := true
+
+    // SUPPLY ZONE: When 1H closes below ANY fractal low (green), mark supply zone
+    // Only check on new 1H bars to reduce computation
+    if array.size(fractal_lows) >= 1 and array.size(fractal_highs) >= 1
+        // Track if we created a zone this bar to prevent multiple zones
+        bool supply_zone_created = false
+
+        // Loop through recent fractal lows to see if we just broke below any of them
+        // Only check last 20 fractals to improve performance
+        for i = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+            if not supply_zone_created
+                fractal_low_price = array.get(fractal_lows, i)
+                fractal_low_time = array.get(fractal_lows_time, i)
+
+                // Check if we closed below this fractal low AND haven't already created a zone for it
+                bool already_broken = false
+                if array.size(broken_lows) > 0
+                    for k = array.size(broken_lows) - 1 to math.max(0, array.size(broken_lows) - 20)
+                        if array.get(broken_lows, k) == fractal_low_time
+                            already_broken := true
+                            break
+
+                if htf_1h_close < fractal_low_price and not already_broken
+                    // Find the MOST RECENT fractal high (opposite color) that came BEFORE this fractal low was broken
+                    // This defines the height of the supply zone
+                    // We search backwards from the current position to find the last fractal high before the break
+                    bool found_opposite_fractal = false
+                    float supply_level_high = na
+                    int supply_time = na
+
+                    // Loop backwards through recent fractal highs to find the most recent one BEFORE the break
+                    for j = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+                        supply_high_time = array.get(fractal_highs_time, j)
+
+                        // We want a fractal high that came AFTER the fractal low formed, but BEFORE or AT the time of the break
+                        // This ensures we capture the zone at the moment of the break, not waiting for future fractals
+                        if supply_high_time > fractal_low_time
+                            // Check if this fractal high has been invalidated BEFORE the current bar
+                            bool fractal_is_invalidated = false
+                            if array.size(invalidated_highs) > 0
+                                for n = array.size(invalidated_highs) - 1 to math.max(0, array.size(invalidated_highs) - 20)
+                                    if array.get(invalidated_highs, n) == supply_high_time
+                                        fractal_is_invalidated := true
+                                        break
+
+                            // Skip this fractal if it's been invalidated - continue to next one
+                            if fractal_is_invalidated
+                                continue
+
+                            // This is a valid opposite color fractal - use it for zone height
+                            supply_level_high := array.get(fractal_highs, j)
+                            supply_time := supply_high_time
+                            found_opposite_fractal := true
+                            break  // Use the most recent valid fractal high
+
+                    // Only create zone if we found a valid opposite fractal
+                    if found_opposite_fractal and not na(supply_level_high)
+                        // The bottom of the zone is the fractal low (green) that was just broken
+                        zone_bottom = fractal_low_price
+                        zone_top = supply_level_high
+
+                        // Before creating, check for overlapping or engulfing zones
+                        bool has_overlap = false
+                        if array.size(htf_supply_zones) > 0
+                            for m = array.size(htf_supply_zones) - 1 to 0
+                                existing_box = array.get(htf_supply_zones, m)
+                                existing_top = box.get_top(existing_box)
+                                existing_bottom = box.get_bottom(existing_box)
+
+                                new_zone_height = zone_top - zone_bottom
+                                existing_zone_height = existing_top - existing_bottom
+
+                                // Check if new zone engulfs existing zone (new zone is larger and contains existing)
+                                bool new_engulfs_existing = zone_top >= existing_top and zone_bottom <= existing_bottom and new_zone_height > existing_zone_height
+
+                                // Check if existing zone engulfs new zone (existing is larger and contains new) - skip creating new zone
+                                bool existing_engulfs_new = existing_top >= zone_top and existing_bottom <= zone_bottom and existing_zone_height > new_zone_height
+
+                                if new_engulfs_existing
+                                    // New zone is larger - remove existing and use new
+                                    box.delete(existing_box)
+                                    array.remove(htf_supply_zones, m)
+                                    has_overlap := true
+                                else if existing_engulfs_new
+                                    // Existing zone is larger - don't create new zone
+                                    supply_zone_created := true
+                                    break
+                                else
+                                    // Calculate overlap percentage for partial overlaps
+                                    overlap_top = math.min(zone_top, existing_top)
+                                    overlap_bottom = math.max(zone_bottom, existing_bottom)
+                                    overlap_height = overlap_top - overlap_bottom
+
+                                    if overlap_height > 0 and new_zone_height > 0
+                                        overlap_pct = overlap_height / new_zone_height
+
+                                        // If >90% overlap, remove the older zone and use the new one
+                                        if overlap_pct > 0.90
+                                            box.delete(existing_box)
+                                            array.remove(htf_supply_zones, m)
+                                            has_overlap := true
+
+                        // Only create the zone if we haven't already set the flag (engulfing check didn't skip it)
+                        if not supply_zone_created
+                            // Create supply zone box starting from the fractal low
+                            supply_box = box.new(fractal_low_time, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_supply_zones, supply_box)
+
+                            // Track that we created a zone for this fractal low
+                            array.push(broken_lows, fractal_low_time)
+                            // Keep only last 50 broken fractals
+                            if array.size(broken_lows) > 50
+                                array.shift(broken_lows)
+
+                            // Manage zone limit (only if we didn't just remove an overlapping zone)
+                            if not has_overlap and array.size(htf_supply_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_supply_zones)
+                                box.delete(old_box)
+
+                            supply_zone_created := true
+
+// ============================================================================
+// SUPPLY & DEMAND OVERLAP DETECTION (NO-TRADE ZONES)
+// ============================================================================
+
+// Arrays to track no-trade zones where supply and demand overlap
+var array<box> no_trade_zones = array.new<box>()
+
+// Arrays to store confluence labels (declared here to be used in both overlap detection and confluence labeling)
+var array<label> confluence_labels = array.new<label>()
+
+// Arrays to store NO TRADE labels separately (for the grey overlap boxes)
+var array<label> no_trade_labels = array.new<label>()
+
+// IMPORTANT: Process invalidation BEFORE overlap detection on HTF bar closure
+// This ensures overlap detection only sees valid zones that haven't been invalidated
+if should_process_sd
+    // STEP 1: Invalidate S&D zones when price moves through them (using HTF 1H close)
+    // This must happen FIRST before overlap detection
+    if array.size(htf_demand_zones) > 0
+        for i = array.size(htf_demand_zones) - 1 to 0
+            zone_box = array.get(htf_demand_zones, i)
+            box_top = box.get_top(zone_box)
+            box_bottom = box.get_bottom(zone_box)
+
+            // Remove demand zone if 1H closes below it
+            if htf_1h_close < box_bottom
+                box.delete(zone_box)
+                array.remove(htf_demand_zones, i)
+
+    if array.size(htf_supply_zones) > 0
+        for i = array.size(htf_supply_zones) - 1 to 0
+            zone_box = array.get(htf_supply_zones, i)
+            box_top = box.get_top(zone_box)
+            box_bottom = box.get_bottom(zone_box)
+
+            // Remove supply zone if 1H closes above it
+            if htf_1h_close > box_top
+                box.delete(zone_box)
+                array.remove(htf_supply_zones, i)
+
+    // STEP 2: Clear old no-trade zones and labels
+    if array.size(no_trade_zones) > 0
+        for i = array.size(no_trade_zones) - 1 to 0
+            old_box = array.get(no_trade_zones, i)
+            box.delete(old_box)
+        array.clear(no_trade_zones)
+
+    if array.size(no_trade_labels) > 0
+        for i = array.size(no_trade_labels) - 1 to 0
+            old_label = array.get(no_trade_labels, i)
+            label.delete(old_label)
+        array.clear(no_trade_labels)
+
+    // STEP 3: Detect overlaps between REMAINING valid supply and demand zones
+    // This runs AFTER invalidation, so only valid zones are considered
+    if array.size(htf_supply_zones) > 0 and array.size(htf_demand_zones) > 0
+        for i = 0 to array.size(htf_supply_zones) - 1
+            supply_box = array.get(htf_supply_zones, i)
+            supply_top = box.get_top(supply_box)
+            supply_bottom = box.get_bottom(supply_box)
+            supply_left = box.get_left(supply_box)
+            supply_right = box.get_right(supply_box)
+
+            for j = 0 to array.size(htf_demand_zones) - 1
+                demand_box = array.get(htf_demand_zones, j)
+                demand_top = box.get_top(demand_box)
+                demand_bottom = box.get_bottom(demand_box)
+                demand_left = box.get_left(demand_box)
+                demand_right = box.get_right(demand_box)
+
+                // Calculate the overlap region (intersection of the two zones)
+                overlap_top = math.min(supply_top, demand_top)
+                overlap_bottom = math.max(supply_bottom, demand_bottom)
+                overlap_left = math.max(supply_left, demand_left)
+                overlap_right = math.min(supply_right, demand_right)
+
+                // If there's a valid overlap, create a no-trade zone for ONLY the overlapping region
+                if overlap_top > overlap_bottom and overlap_right > overlap_left
+                    // Create no-trade zone box with prominent gray color to indicate equilibrium
+                    // Using 70% transparency for the fill and white dashed border for visibility
+                    no_trade_box = box.new(overlap_left, overlap_top, time + (60 * 60 * 1000 * 100), overlap_bottom, border_color=color.new(color.white, 0), bgcolor=color.new(color.gray, 70), border_width=3, xloc=xloc.bar_time, border_style=line.style_dashed)
+                    array.push(no_trade_zones, no_trade_box)
+
+                    // Add "NO TRADE" label to the grey overlapping region (not on the S&D zones)
+                    overlap_mid = (overlap_top + overlap_bottom) / 2
+                    no_trade_label = label.new(overlap_left, overlap_mid, "NO TRADE", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=color.new(color.gray, 20), textcolor=color.white, size=size.normal)
+                    array.push(no_trade_labels, no_trade_label)
+
+// ============================================================================
+// CONFLUENCE DETECTION SYSTEM
+// ============================================================================
+
+// Type to store confluence information for each zone
+type ConfluenceData
+    box zone_box
+    string zone_type  // "supply", "demand", "fvg_1h", "fvg_daily"
+    int confluence_score
+    bool has_session_level
+    bool has_fvg
+    bool has_sd_zone
+
+// Function to check if a price level is within a zone (with tolerance)
+is_price_in_zone(float price_level, float zone_top, float zone_bottom) =>
+    // Allow 0.5% tolerance for confluence detection
+    tolerance = (zone_top - zone_bottom) * 0.005
+    price_level >= (zone_bottom - tolerance) and price_level <= (zone_top + tolerance)
+
+// Function to check if two zones overlap
+zones_overlap(float zone1_top, float zone1_bottom, float zone2_top, float zone2_bottom) =>
+    overlap_top = math.min(zone1_top, zone2_top)
+    overlap_bottom = math.max(zone1_bottom, zone2_bottom)
+    overlap_top > overlap_bottom
+
+// Arrays to store confluence data for all zones
+var array<ConfluenceData> confluence_data_supply = array.new<ConfluenceData>()
+var array<ConfluenceData> confluence_data_demand = array.new<ConfluenceData>()
+var array<ConfluenceData> confluence_data_fvg_1h = array.new<ConfluenceData>()
+var array<ConfluenceData> confluence_data_fvg_daily = array.new<ConfluenceData>()
+
+// Only update confluence calculation on HTF bar closure for performance
+// This ensures confluence scores are recalculated only when zones may have changed
+if should_process_sd
+    // Clear and recalculate confluence data when HTF bar closes
+    array.clear(confluence_data_supply)
+    array.clear(confluence_data_demand)
+    array.clear(confluence_data_fvg_1h)
+    array.clear(confluence_data_fvg_daily)
+
+    // Calculate confluence for Supply Zones
+    if array.size(htf_supply_zones) > 0
+        for i = 0 to array.size(htf_supply_zones) - 1
+            supply_box = array.get(htf_supply_zones, i)
+            supply_top = box.get_top(supply_box)
+            supply_bottom = box.get_bottom(supply_box)
+
+            confluence_score = 1  // Start with 1 (the zone itself)
+            has_session = false
+            has_fvg = false
+            has_sd = false
+
+            // Check for session level confluence
+            if not na(prev_day_high) and is_price_in_zone(prev_day_high, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_day_low) and is_price_in_zone(prev_day_low, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_high) and is_price_in_zone(prev_asian_high, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_low) and is_price_in_zone(prev_asian_low, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_high) and is_price_in_zone(prev_london_high, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_low) and is_price_in_zone(prev_london_low, supply_top, supply_bottom)
+                confluence_score += 1
+                has_session := true
+
+            // Check for FVG confluence (1H)
+            if array.size(htf_fvg_1h_boxes) > 0
+                for j = 0 to array.size(htf_fvg_1h_boxes) - 1
+                    fvg_box = array.get(htf_fvg_1h_boxes, j)
+                    fvg_top = box.get_top(fvg_box)
+                    fvg_bottom = box.get_bottom(fvg_box)
+
+                    if zones_overlap(supply_top, supply_bottom, fvg_top, fvg_bottom)
+                        confluence_score += 1
+                        has_fvg := true
+                        break
+
+            // Check for FVG confluence (Daily)
+            if not has_fvg and array.size(htf_fvg_daily_boxes) > 0
+                for j = 0 to array.size(htf_fvg_daily_boxes) - 1
+                    fvg_box = array.get(htf_fvg_daily_boxes, j)
+                    fvg_top = box.get_top(fvg_box)
+                    fvg_bottom = box.get_bottom(fvg_box)
+
+                    if zones_overlap(supply_top, supply_bottom, fvg_top, fvg_bottom)
+                        confluence_score += 1
+                        has_fvg := true
+                        break
+
+            // Check for Demand zone confluence (indicates equilibrium/no-trade)
+            // Note: We mark has_sd as true but DON'T set confluence_score to 0
+            // The grey overlap box will show "NO TRADE" instead
+            if array.size(htf_demand_zones) > 0
+                for j = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, j)
+                    demand_top = box.get_top(demand_box)
+                    demand_bottom = box.get_bottom(demand_box)
+
+                    if zones_overlap(supply_top, supply_bottom, demand_top, demand_bottom)
+                        has_sd := true
+                        break
+
+            // Store confluence data
+            conf_data = ConfluenceData.new(supply_box, "supply", confluence_score, has_session, has_fvg, has_sd)
+            array.push(confluence_data_supply, conf_data)
+
+    // Calculate confluence for Demand Zones
+    if array.size(htf_demand_zones) > 0
+        for i = 0 to array.size(htf_demand_zones) - 1
+            demand_box = array.get(htf_demand_zones, i)
+            demand_top = box.get_top(demand_box)
+            demand_bottom = box.get_bottom(demand_box)
+
+            confluence_score = 1  // Start with 1 (the zone itself)
+            has_session = false
+            has_fvg = false
+            has_sd = false
+
+            // Check for session level confluence
+            if not na(prev_day_high) and is_price_in_zone(prev_day_high, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_day_low) and is_price_in_zone(prev_day_low, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_high) and is_price_in_zone(prev_asian_high, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_low) and is_price_in_zone(prev_asian_low, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_high) and is_price_in_zone(prev_london_high, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_low) and is_price_in_zone(prev_london_low, demand_top, demand_bottom)
+                confluence_score += 1
+                has_session := true
+
+            // Check for FVG confluence (1H)
+            if array.size(htf_fvg_1h_boxes) > 0
+                for j = 0 to array.size(htf_fvg_1h_boxes) - 1
+                    fvg_box = array.get(htf_fvg_1h_boxes, j)
+                    fvg_top = box.get_top(fvg_box)
+                    fvg_bottom = box.get_bottom(fvg_box)
+
+                    if zones_overlap(demand_top, demand_bottom, fvg_top, fvg_bottom)
+                        confluence_score += 1
+                        has_fvg := true
+                        break
+
+            // Check for FVG confluence (Daily)
+            if not has_fvg and array.size(htf_fvg_daily_boxes) > 0
+                for j = 0 to array.size(htf_fvg_daily_boxes) - 1
+                    fvg_box = array.get(htf_fvg_daily_boxes, j)
+                    fvg_top = box.get_top(fvg_box)
+                    fvg_bottom = box.get_bottom(fvg_box)
+
+                    if zones_overlap(demand_top, demand_bottom, fvg_top, fvg_bottom)
+                        confluence_score += 1
+                        has_fvg := true
+                        break
+
+            // Check for Supply zone confluence (indicates equilibrium/no-trade)
+            // Note: We mark has_sd as true but DON'T set confluence_score to 0
+            // The grey overlap box will show "NO TRADE" instead
+            if array.size(htf_supply_zones) > 0
+                for j = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, j)
+                    supply_top = box.get_top(supply_box)
+                    supply_bottom = box.get_bottom(supply_box)
+
+                    if zones_overlap(demand_top, demand_bottom, supply_top, supply_bottom)
+                        has_sd := true
+                        break
+
+            // Store confluence data
+            conf_data = ConfluenceData.new(demand_box, "demand", confluence_score, has_session, has_fvg, has_sd)
+            array.push(confluence_data_demand, conf_data)
+
+    // Calculate confluence for 1H FVG Zones
+    if array.size(htf_fvg_1h_boxes) > 0
+        for i = 0 to array.size(htf_fvg_1h_boxes) - 1
+            fvg_box = array.get(htf_fvg_1h_boxes, i)
+            fvg_top = box.get_top(fvg_box)
+            fvg_bottom = box.get_bottom(fvg_box)
+
+            confluence_score = 1  // Start with 1 (the FVG itself)
+            has_session = false
+            has_sd = false
+
+            // Check for session level confluence
+            if not na(prev_day_high) and is_price_in_zone(prev_day_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_day_low) and is_price_in_zone(prev_day_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_high) and is_price_in_zone(prev_asian_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_low) and is_price_in_zone(prev_asian_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_high) and is_price_in_zone(prev_london_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_low) and is_price_in_zone(prev_london_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+
+            // Check for S&D zone confluence
+            if array.size(htf_supply_zones) > 0
+                for j = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, j)
+                    supply_top = box.get_top(supply_box)
+                    supply_bottom = box.get_bottom(supply_box)
+
+                    if zones_overlap(fvg_top, fvg_bottom, supply_top, supply_bottom)
+                        confluence_score += 1
+                        has_sd := true
+                        break
+
+            if not has_sd and array.size(htf_demand_zones) > 0
+                for j = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, j)
+                    demand_top = box.get_top(demand_box)
+                    demand_bottom = box.get_bottom(demand_box)
+
+                    if zones_overlap(fvg_top, fvg_bottom, demand_top, demand_bottom)
+                        confluence_score += 1
+                        has_sd := true
+                        break
+
+            // Store confluence data
+            conf_data = ConfluenceData.new(fvg_box, "fvg_1h", confluence_score, has_session, true, has_sd)
+            array.push(confluence_data_fvg_1h, conf_data)
+
+    // Calculate confluence for Daily FVG Zones
+    if array.size(htf_fvg_daily_boxes) > 0
+        for i = 0 to array.size(htf_fvg_daily_boxes) - 1
+            fvg_box = array.get(htf_fvg_daily_boxes, i)
+            fvg_top = box.get_top(fvg_box)
+            fvg_bottom = box.get_bottom(fvg_box)
+
+            confluence_score = 1  // Start with 1 (the FVG itself)
+            has_session = false
+            has_sd = false
+
+            // Check for session level confluence
+            if not na(prev_day_high) and is_price_in_zone(prev_day_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_day_low) and is_price_in_zone(prev_day_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_high) and is_price_in_zone(prev_asian_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_asian_low) and is_price_in_zone(prev_asian_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_high) and is_price_in_zone(prev_london_high, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+            else if not na(prev_london_low) and is_price_in_zone(prev_london_low, fvg_top, fvg_bottom)
+                confluence_score += 1
+                has_session := true
+
+            // Check for S&D zone confluence
+            if array.size(htf_supply_zones) > 0
+                for j = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, j)
+                    supply_top = box.get_top(supply_box)
+                    supply_bottom = box.get_bottom(supply_box)
+
+                    if zones_overlap(fvg_top, fvg_bottom, supply_top, supply_bottom)
+                        confluence_score += 1
+                        has_sd := true
+                        break
+
+            if not has_sd and array.size(htf_demand_zones) > 0
+                for j = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, j)
+                    demand_top = box.get_top(demand_box)
+                    demand_bottom = box.get_bottom(demand_box)
+
+                    if zones_overlap(fvg_top, fvg_bottom, demand_top, demand_bottom)
+                        confluence_score += 1
+                        has_sd := true
+                        break
+
+            // Store confluence data
+            conf_data = ConfluenceData.new(fvg_box, "fvg_daily", confluence_score, has_session, true, has_sd)
+            array.push(confluence_data_fvg_daily, conf_data)
+
+    // Draw confluence labels (also only on HTF bar closure for consistency)
+    // Clear old labels
+    if array.size(confluence_labels) > 0
+        for i = array.size(confluence_labels) - 1 to 0
+            old_label = array.get(confluence_labels, i)
+            label.delete(old_label)
+        array.clear(confluence_labels)
+
+    // Draw labels for Supply zones
+    if array.size(confluence_data_supply) > 0
+        for i = 0 to array.size(confluence_data_supply) - 1
+            conf_data = array.get(confluence_data_supply, i)
+            zone_box = conf_data.zone_box
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_left = box.get_left(zone_box)
+
+            // Determine label text and color based on confluence score
+            // Note: has_sd_zone means this zone overlaps with opposite type, but we still show confluence score
+            // The grey overlap box will have the "NO TRADE" label
+            label_text = ""
+            label_color = color.white
+
+            if conf_data.confluence_score >= 3
+                label_text := "3x"
+                label_color := color.new(color.yellow, 0)  // Gold for 3x
+            else if conf_data.confluence_score == 2
+                label_text := "2x"
+                label_color := color.new(color.orange, 0)  // Orange for 2x
+            else
+                label_text := "1x"
+                label_color := color.new(color.white, 30)  // Faded white for 1x
+
+            // Create label at top-right of zone
+            conf_label = label.new(zone_left, zone_top, label_text, xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_down, color=label_color, textcolor=color.black, size=size.small)
+            array.push(confluence_labels, conf_label)
+
+    // Draw labels for Demand zones
+    if array.size(confluence_data_demand) > 0
+        for i = 0 to array.size(confluence_data_demand) - 1
+            conf_data = array.get(confluence_data_demand, i)
+            zone_box = conf_data.zone_box
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_left = box.get_left(zone_box)
+
+            // Determine label text and color based on confluence score
+            // Note: has_sd_zone means this zone overlaps with opposite type, but we still show confluence score
+            // The grey overlap box will have the "NO TRADE" label
+            label_text = ""
+            label_color = color.white
+
+            if conf_data.confluence_score >= 3
+                label_text := "3x"
+                label_color := color.new(color.yellow, 0)  // Gold for 3x
+            else if conf_data.confluence_score == 2
+                label_text := "2x"
+                label_color := color.new(color.orange, 0)  // Orange for 2x
+            else
+                label_text := "1x"
+                label_color := color.new(color.white, 30)  // Faded white for 1x
+
+            // Create label at bottom-right of zone
+            conf_label = label.new(zone_left, zone_bottom, label_text, xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_up, color=label_color, textcolor=color.black, size=size.small)
+            array.push(confluence_labels, conf_label)
+
+    // Draw labels for 1H FVG zones
+    if array.size(confluence_data_fvg_1h) > 0
+        for i = 0 to array.size(confluence_data_fvg_1h) - 1
+            conf_data = array.get(confluence_data_fvg_1h, i)
+            zone_box = conf_data.zone_box
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_left = box.get_left(zone_box)
+            zone_mid = (zone_top + zone_bottom) / 2
+
+            // Determine label text and color based on confluence score
+            label_text = ""
+            label_color = color.white
+
+            if conf_data.confluence_score >= 3
+                label_text := "3x FVG"
+                label_color := color.new(color.yellow, 0)  // Gold for 3x
+            else if conf_data.confluence_score == 2
+                label_text := "2x FVG"
+                label_color := color.new(color.orange, 0)  // Orange for 2x
+            else
+                label_text := "FVG"
+                label_color := color.new(color.white, 30)  // Faded white for 1x
+
+            // Create label at middle-left of zone
+            conf_label = label.new(zone_left, zone_mid, label_text, xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=label_color, textcolor=color.black, size=size.tiny)
+            array.push(confluence_labels, conf_label)
+
+    // Draw labels for Daily FVG zones
+    if array.size(confluence_data_fvg_daily) > 0
+        for i = 0 to array.size(confluence_data_fvg_daily) - 1
+            conf_data = array.get(confluence_data_fvg_daily, i)
+            zone_box = conf_data.zone_box
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            zone_left = box.get_left(zone_box)
+            zone_mid = (zone_top + zone_bottom) / 2
+
+            // Determine label text and color based on confluence score
+            label_text = ""
+            label_color = color.white
+
+            if conf_data.confluence_score >= 3
+                label_text := "3x FVG D"
+                label_color := color.new(color.yellow, 0)  // Gold for 3x
+            else if conf_data.confluence_score == 2
+                label_text := "2x FVG D"
+                label_color := color.new(color.orange, 0)  // Orange for 2x
+            else
+                label_text := "FVG D"
+                label_color := color.new(color.white, 30)  // Faded white for 1x
+
+            // Create label at middle-left of zone
+            conf_label = label.new(zone_left, zone_mid, label_text, xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_right, color=label_color, textcolor=color.black, size=size.small)
+            array.push(confluence_labels, conf_label)
+
+// ============================================================================
+// TRADE SETUP STATUS & STRATEGY TRACKING
+// ============================================================================
+
+// Track current phase of price action
+var string current_status = "Waiting AOI"  // Possible values: "Waiting AOI", "In AOI", "Setup Forming", "In Trade", "Reset"
+
+// Track which strategies are currently set up (true = setup exists, false = not set up)
+var bool setup_breaker = false     // Breaker Block
+var bool setup_engulf_ob = false   // Engulfing Order Block
+var bool setup_mss_ob = false      // Market Structure Shift Order Block
+var bool setup_bpr_fvg = false     // Balanced Price Range FVG
+var bool setup_inv_fvg = false     // Inverted FVG
+
+// Track AOI entry/exit for invalidation logic (Condition 1)
+var bool was_in_aoi_last_bar = false
+var bool was_in_bullish_aoi_last_bar = false
+var bool was_in_bearish_aoi_last_bar = false
+
+// Determine current status based on price action and zones
+// This runs on EVERY bar (including LTF) to detect AOI entries in real-time
+// Check if we're currently inside any AOI (Area of Interest)
+bool in_aoi = false
+bool in_bullish_aoi = false  // Track if in demand zone (bullish setup expected)
+bool in_bearish_aoi = false  // Track if in supply zone (bearish setup expected)
+bool in_no_trade_zone = false  // Track if in NO TRADE zone (supply/demand overlap)
+
+// Define touch tolerance (price must be within this % of level to be considered a "touch")
+// Set to 0% to require exact price match for testing zone entry logic
+float touch_tolerance_pct = 0.0  // 0%
+
+// FIRST: Check if price is in a NO TRADE zone (supply/demand overlap)
+if array.size(no_trade_zones) > 0
+    for i = 0 to array.size(no_trade_zones) - 1
+        no_trade_box = array.get(no_trade_zones, i)
+        nt_top = box.get_top(no_trade_box)
+        nt_bottom = box.get_bottom(no_trade_box)
+        if close >= nt_bottom and close <= nt_top
+            in_no_trade_zone := true
+            in_aoi := false
+            in_bullish_aoi := false
+            in_bearish_aoi := false
+            break
+
+// Check if price is inside any demand zone (bullish AOI) - only if not in no-trade zone
+if not in_no_trade_zone and array.size(htf_demand_zones) > 0
+    for i = 0 to array.size(htf_demand_zones) - 1
+        zone_box = array.get(htf_demand_zones, i)
+        zone_top = box.get_top(zone_box)
+        zone_bottom = box.get_bottom(zone_box)
+        if close >= zone_bottom and close <= zone_top
+            in_aoi := true
+            in_bullish_aoi := true
+            break
+
+// Check if price is inside any supply zone (bearish AOI) - only if not in no-trade zone
+if not in_no_trade_zone and not in_aoi and array.size(htf_supply_zones) > 0
+    for i = 0 to array.size(htf_supply_zones) - 1
+        zone_box = array.get(htf_supply_zones, i)
+        zone_top = box.get_top(zone_box)
+        zone_bottom = box.get_bottom(zone_box)
+        if close >= zone_bottom and close <= zone_top
+            in_aoi := true
+            in_bearish_aoi := true
+            break
+
+// Check if price is inside any 1H FVG - only if not in no-trade zone
+if not in_no_trade_zone and not in_aoi and array.size(htf_fvg_1h_boxes) > 0
+    for i = 0 to array.size(htf_fvg_1h_boxes) - 1
+        fvg_box = array.get(htf_fvg_1h_boxes, i)
+        fvg_top = box.get_top(fvg_box)
+        fvg_bottom = box.get_bottom(fvg_box)
+        // Handle both bullish and bearish FVGs
+        fvg_min = math.min(fvg_top, fvg_bottom)
+        fvg_max = math.max(fvg_top, fvg_bottom)
+        if close >= fvg_min and close <= fvg_max
+            in_aoi := true
+            // Determine if FVG is bullish or bearish based on structure
+            // Bullish FVG: bottom > top (gap up), Bearish FVG: top > bottom (gap down)
+            if fvg_bottom > fvg_top
+                in_bullish_aoi := true
+            else
+                in_bearish_aoi := true
+            break
+
+// Check if price is touching session lows (bullish AOI - expect bounce up) - only if not in no-trade zone
+if not in_no_trade_zone and not in_aoi
+    // Previous Day Low
+    if not na(prev_day_low) and not prev_day_low_invalidated
+        float tolerance = prev_day_low * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_day_low) <= tolerance
+            in_aoi := true
+            in_bullish_aoi := true
+
+    // Asian Low
+    if not in_aoi and not na(prev_asian_low) and not asian_low_invalidated
+        float tolerance = prev_asian_low * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_asian_low) <= tolerance
+            in_aoi := true
+            in_bullish_aoi := true
+
+    // London Low
+    if not in_aoi and not na(prev_london_low) and not london_low_invalidated
+        float tolerance = prev_london_low * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_london_low) <= tolerance
+            in_aoi := true
+            in_bullish_aoi := true
+
+    // NY Low
+    if not in_aoi and not na(prev_ny_low) and not ny_low_invalidated
+        float tolerance = prev_ny_low * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_ny_low) <= tolerance
+            in_aoi := true
+            in_bullish_aoi := true
+
+// Check if price is touching session highs (bearish AOI - expect rejection down) - only if not in no-trade zone
+if not in_no_trade_zone and not in_aoi
+    // Previous Day High
+    if not na(prev_day_high) and not prev_day_high_invalidated
+        float tolerance = prev_day_high * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_day_high) <= tolerance
+            in_aoi := true
+            in_bearish_aoi := true
+
+    // Asian High
+    if not in_aoi and not na(prev_asian_high) and not asian_high_invalidated
+        float tolerance = prev_asian_high * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_asian_high) <= tolerance
+            in_aoi := true
+            in_bearish_aoi := true
+
+    // London High
+    if not in_aoi and not na(prev_london_high) and not london_high_invalidated
+        float tolerance = prev_london_high * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_london_high) <= tolerance
+            in_aoi := true
+            in_bearish_aoi := true
+
+    // NY High
+    if not in_aoi and not na(prev_ny_high) and not ny_high_invalidated
+        float tolerance = prev_ny_high * touch_tolerance_pct
+        // Only consider in AOI if close is within tolerance of the level
+        if math.abs(close - prev_ny_high) <= tolerance
+            in_aoi := true
+            in_bearish_aoi := true
+
+// Update status based on AOI and NO TRADE detection (updates on EVERY LTF bar)
+if in_no_trade_zone
+    current_status := "NO TRADE"
+else if in_aoi
+    current_status := "Awaiting Setup"
+else
+    current_status := "Waiting AOI"
+
+// Track engulfing setups for invalidation logic
+type EngulfingSetup
+    int bar_index
+    bool is_bullish
+    bool in_bullish_aoi
+    bool in_bearish_aoi
+    float entry_price
+    float sl_price
+    float tp_price  // Take profit price
+    bool invalidated
+    bool mss_triggered  // Whether MSS has been triggered
+    bool trade_entered  // Whether price has re-entered the OB and trade is active
+    bool trade_closed  // Whether trade has hit TP or SL and is now closed
+    label setup_label
+    box setup_box
+    box entry_box  // Extending box from entry to SL
+    label fractal_label  // Label on the fractal being tracked
+    box sl_zone_box  // Visual box for SL region
+    box tp_zone_box  // Visual box for TP region
+
+var array<EngulfingSetup> engulfing_setups = array.new<EngulfingSetup>()
+
+// ============================================================================
+// AOI EXIT TRACKING (for status display only)
+// ============================================================================
+
+// Track AOI entry/exit for status display
+// Note: Exiting AOI does NOT invalidate engulfing setups
+// Once an engulfing pattern is formed with either candle touching the AOI, it remains valid
+// until it hits the SL (Condition 2) or enters an opposite zone (Condition 3)
+was_in_aoi_last_bar := in_aoi
+was_in_bullish_aoi_last_bar := in_bullish_aoi
+was_in_bearish_aoi_last_bar := in_bearish_aoi
+
+// ============================================================================
+// ENGULFING ORDER BLOCK STRATEGY
+// ============================================================================
+
+// Arrays to store all engulfing OB setups (keep all historical setups on chart)
+var array<label> engulf_ob_labels = array.new<label>()
+var array<box> engulf_ob_boxes = array.new<box>()
+
+// Track if we created a setup on the current bar to prevent duplicates on same bar
+var int last_engulf_setup_bar = -1
+
+// Check for Engulfing Order Block setup when in AOI and NOT in NO TRADE zone
+// Allow multiple setups to appear on chart - only prevent duplicate on same bar
+// NOTE: For engulfing OB, the setup candle (candle[1]) only needs to TOUCH the zone, not close inside it
+if in_aoi and not in_no_trade_zone and bar_index != last_engulf_setup_bar
+    // For 1-minute charts, allow up to 3 candles to form the engulfing pattern
+    bool is_1m_chart = timeframe.in_seconds() == 60
+    int candles_to_check = is_1m_chart ? 3 : 1
+
+    // BULLISH ENGULFING ORDER BLOCK
+    // Previous candle must be bearish (close < open)
+    // For bullish setup: EITHER candle (bearish candle[1] OR bullish candle[0]) can touch/wick into the bullish AOI
+    bool prev_is_bearish = close[1] < open[1]
+    bool curr_is_bullish = close > open
+
+    // Check if EITHER candle touched any bullish AOI (demand zone, FVG, or session low)
+    bool either_candle_touched_bullish_aoi = false
+
+    // Check if either candle touched any demand zone
+    if prev_is_bearish and curr_is_bullish and array.size(htf_demand_zones) > 0
+        for i = 0 to array.size(htf_demand_zones) - 1
+            zone_box = array.get(htf_demand_zones, i)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            // Check if candle[1] OR candle[0] touched/wicked into the demand zone
+            bool candle1_touched = low[1] <= zone_top and high[1] >= zone_bottom
+            bool candle0_touched = low <= zone_top and high >= zone_bottom
+            if candle1_touched or candle0_touched
+                either_candle_touched_bullish_aoi := true
+                break
+
+    // Check if either candle touched any bullish FVG
+    if prev_is_bearish and curr_is_bullish and not either_candle_touched_bullish_aoi and array.size(htf_fvg_1h_boxes) > 0
+        for i = 0 to array.size(htf_fvg_1h_boxes) - 1
+            fvg_box = array.get(htf_fvg_1h_boxes, i)
+            fvg_top = box.get_top(fvg_box)
+            fvg_bottom = box.get_bottom(fvg_box)
+            // Check if it's a bullish FVG (bottom > top indicates gap up)
+            if fvg_bottom > fvg_top
+                fvg_min = math.min(fvg_top, fvg_bottom)
+                fvg_max = math.max(fvg_top, fvg_bottom)
+                // Check if candle[1] OR candle[0] touched the FVG
+                bool candle1_touched = low[1] <= fvg_max and high[1] >= fvg_min
+                bool candle0_touched = low <= fvg_max and high >= fvg_min
+                if candle1_touched or candle0_touched
+                    either_candle_touched_bullish_aoi := true
+                    break
+
+    // Check if either candle touched session lows (bullish AOI)
+    if prev_is_bearish and curr_is_bullish and not either_candle_touched_bullish_aoi
+        // Previous Day Low
+        if not na(prev_day_low) and not prev_day_low_invalidated
+            float tolerance = prev_day_low * touch_tolerance_pct
+            bool candle1_touched = low[1] <= prev_day_low + tolerance and high[1] >= prev_day_low - tolerance
+            bool candle0_touched = low <= prev_day_low + tolerance and high >= prev_day_low - tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bullish_aoi := true
+
+        // Asian Low
+        if not either_candle_touched_bullish_aoi and not na(prev_asian_low) and not asian_low_invalidated
+            float tolerance = prev_asian_low * touch_tolerance_pct
+            bool candle1_touched = low[1] <= prev_asian_low + tolerance and high[1] >= prev_asian_low - tolerance
+            bool candle0_touched = low <= prev_asian_low + tolerance and high >= prev_asian_low - tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bullish_aoi := true
+
+        // London Low
+        if not either_candle_touched_bullish_aoi and not na(prev_london_low) and not london_low_invalidated
+            float tolerance = prev_london_low * touch_tolerance_pct
+            bool candle1_touched = low[1] <= prev_london_low + tolerance and high[1] >= prev_london_low - tolerance
+            bool candle0_touched = low <= prev_london_low + tolerance and high >= prev_london_low - tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bullish_aoi := true
+
+        // NY Low
+        if not either_candle_touched_bullish_aoi and not na(prev_ny_low) and not ny_low_invalidated
+            float tolerance = prev_ny_low * touch_tolerance_pct
+            bool candle1_touched = low[1] <= prev_ny_low + tolerance and high[1] >= prev_ny_low - tolerance
+            bool candle0_touched = low <= prev_ny_low + tolerance and high >= prev_ny_low - tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bullish_aoi := true
+
+    if prev_is_bearish and curr_is_bullish and either_candle_touched_bullish_aoi
+        // Check if current candle(s) engulf the previous bearish candle
+        bool is_bullish_engulf = false
+        float engulf_low = na
+        float engulf_high = na
+
+        if candles_to_check == 1
+            // Single candle engulfing (for non-1m charts)
+            if close > open and close > close[1] and low <= low[1] and high >= high[1]
+                is_bullish_engulf := true
+                engulf_low := low
+                engulf_high := high
+        else
+            // Multi-candle engulfing (for 1m charts - up to 3 candles)
+            // Check 1-candle engulfing
+            if close > open and close > close[1] and low <= low[1] and high >= high[1]
+                is_bullish_engulf := true
+                engulf_low := low
+                engulf_high := high
+            // Check 2-candle engulfing
+            else if close > close[2] and math.min(low, low[1]) <= low[2] and math.max(high, high[1]) >= high[2] and close > open
+                is_bullish_engulf := true
+                engulf_low := math.min(low, low[1])
+                engulf_high := math.max(high, high[1])
+            // Check 3-candle engulfing
+            else if close > close[3] and math.min(math.min(low, low[1]), low[2]) <= low[3] and math.max(math.max(high, high[1]), high[2]) >= high[3] and close > open
+                is_bullish_engulf := true
+                engulf_low := math.min(math.min(low, low[1]), low[2])
+                engulf_high := math.max(math.max(high, high[1]), high[2])
+
+        if is_bullish_engulf
+            // Entry at the top of the bearish order block (high of bearish candle = high[1])
+            float engulf_ob_entry = high[1]
+            // Stop loss at the bottom of the bearish order block (low of bearish candle = low[1])
+            float engulf_ob_sl = low[1]
+            // Take profit at 2:1 RR
+            float risk = engulf_ob_entry - engulf_ob_sl
+            float engulf_ob_tp = engulf_ob_entry + (risk * 2)
+
+            // Mark this bar as having a setup to prevent duplicates
+            last_engulf_setup_bar := bar_index
+            setup_engulf_ob := true
+
+            // Check if TP conflicts with NO TRADE zones, opposite S&D zones, or opposite session levels
+            bool tp_conflict = false
+
+            // Check for real-time supply/demand overlap at TP level (NO TRADE condition)
+            // For bullish setup, check if TP lands where supply and demand zones overlap
+            bool tp_in_supply = false
+            bool tp_in_demand = false
+
+            if array.size(htf_supply_zones) > 0
+                for i = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, i)
+                    if engulf_ob_tp >= box.get_bottom(supply_box) and engulf_ob_tp <= box.get_top(supply_box)
+                        tp_in_supply := true
+                        break
+
+            if array.size(htf_demand_zones) > 0
+                for i = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, i)
+                    if engulf_ob_tp >= box.get_bottom(demand_box) and engulf_ob_tp <= box.get_top(demand_box)
+                        tp_in_demand := true
+                        break
+
+            // If TP is in both supply AND demand, it's in a NO TRADE zone (overlap)
+            if tp_in_supply and tp_in_demand
+                tp_conflict := true
+
+            // Check session HIGHS (opposite direction for bullish)
+            if not tp_conflict
+                if not na(prev_day_high)
+                    float tolerance_pdh = prev_day_high * touch_tolerance_pct
+                    if math.abs(engulf_ob_tp - prev_day_high) <= tolerance_pdh
+                        tp_conflict := true
+
+            if not tp_conflict and not na(prev_asian_high)
+                float tolerance_ah = prev_asian_high * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_asian_high) <= tolerance_ah
+                    tp_conflict := true
+
+            if not tp_conflict and not na(prev_london_high)
+                float tolerance_lh = prev_london_high * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_london_high) <= tolerance_lh
+                    tp_conflict := true
+
+            if not tp_conflict and not na(prev_ny_high)
+                float tolerance_nh = prev_ny_high * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_ny_high) <= tolerance_nh
+                    tp_conflict := true
+
+            // IMPORTANT: Don't create bullish setups if entry is inside a demand zone
+            // Bullish = going long, we don't want to buy FROM a demand zone
+            bool entry_in_demand = false
+            if array.size(htf_demand_zones) > 0
+                for i = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, i)
+                    demand_top = box.get_top(demand_box)
+                    demand_bottom = box.get_bottom(demand_box)
+                    // Check if the OB (entry to SL range) overlaps with demand zone
+                    if engulf_ob_entry >= demand_bottom and engulf_ob_entry <= demand_top
+                        entry_in_demand := true
+                        break
+
+            // Only create the setup if entry is not in a demand zone and no TP conflict
+            if not entry_in_demand and not tp_conflict
+                // Create simple label (just "ENG OB" since it's a gatekeeper condition, not a trade setup)
+                // Add spacing below the candle so label doesn't overlap
+                float label_spacing = (high[1] - low[1]) * 1.5
+                float label_y_pos = low[1] - label_spacing
+                label new_label = label.new(time[1], label_y_pos, "ENG OB", xloc=xloc.bar_time, style=label.style_label_up, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+                array.push(engulf_ob_labels, new_label)
+
+                // Draw orange box around the bearish setup candle (candle[1]) ONLY
+                // Use time[1] for both left and right, with a small time offset to make it visible as a box around just that one candle
+                int box_right_time = time[1] + (time - time[1])  // Width of one candle
+                box engulf_box = box.new(time[1], high[1], box_right_time, low[1], xloc=xloc.bar_time, border_color=color.new(color.orange, 0), bgcolor=color.new(color.orange, 70), border_width=1)
+                array.push(engulf_ob_boxes, engulf_box)
+
+                // Entry box will be created later when MSS triggers
+                box entry_box = na
+
+                // Find the most recent LTF fractal high (bearish fractal) and mark it with a diamond
+                label fractal_label = na
+                if array.size(ltf_fractal_highs) > 0
+                    // Get the most recent fractal
+                    int fractal_idx = array.size(ltf_fractal_highs) - 1
+                    float fractal_price = array.get(ltf_fractal_highs, fractal_idx)
+                    int fractal_bar_idx = array.get(ltf_fractal_highs_bar, fractal_idx)
+
+                    // Calculate time for the fractal (approximate based on bar_index difference)
+                    int bars_ago = bar_index - fractal_bar_idx
+                    int fractal_time = time - (bars_ago * (time - time[1]))
+
+                    // Create diamond marker on the fractal
+                    fractal_label := label.new(fractal_time, fractal_price, "◆", xloc=xloc.bar_time, yloc=yloc.abovebar, style=label.style_none, color=color.new(color.white, 100), textcolor=color.black, size=size.large)
+
+                // IMPORTANT: Invalidate any previous BULLISH engulfing setups before adding the new one
+                // Only one engulfing OB per direction should be active at a time
+                if array.size(engulfing_setups) > 0
+                    for i = array.size(engulfing_setups) - 1 to 0
+                        prev_engulf = array.get(engulfing_setups, i)
+                        // Invalidate previous bullish setups that aren't already invalidated
+                        if prev_engulf.is_bullish and not prev_engulf.invalidated
+                            prev_engulf.invalidated := true
+                            array.set(engulfing_setups, i, prev_engulf)
+                            // Remove label, box, entry_box, and fractal_label from chart
+                            if not na(prev_engulf.setup_label)
+                                label.delete(prev_engulf.setup_label)
+                            if not na(prev_engulf.setup_box)
+                                box.delete(prev_engulf.setup_box)
+                            if not na(prev_engulf.entry_box)
+                                box.delete(prev_engulf.entry_box)
+                            if not na(prev_engulf.fractal_label)
+                                label.delete(prev_engulf.fractal_label)
+
+                // Store engulfing setup for MSS OB validation (with label, box, entry_box, and fractal_label references)
+                engulf_setup = EngulfingSetup.new(bar_index, true, either_candle_touched_bullish_aoi, false, engulf_ob_entry, engulf_ob_sl, engulf_ob_tp, false, false, false, false, new_label, engulf_box, entry_box, fractal_label, na, na)
+                array.push(engulfing_setups, engulf_setup)
+                // Keep only last 50 engulfing setups
+                if array.size(engulfing_setups) > 50
+                    array.shift(engulfing_setups)
+
+    // BEARISH ENGULFING ORDER BLOCK
+    // Previous candle must be bullish (close > open)
+    // For bearish setup: EITHER candle (bullish candle[1] OR bearish candle[0]) can touch/wick into the bearish AOI
+    bool prev_is_bullish = close[1] > open[1]
+    bool curr_is_bearish = close < open
+
+    // Check if EITHER candle touched any bearish AOI (supply zone, FVG, or session high)
+    bool either_candle_touched_bearish_aoi = false
+
+    // Check if either candle touched any supply zone
+    if prev_is_bullish and curr_is_bearish and array.size(htf_supply_zones) > 0
+        for i = 0 to array.size(htf_supply_zones) - 1
+            zone_box = array.get(htf_supply_zones, i)
+            zone_top = box.get_top(zone_box)
+            zone_bottom = box.get_bottom(zone_box)
+            // Check if candle[1] OR candle[0] touched/wicked into the supply zone
+            bool candle1_touched = high[1] >= zone_bottom and low[1] <= zone_top
+            bool candle0_touched = high >= zone_bottom and low <= zone_top
+            if candle1_touched or candle0_touched
+                either_candle_touched_bearish_aoi := true
+                break
+
+    // Check if either candle touched any bearish FVG
+    if prev_is_bullish and curr_is_bearish and not either_candle_touched_bearish_aoi and array.size(htf_fvg_1h_boxes) > 0
+        for i = 0 to array.size(htf_fvg_1h_boxes) - 1
+            fvg_box = array.get(htf_fvg_1h_boxes, i)
+            fvg_top = box.get_top(fvg_box)
+            fvg_bottom = box.get_bottom(fvg_box)
+            // Check if it's a bearish FVG (top > bottom indicates gap down)
+            if fvg_top > fvg_bottom
+                fvg_min = math.min(fvg_top, fvg_bottom)
+                fvg_max = math.max(fvg_top, fvg_bottom)
+                // Check if candle[1] OR candle[0] touched the FVG
+                bool candle1_touched = high[1] >= fvg_min and low[1] <= fvg_max
+                bool candle0_touched = high >= fvg_min and low <= fvg_max
+                if candle1_touched or candle0_touched
+                    either_candle_touched_bearish_aoi := true
+                    break
+
+    // Check if either candle touched session highs (bearish AOI)
+    if prev_is_bullish and curr_is_bearish and not either_candle_touched_bearish_aoi
+        // Previous Day High
+        if not na(prev_day_high) and not prev_day_high_invalidated
+            float tolerance = prev_day_high * touch_tolerance_pct
+            bool candle1_touched = high[1] >= prev_day_high - tolerance and low[1] <= prev_day_high + tolerance
+            bool candle0_touched = high >= prev_day_high - tolerance and low <= prev_day_high + tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bearish_aoi := true
+
+        // Asian High
+        if not either_candle_touched_bearish_aoi and not na(prev_asian_high) and not asian_high_invalidated
+            float tolerance = prev_asian_high * touch_tolerance_pct
+            bool candle1_touched = high[1] >= prev_asian_high - tolerance and low[1] <= prev_asian_high + tolerance
+            bool candle0_touched = high >= prev_asian_high - tolerance and low <= prev_asian_high + tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bearish_aoi := true
+
+        // London High
+        if not either_candle_touched_bearish_aoi and not na(prev_london_high) and not london_high_invalidated
+            float tolerance = prev_london_high * touch_tolerance_pct
+            bool candle1_touched = high[1] >= prev_london_high - tolerance and low[1] <= prev_london_high + tolerance
+            bool candle0_touched = high >= prev_london_high - tolerance and low <= prev_london_high + tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bearish_aoi := true
+
+        // NY High
+        if not either_candle_touched_bearish_aoi and not na(prev_ny_high) and not ny_high_invalidated
+            float tolerance = prev_ny_high * touch_tolerance_pct
+            bool candle1_touched = high[1] >= prev_ny_high - tolerance and low[1] <= prev_ny_high + tolerance
+            bool candle0_touched = high >= prev_ny_high - tolerance and low <= prev_ny_high + tolerance
+            if candle1_touched or candle0_touched
+                either_candle_touched_bearish_aoi := true
+
+    if prev_is_bullish and curr_is_bearish and either_candle_touched_bearish_aoi
+        // Check if current candle(s) engulf the previous bullish candle
+        bool is_bearish_engulf = false
+        float engulf_low = na
+        float engulf_high = na
+
+        if candles_to_check == 1
+            // Single candle engulfing (for non-1m charts)
+            if close < open and close < close[1] and high >= high[1] and low <= low[1]
+                is_bearish_engulf := true
+                engulf_low := low
+                engulf_high := high
+        else
+            // Multi-candle engulfing (for 1m charts - up to 3 candles)
+            // Check 1-candle engulfing
+            if close < open and close < close[1] and high >= high[1] and low <= low[1]
+                is_bearish_engulf := true
+                engulf_low := low
+                engulf_high := high
+            // Check 2-candle engulfing
+            else if close < close[2] and math.max(high, high[1]) >= high[2] and math.min(low, low[1]) <= low[2] and close < open
+                is_bearish_engulf := true
+                engulf_low := math.min(low, low[1])
+                engulf_high := math.max(high, high[1])
+            // Check 3-candle engulfing
+            else if close < close[3] and math.max(math.max(high, high[1]), high[2]) >= high[3] and math.min(math.min(low, low[1]), low[2]) <= low[3] and close < open
+                is_bearish_engulf := true
+                engulf_low := math.min(math.min(low, low[1]), low[2])
+                engulf_high := math.max(math.max(high, high[1]), high[2])
+
+        if is_bearish_engulf
+            // Entry at the bottom of the bullish order block (low of bullish candle = low[1])
+            float engulf_ob_entry = low[1]
+            // Stop loss at the top of the bullish order block (high of bullish candle = high[1])
+            float engulf_ob_sl = high[1]
+            // Take profit at 2:1 RR
+            float risk = engulf_ob_sl - engulf_ob_entry
+            float engulf_ob_tp = engulf_ob_entry - (risk * 2)
+
+            // Mark this bar as having a setup to prevent duplicates
+            last_engulf_setup_bar := bar_index
+            setup_engulf_ob := true
+
+            // IMPORTANT: Don't create bearish setups if entry is inside a supply zone
+            // Bearish = shorting, we don't want to short FROM a supply zone
+            bool entry_in_supply = false
+            if array.size(htf_supply_zones) > 0
+                for i = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, i)
+                    supply_top = box.get_top(supply_box)
+                    supply_bottom = box.get_bottom(supply_box)
+                    // Check if the OB (entry to SL range) overlaps with supply zone
+                    if engulf_ob_entry >= supply_bottom and engulf_ob_entry <= supply_top
+                        entry_in_supply := true
+                        break
+
+            // Check if TP conflicts with NO TRADE zones, opposite S&D zones, or opposite session levels
+            bool tp_conflict = false
+
+            // Check for real-time supply/demand overlap at TP level (NO TRADE condition)
+            // For bearish setup, check if TP lands where supply and demand zones overlap
+            bool tp_in_supply = false
+            bool tp_in_demand = false
+
+            if array.size(htf_supply_zones) > 0
+                for i = 0 to array.size(htf_supply_zones) - 1
+                    supply_box = array.get(htf_supply_zones, i)
+                    if engulf_ob_tp >= box.get_bottom(supply_box) and engulf_ob_tp <= box.get_top(supply_box)
+                        tp_in_supply := true
+                        break
+
+            if array.size(htf_demand_zones) > 0
+                for i = 0 to array.size(htf_demand_zones) - 1
+                    demand_box = array.get(htf_demand_zones, i)
+                    if engulf_ob_tp >= box.get_bottom(demand_box) and engulf_ob_tp <= box.get_top(demand_box)
+                        tp_in_demand := true
+                        break
+
+            // If TP is in both supply AND demand, it's in a NO TRADE zone (overlap)
+            if tp_in_supply and tp_in_demand
+                tp_conflict := true
+
+            // Check session LOWS (opposite direction for bearish)
+            if not tp_conflict
+                if not na(prev_day_low)
+                    float tolerance_pdl = prev_day_low * touch_tolerance_pct
+                    if math.abs(engulf_ob_tp - prev_day_low) <= tolerance_pdl
+                        tp_conflict := true
+
+            if not tp_conflict and not na(prev_asian_low)
+                float tolerance_al = prev_asian_low * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_asian_low) <= tolerance_al
+                    tp_conflict := true
+
+            if not tp_conflict and not na(prev_london_low)
+                float tolerance_ll = prev_london_low * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_london_low) <= tolerance_ll
+                    tp_conflict := true
+
+            if not tp_conflict and not na(prev_ny_low)
+                float tolerance_nl = prev_ny_low * touch_tolerance_pct
+                if math.abs(engulf_ob_tp - prev_ny_low) <= tolerance_nl
+                    tp_conflict := true
+
+            // Only create the setup if entry is not in a supply zone and no TP conflict
+            if not entry_in_supply and not tp_conflict
+                // Create simple label (just "ENG OB" since it's a gatekeeper condition, not a trade setup)
+                // Add spacing above the candle so label doesn't overlap
+                float label_spacing = (high[1] - low[1]) * 1.5
+                float label_y_pos = high[1] + label_spacing
+                label new_label = label.new(time[1], label_y_pos, "ENG OB", xloc=xloc.bar_time, style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+                array.push(engulf_ob_labels, new_label)
+
+                // Draw orange box around the bullish setup candle (candle[1]) ONLY
+                // Use time[1] for both left and right, with a small time offset to make it visible as a box around just that one candle
+                int box_right_time = time[1] + (time - time[1])  // Width of one candle
+                box engulf_box = box.new(time[1], high[1], box_right_time, low[1], xloc=xloc.bar_time, border_color=color.new(color.orange, 0), bgcolor=color.new(color.orange, 70), border_width=1)
+                array.push(engulf_ob_boxes, engulf_box)
+
+                // Entry box will be created later when MSS triggers
+                box entry_box = na
+
+                // Find the most recent LTF fractal low (bullish fractal) and mark it with a diamond
+                label fractal_label = na
+                if array.size(ltf_fractal_lows) > 0
+                    // Get the most recent fractal
+                    int fractal_idx = array.size(ltf_fractal_lows) - 1
+                    float fractal_price = array.get(ltf_fractal_lows, fractal_idx)
+                    int fractal_bar_idx = array.get(ltf_fractal_lows_bar, fractal_idx)
+
+                    // Calculate time for the fractal (approximate based on bar_index difference)
+                    int bars_ago = bar_index - fractal_bar_idx
+                    int fractal_time = time - (bars_ago * (time - time[1]))
+
+                    // Create diamond marker on the fractal (below the low)
+                    fractal_label := label.new(fractal_time, fractal_price, "◆", xloc=xloc.bar_time, yloc=yloc.belowbar, style=label.style_none, color=color.new(color.white, 100), textcolor=color.black, size=size.large)
+
+                // IMPORTANT: Invalidate any previous BEARISH engulfing setups before adding the new one
+                // Only one engulfing OB per direction should be active at a time
+                if array.size(engulfing_setups) > 0
+                    for i = array.size(engulfing_setups) - 1 to 0
+                        prev_engulf = array.get(engulfing_setups, i)
+                        // Invalidate previous bearish setups that aren't already invalidated
+                        if not prev_engulf.is_bullish and not prev_engulf.invalidated
+                            prev_engulf.invalidated := true
+                            array.set(engulfing_setups, i, prev_engulf)
+                            // Remove label, box, entry_box, and fractal_label from chart
+                            if not na(prev_engulf.setup_label)
+                                label.delete(prev_engulf.setup_label)
+                            if not na(prev_engulf.setup_box)
+                                box.delete(prev_engulf.setup_box)
+                            if not na(prev_engulf.entry_box)
+                                box.delete(prev_engulf.entry_box)
+                            if not na(prev_engulf.fractal_label)
+                                label.delete(prev_engulf.fractal_label)
+
+                // Store engulfing setup for MSS OB validation (with label, box, entry_box, and fractal_label references)
+                engulf_setup = EngulfingSetup.new(bar_index, false, false, either_candle_touched_bearish_aoi, engulf_ob_entry, engulf_ob_sl, engulf_ob_tp, false, false, false, false, new_label, engulf_box, entry_box, fractal_label, na, na)
+                array.push(engulfing_setups, engulf_setup)
+                // Keep only last 50 engulfing setups
+                if array.size(engulfing_setups) > 50
+                    array.shift(engulfing_setups)
+
+// ============================================================================
+// ENGULFING SETUP INVALIDATION
+// ============================================================================
+
+// Check on every bar if price has invalidated any engulfing setups
+// Invalidation conditions:
+// 1. Price wicks beyond the stop loss (bullish: low < SL, bearish: high > SL)
+// 2. Price closes inside an opposite zone (bullish setup closes in supply, bearish setup closes in demand)
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+
+        // Skip if already invalidated
+        if not engulf.invalidated
+            bool just_invalidated = false
+
+            // CONDITION 1: Price wicks beyond stop loss
+            // Bullish setup: invalidate if price wicks (low) below SL
+            if engulf.is_bullish and low < engulf.sl_price
+                engulf.invalidated := true
+                just_invalidated := true
+                array.set(engulfing_setups, i, engulf)
+
+            // Bearish setup: invalidate if price wicks (high) above SL
+            if not engulf.is_bullish and high > engulf.sl_price
+                engulf.invalidated := true
+                just_invalidated := true
+                array.set(engulfing_setups, i, engulf)
+
+            // CONDITION 2: Price closes inside an opposite zone
+            // Bullish setup: invalidate if price closes in a supply zone
+            if not engulf.invalidated and engulf.is_bullish
+                if array.size(htf_supply_zones) > 0
+                    for j = 0 to array.size(htf_supply_zones) - 1
+                        supply_box = array.get(htf_supply_zones, j)
+                        supply_top = box.get_top(supply_box)
+                        supply_bottom = box.get_bottom(supply_box)
+                        if close >= supply_bottom and close <= supply_top
+                            engulf.invalidated := true
+                            just_invalidated := true
+                            array.set(engulfing_setups, i, engulf)
+                            break
+
+            // Bearish setup: invalidate if price closes in a demand zone
+            if not engulf.invalidated and not engulf.is_bullish
+                if array.size(htf_demand_zones) > 0
+                    for j = 0 to array.size(htf_demand_zones) - 1
+                        demand_box = array.get(htf_demand_zones, j)
+                        demand_top = box.get_top(demand_box)
+                        demand_bottom = box.get_bottom(demand_box)
+                        if close >= demand_bottom and close <= demand_top
+                            engulf.invalidated := true
+                            just_invalidated := true
+                            array.set(engulfing_setups, i, engulf)
+                            break
+
+            // Remove label, box, entry_box, and fractal_label from chart when setup is invalidated
+            if just_invalidated
+                if not na(engulf.setup_label)
+                    label.delete(engulf.setup_label)
+                if not na(engulf.setup_box)
+                    box.delete(engulf.setup_box)
+                if not na(engulf.entry_box)
+                    box.delete(engulf.entry_box)
+                if not na(engulf.fractal_label)
+                    label.delete(engulf.fractal_label)
+
+// Update setup_engulf_ob flag based on whether we have any valid (non-invalidated) setups
+setup_engulf_ob := false
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+        if not engulf.invalidated
+            setup_engulf_ob := true
+            break
+
+// IMPORTANT: If no valid engulfing setups remain, invalidate all dependent setups
+// MSS OB, BPR FVG, Inverted FVG, and Breaker Block all depend on a valid engulfing setup
+// If engulfing is invalidated, all subsequent setups should also be invalidated
+if not setup_engulf_ob
+    setup_mss_ob := false
+    setup_bpr_fvg := false
+    setup_inv_fvg := false
+    setup_breaker := false
+
+// ============================================================================
+// MSS ORDER BLOCK STRATEGY
+// ============================================================================
+
+// Arrays to store all MSS OB setups (keep all historical setups on chart)
+var array<label> mss_ob_labels = array.new<label>()
+var array<box> mss_ob_boxes = array.new<box>()
+
+// Track if we created an MSS setup on the current bar to prevent duplicates
+var int last_mss_setup_bar = -1
+
+// Check for MSS (Market Structure Shift) on every bar
+// MSS requires a prior engulfing setup and a break of opposite color fractal
+if bar_index != last_mss_setup_bar
+    // BULLISH MSS: Requires prior bullish engulfing + break above bearish fractal high
+    if array.size(engulfing_setups) > 0 and array.size(ltf_fractal_highs) > 0
+        // Check if we have a bullish engulfing setup
+        for i = array.size(engulfing_setups) - 1 to math.max(0, array.size(engulfing_setups) - 10)
+            engulf = array.get(engulfing_setups, i)
+
+            // Only look for bullish MSS if we had a bullish engulfing in bullish AOI AND it's not invalidated
+            if engulf.is_bullish and engulf.in_bullish_aoi and not engulf.invalidated
+                // Check if current bar breaks above any bearish fractal high
+                // NOTE: The fractal will typically have formed BEFORE the engulfing (99% of the time)
+                // We're looking for the most recent fractal to break
+                for j = array.size(ltf_fractal_highs) - 1 to 0
+                    fractal_high_price = array.get(ltf_fractal_highs, j)
+                    fractal_high_bar = array.get(ltf_fractal_highs_bar, j)
+
+                    // Check if current bar's high breaks above this fractal
+                    if high >= fractal_high_price
+                        // REUSE THE SAME ORDER BLOCK FROM THE ENGULFING SETUP
+                        // The engulfing already identified the OB - we just trigger MSS when fractal breaks
+                        // Entry and SL are the same as the engulfing setup
+                        float mss_ob_entry = engulf.entry_price
+                        float mss_ob_sl = engulf.sl_price
+                        // Take profit at 2:1 RR
+                        float risk = mss_ob_entry - mss_ob_sl
+                        float mss_ob_tp = mss_ob_entry + (risk * 2)
+
+                        // Mark this bar as having an MSS setup
+                        last_mss_setup_bar := bar_index
+                        setup_mss_ob := true
+
+                        // Check if TP conflicts with NO TRADE zones, opposite S&D zones, or opposite session levels
+                        bool tp_conflict = false
+
+                        // Check for real-time supply/demand overlap at TP level (NO TRADE condition)
+                        bool tp_in_supply = false
+                        bool tp_in_demand = false
+
+                        if array.size(htf_supply_zones) > 0
+                            for m = 0 to array.size(htf_supply_zones) - 1
+                                supply_box = array.get(htf_supply_zones, m)
+                                if mss_ob_tp >= box.get_bottom(supply_box) and mss_ob_tp <= box.get_top(supply_box)
+                                    tp_in_supply := true
+                                    break
+
+                        if array.size(htf_demand_zones) > 0
+                            for m = 0 to array.size(htf_demand_zones) - 1
+                                demand_box = array.get(htf_demand_zones, m)
+                                if mss_ob_tp >= box.get_bottom(demand_box) and mss_ob_tp <= box.get_top(demand_box)
+                                    tp_in_demand := true
+                                    break
+
+                        // If TP is in both supply AND demand, it's in a NO TRADE zone (overlap)
+                        if tp_in_supply and tp_in_demand
+                            tp_conflict := true
+
+                        // Check session HIGHS (opposite direction for bullish)
+                        if not tp_conflict and not na(prev_day_high)
+                            float tolerance_pdh = prev_day_high * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_day_high) <= tolerance_pdh
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_asian_high)
+                            float tolerance_ah = prev_asian_high * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_asian_high) <= tolerance_ah
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_london_high)
+                            float tolerance_lh = prev_london_high * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_london_high) <= tolerance_lh
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_ny_high)
+                            float tolerance_nh = prev_ny_high * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_ny_high) <= tolerance_nh
+                                tp_conflict := true
+
+                        // Create label with trade info
+                        string label_text = "MSS OB - BUY\nEntry: " + str.tostring(mss_ob_entry, format.mintick) + "\nSL: " + str.tostring(mss_ob_sl, format.mintick) + "\nTP: " + str.tostring(mss_ob_tp, format.mintick)
+                        if tp_conflict
+                            label_text := label_text + "\nNO TRADE"
+
+                        // Position label on current bar where MSS was confirmed
+                        float label_y_pos = low - ((high - low) * 2)
+
+                        // Create label
+                        label new_label = label.new(time, label_y_pos, label_text, xloc=xloc.bar_time, style=label.style_label_up, color=color.new(color.blue, 20), textcolor=color.white, size=size.small)
+                        array.push(mss_ob_labels, new_label)
+
+                        // Create entry box extending from entry to SL (only extends to current bar, not into infinity)
+                        // This box shows the trade zone and will naturally extend as new bars form
+                        if not na(engulf.entry_box)
+                            box.delete(engulf.entry_box)
+                        box new_entry_box = box.new(time, mss_ob_entry, time, mss_ob_sl, xloc=xloc.bar_time, border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 90), border_width=1)
+                        engulf.entry_box := new_entry_box
+                        engulf.mss_triggered := true  // Mark that MSS has been triggered
+                        array.set(engulfing_setups, i, engulf)
+
+                        // Draw box around the ORIGINAL bearish order block from engulfing (still visible with orange box)
+                        // No need to draw a new box - the engulfing OB box already shows it
+                        // MSS just confirms we can trade this existing OB
+
+                        break  // Exit fractal loop after creating setup
+                    break  // Exit engulfing loop after finding first match
+
+    // BEARISH MSS: Requires prior bearish engulfing + break below bullish fractal low
+    if not setup_mss_ob and array.size(engulfing_setups) > 0 and array.size(ltf_fractal_lows) > 0
+        // Check if we have a bearish engulfing setup
+        for i = array.size(engulfing_setups) - 1 to math.max(0, array.size(engulfing_setups) - 10)
+            engulf = array.get(engulfing_setups, i)
+
+            // Only look for bearish MSS if we had a bearish engulfing in bearish AOI AND it's not invalidated
+            if not engulf.is_bullish and engulf.in_bearish_aoi and not engulf.invalidated
+                // Check if current bar breaks below any bullish fractal low
+                // NOTE: The fractal will typically have formed BEFORE the engulfing (99% of the time)
+                // We're looking for the most recent fractal to break
+                for j = array.size(ltf_fractal_lows) - 1 to 0
+                    fractal_low_price = array.get(ltf_fractal_lows, j)
+                    fractal_low_bar = array.get(ltf_fractal_lows_bar, j)
+
+                    // Check if current bar's low breaks below this fractal
+                    if low <= fractal_low_price
+                        // REUSE THE SAME ORDER BLOCK FROM THE ENGULFING SETUP
+                        // The engulfing already identified the OB - we just trigger MSS when fractal breaks
+                        // Entry and SL are the same as the engulfing setup
+                        float mss_ob_entry = engulf.entry_price
+                        float mss_ob_sl = engulf.sl_price
+                        // Take profit at 2:1 RR
+                        float risk = mss_ob_sl - mss_ob_entry
+                        float mss_ob_tp = mss_ob_entry - (risk * 2)
+
+                        // Mark this bar as having an MSS setup
+                        last_mss_setup_bar := bar_index
+                        setup_mss_ob := true
+
+                        // Check if TP conflicts with NO TRADE zones, opposite S&D zones, or opposite session levels
+                        bool tp_conflict = false
+
+                        // Check for real-time supply/demand overlap at TP level (NO TRADE condition)
+                        bool tp_in_supply = false
+                        bool tp_in_demand = false
+
+                        if array.size(htf_supply_zones) > 0
+                            for m = 0 to array.size(htf_supply_zones) - 1
+                                supply_box = array.get(htf_supply_zones, m)
+                                if mss_ob_tp >= box.get_bottom(supply_box) and mss_ob_tp <= box.get_top(supply_box)
+                                    tp_in_supply := true
+                                    break
+
+                        if array.size(htf_demand_zones) > 0
+                            for m = 0 to array.size(htf_demand_zones) - 1
+                                demand_box = array.get(htf_demand_zones, m)
+                                if mss_ob_tp >= box.get_bottom(demand_box) and mss_ob_tp <= box.get_top(demand_box)
+                                    tp_in_demand := true
+                                    break
+
+                        // If TP is in both supply AND demand, it's in a NO TRADE zone (overlap)
+                        if tp_in_supply and tp_in_demand
+                            tp_conflict := true
+
+                        // Check session LOWS (opposite direction for bearish)
+                        if not tp_conflict and not na(prev_day_low)
+                            float tolerance_pdl = prev_day_low * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_day_low) <= tolerance_pdl
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_asian_low)
+                            float tolerance_al = prev_asian_low * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_asian_low) <= tolerance_al
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_london_low)
+                            float tolerance_ll = prev_london_low * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_london_low) <= tolerance_ll
+                                tp_conflict := true
+
+                        if not tp_conflict and not na(prev_ny_low)
+                            float tolerance_nl = prev_ny_low * touch_tolerance_pct
+                            if math.abs(mss_ob_tp - prev_ny_low) <= tolerance_nl
+                                tp_conflict := true
+
+                        // Create label with trade info
+                        string label_text = "MSS OB - SELL\nEntry: " + str.tostring(mss_ob_entry, format.mintick) + "\nSL: " + str.tostring(mss_ob_sl, format.mintick) + "\nTP: " + str.tostring(mss_ob_tp, format.mintick)
+                        if tp_conflict
+                            label_text := label_text + "\nNO TRADE"
+
+                        // Position label on current bar where MSS was confirmed
+                        float label_y_pos = high + ((high - low) * 2)
+
+                        // Create label
+                        label new_label = label.new(time, label_y_pos, label_text, xloc=xloc.bar_time, style=label.style_label_down, color=color.new(color.purple, 20), textcolor=color.white, size=size.small)
+                        array.push(mss_ob_labels, new_label)
+
+                        // Create entry box extending from entry to SL (only extends to current bar, not into infinity)
+                        // This box shows the trade zone and will naturally extend as new bars form
+                        if not na(engulf.entry_box)
+                            box.delete(engulf.entry_box)
+                        box new_entry_box = box.new(time, mss_ob_sl, time, mss_ob_entry, xloc=xloc.bar_time, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 90), border_width=1)
+                        engulf.entry_box := new_entry_box
+                        engulf.mss_triggered := true  // Mark that MSS has been triggered
+                        array.set(engulfing_setups, i, engulf)
+
+                        // Draw box around the ORIGINAL bullish order block from engulfing (still visible with orange box)
+                        // No need to draw a new box - the engulfing OB box already shows it
+                        // MSS just confirms we can trade this existing OB
+
+                        break  // Exit fractal loop after creating setup
+                    break  // Exit engulfing loop after finding first match
+
+// ============================================================================
+// UPDATE ENTRY BOXES - Extend them one bar at a time
+// ============================================================================
+
+// Update entry boxes for all valid engulfing setups that have triggered MSS
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+
+        // Only update if setup is not invalidated, not closed, and has an entry box (meaning MSS triggered)
+        if not engulf.invalidated and not engulf.trade_closed and not na(engulf.entry_box)
+            // Delete old box and create new one extended to current bar
+            box.delete(engulf.entry_box)
+
+            if engulf.is_bullish
+                // Bullish: entry on top, SL on bottom
+                engulf.entry_box := box.new(box.get_left(engulf.setup_box), engulf.entry_price, time, engulf.sl_price, xloc=xloc.bar_time, border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 90), border_width=1)
+            else
+                // Bearish: SL on top, entry on bottom
+                engulf.entry_box := box.new(box.get_left(engulf.setup_box), engulf.sl_price, time, engulf.entry_price, xloc=xloc.bar_time, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 90), border_width=1)
+
+            array.set(engulfing_setups, i, engulf)
+
+// ============================================================================
+// TRADE ENTRY DETECTION - Check if price re-enters OB after MSS trigger
+// ============================================================================
+
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+
+        // Only check for entry if MSS has been triggered, setup is not invalidated, trade hasn't been entered yet, and we're not in a no-trade time
+        if engulf.mss_triggered and not engulf.invalidated and not engulf.trade_entered and not in_no_trade_time
+            bool price_touched_entry = false
+
+            if engulf.is_bullish
+                // For bullish setup: check if price touches or goes above the entry price
+                // Entry is at top (high) of the OB
+                // We want to BUY (go long) when price reaches this level
+                if high >= engulf.entry_price
+                    price_touched_entry := true
+            else
+                // For bearish setup: check if price touches or goes below the entry price
+                // Entry is at bottom (low) of the OB
+                // We want to SELL (go short) when price reaches this level
+                if low <= engulf.entry_price
+                    price_touched_entry := true
+
+            // If price has touched the entry price, execute the trade
+            if price_touched_entry
+                // Trade 1 contract per setup
+                float position_size = 1
+
+                // Place the limit order
+                if engulf.is_bullish
+                    strategy.entry("MSS OB Long", strategy.long, qty=position_size, limit=engulf.entry_price)
+                    strategy.exit("MSS OB Long Exit", "MSS OB Long", stop=engulf.sl_price, limit=engulf.tp_price)
+                else
+                    strategy.entry("MSS OB Short", strategy.short, qty=position_size, limit=engulf.entry_price)
+                    strategy.exit("MSS OB Short Exit", "MSS OB Short", stop=engulf.sl_price, limit=engulf.tp_price)
+
+                // Mark trade as entered
+                engulf.trade_entered := true
+
+                // Create TP and SL visualization boxes if enabled
+                if show_trade_zones
+                    // Delete old boxes if they exist
+                    if not na(engulf.sl_zone_box)
+                        box.delete(engulf.sl_zone_box)
+                    if not na(engulf.tp_zone_box)
+                        box.delete(engulf.tp_zone_box)
+
+                    if engulf.is_bullish
+                        // Bullish: SL zone is below entry, TP zone is above entry
+                        engulf.sl_zone_box := box.new(time, engulf.entry_price, time, engulf.sl_price, xloc=xloc.bar_time, border_color=color.new(color.red, 70), bgcolor=color.new(color.red, 90), border_width=1)
+                        engulf.tp_zone_box := box.new(time, engulf.entry_price, time, engulf.tp_price, xloc=xloc.bar_time, border_color=color.new(color.green, 70), bgcolor=color.new(color.green, 90), border_width=1)
+                    else
+                        // Bearish: SL zone is above entry, TP zone is below entry
+                        engulf.sl_zone_box := box.new(time, engulf.sl_price, time, engulf.entry_price, xloc=xloc.bar_time, border_color=color.new(color.red, 70), bgcolor=color.new(color.red, 90), border_width=1)
+                        engulf.tp_zone_box := box.new(time, engulf.tp_price, time, engulf.entry_price, xloc=xloc.bar_time, border_color=color.new(color.green, 70), bgcolor=color.new(color.green, 90), border_width=1)
+
+                array.set(engulfing_setups, i, engulf)
+
+// ============================================================================
+// NO-TRADE TIME CLOSURE - Close all open trades during no-trade times
+// ============================================================================
+
+if in_no_trade_time
+    // Close all open positions immediately
+    if strategy.position_size != 0
+        strategy.close_all("No-Trade Time Close")
+
+    // Mark all entered trades as closed
+    if array.size(engulfing_setups) > 0
+        for i = array.size(engulfing_setups) - 1 to 0
+            engulf = array.get(engulfing_setups, i)
+            if engulf.trade_entered and not engulf.trade_closed
+                engulf.trade_closed := true
+                array.set(engulfing_setups, i, engulf)
+
+// ============================================================================
+// TRADE EXIT DETECTION - Check if price hits TP or SL
+// ============================================================================
+
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+
+        // Only check for exit if trade has been entered and not yet closed
+        if engulf.trade_entered and not engulf.trade_closed
+            bool hit_tp = false
+            bool hit_sl = false
+
+            if engulf.is_bullish
+                // Bullish trade: check if high reaches TP or low reaches SL
+                if high >= engulf.tp_price
+                    hit_tp := true
+                if low <= engulf.sl_price
+                    hit_sl := true
+            else
+                // Bearish trade: check if low reaches TP or high reaches SL
+                if low <= engulf.tp_price
+                    hit_tp := true
+                if high >= engulf.sl_price
+                    hit_sl := true
+
+            // Mark trade as closed if either TP or SL is hit
+            if hit_tp or hit_sl
+                engulf.trade_closed := true
+                array.set(engulfing_setups, i, engulf)
+
+// ============================================================================
+// UPDATE TRADE ZONE BOXES - Extend TP/SL boxes one bar at a time
+// ============================================================================
+
+if array.size(engulfing_setups) > 0
+    for i = array.size(engulfing_setups) - 1 to 0
+        engulf = array.get(engulfing_setups, i)
+
+        // Only update if trade has been entered, not closed, and boxes exist
+        if engulf.trade_entered and not engulf.trade_closed and show_trade_zones
+            if not na(engulf.sl_zone_box)
+                box.delete(engulf.sl_zone_box)
+            if not na(engulf.tp_zone_box)
+                box.delete(engulf.tp_zone_box)
+
+            // Get the original trade entry bar time from when trade was entered
+            int trade_start_time = box.get_left(engulf.sl_zone_box)
+
+            if engulf.is_bullish
+                // Bullish: SL zone is below entry, TP zone is above entry
+                engulf.sl_zone_box := box.new(box.get_left(engulf.setup_box), engulf.entry_price, time, engulf.sl_price, xloc=xloc.bar_time, border_color=color.new(color.red, 70), bgcolor=color.new(color.red, 90), border_width=1)
+                engulf.tp_zone_box := box.new(box.get_left(engulf.setup_box), engulf.entry_price, time, engulf.tp_price, xloc=xloc.bar_time, border_color=color.new(color.green, 70), bgcolor=color.new(color.green, 90), border_width=1)
+            else
+                // Bearish: SL zone is above entry, TP zone is below entry
+                engulf.sl_zone_box := box.new(box.get_left(engulf.setup_box), engulf.sl_price, time, engulf.entry_price, xloc=xloc.bar_time, border_color=color.new(color.red, 70), bgcolor=color.new(color.red, 90), border_width=1)
+                engulf.tp_zone_box := box.new(box.get_left(engulf.setup_box), engulf.tp_price, time, engulf.entry_price, xloc=xloc.bar_time, border_color=color.new(color.green, 70), bgcolor=color.new(color.green, 90), border_width=1)
+
+            array.set(engulfing_setups, i, engulf)
+
+// ============================================================================
+// DEBUG TABLE - Show Status, Strategies, and Session Levels
+// ============================================================================
+
+// Create debug table with expanded size for status and strategies
+// Rows needed: 1 header + 1 separator + 5 strategies + 1 separator + 1 status + 6 session levels = 15 rows
+var table debug_table = table.new(position.top_right, 2, 16, border_width=1)
+
+// Collect all levels with their data
+type LevelData
+    string name
+    float price
+    bool invalidated
+    bool is_high
+
+// Create separate arrays for highs and lows
+var array<LevelData> high_levels = array.new<LevelData>()
+var array<LevelData> low_levels = array.new<LevelData>()
+array.clear(high_levels)
+array.clear(low_levels)
+
+// Add all high levels
+if not na(prev_day_high)
+    array.push(high_levels, LevelData.new("PDH", prev_day_high, prev_day_high_invalidated, true))
+if not na(prev_asian_high)
+    array.push(high_levels, LevelData.new("Asian High", prev_asian_high, asian_high_invalidated, true))
+if not na(prev_london_high)
+    array.push(high_levels, LevelData.new("London High", prev_london_high, london_high_invalidated, true))
+
+// Add all low levels
+if not na(prev_day_low)
+    array.push(low_levels, LevelData.new("PDL", prev_day_low, prev_day_low_invalidated, false))
+if not na(prev_asian_low)
+    array.push(low_levels, LevelData.new("Asian Low", prev_asian_low, asian_low_invalidated, false))
+if not na(prev_london_low)
+    array.push(low_levels, LevelData.new("London Low", prev_london_low, london_low_invalidated, false))
+
+// Sort high levels by price (highest to lowest)
+int n_highs = array.size(high_levels)
+if n_highs > 1
+    for i = 0 to n_highs - 2
+        for j = 0 to n_highs - i - 2
+            level_j = array.get(high_levels, j)
+            level_j_plus_1 = array.get(high_levels, j + 1)
+            if level_j.price < level_j_plus_1.price
+                array.set(high_levels, j, level_j_plus_1)
+                array.set(high_levels, j + 1, level_j)
+
+// Sort low levels by price (highest to lowest)
+int n_lows = array.size(low_levels)
+if n_lows > 1
+    for i = 0 to n_lows - 2
+        for j = 0 to n_lows - i - 2
+            level_j = array.get(low_levels, j)
+            level_j_plus_1 = array.get(low_levels, j + 1)
+            if level_j.price < level_j_plus_1.price
+                array.set(low_levels, j, level_j_plus_1)
+                array.set(low_levels, j + 1, level_j)
+
+// Combine arrays: all highs first, then all lows
+var array<LevelData> levels = array.new<LevelData>()
+array.clear(levels)
+if array.size(high_levels) > 0
+    for i = 0 to array.size(high_levels) - 1
+        array.push(levels, array.get(high_levels, i))
+if array.size(low_levels) > 0
+    for i = 0 to array.size(low_levels) - 1
+        array.push(levels, array.get(low_levels, i))
+
+// ============================================================================
+// POPULATE DEBUG TABLE
+// ============================================================================
+
+int row = 0
+
+// ROW 0: Session Levels Header
+table.cell(debug_table, 0, row, "Level", text_color=color.white, bgcolor=color.new(color.gray, 0), text_size=size.small)
+table.cell(debug_table, 1, row, "Price", text_color=color.white, bgcolor=color.new(color.gray, 0), text_size=size.small)
+row := row + 1
+
+// ROW 1+: Populate session level rows
+if array.size(levels) > 0
+    for i = 0 to array.size(levels) - 1
+        level = array.get(levels, i)
+
+        // Determine text based on invalidation (X prefix if invalidated)
+        level_text = level.invalidated ? "X " + level.name : level.name
+        price_text = str.tostring(level.price, format.mintick)
+
+        // Background color: red for highs, blue for lows
+        // Active levels: 30% transparency (bold colors)
+        // Invalidated levels: 85% transparency (very faded)
+        // Text color: black for all levels
+        int transparency = level.invalidated ? 85 : 30
+        bg_color = level.is_high ? color.new(color.red, transparency) : color.new(color.blue, transparency)
+
+        // Add to table
+        table.cell(debug_table, 0, row, level_text, text_color=color.black, bgcolor=bg_color, text_size=size.small)
+        table.cell(debug_table, 1, row, price_text, text_color=color.black, bgcolor=bg_color, text_size=size.small)
+
+        row := row + 1
+
+// Separator after session levels
+table.cell(debug_table, 0, row, "━━━━━━━━━━━━", text_color=color.gray, bgcolor=color.new(color.gray, 90), text_size=size.tiny)
+table.cell(debug_table, 1, row, "━━━━━━━━━━━━", text_color=color.gray, bgcolor=color.new(color.gray, 90), text_size=size.tiny)
+row := row + 1
+
+// STATUS ROW (above strategies)
+// Color-code based on status: gray for NO TRADE, green for bullish, red for bearish, purple for waiting
+color status_bg_color = color.new(color.purple, 0)
+color status_value_color = color.new(color.purple, 30)
+
+if in_no_trade_zone
+    status_bg_color := color.new(color.gray, 0)
+    status_value_color := color.new(color.gray, 30)
+else if in_bullish_aoi
+    status_bg_color := color.new(color.green, 0)
+    status_value_color := color.new(color.green, 30)
+else if in_bearish_aoi
+    status_bg_color := color.new(color.red, 0)
+    status_value_color := color.new(color.red, 30)
+
+table.cell(debug_table, 0, row, "STATUS", text_color=color.white, bgcolor=status_bg_color, text_size=size.small)
+table.cell(debug_table, 1, row, current_status, text_color=color.white, bgcolor=status_value_color, text_size=size.small)
+row := row + 1
+
+// Separator after STATUS
+table.cell(debug_table, 0, row, "━━━━━━━━━━━━", text_color=color.gray, bgcolor=color.new(color.gray, 90), text_size=size.tiny)
+table.cell(debug_table, 1, row, "━━━━━━━━━━━━", text_color=color.gray, bgcolor=color.new(color.gray, 90), text_size=size.tiny)
+row := row + 1
+
+// STRATEGIES SECTION (ordered by priority)
+// Engulfing OB - show checkmark if any setup exists
+table.cell(debug_table, 0, row, "Engulfing OB", text_color=color.black, bgcolor=color.new(color.blue, 70), text_size=size.small)
+table.cell(debug_table, 1, row, setup_engulf_ob ? "✓" : "-", text_color=setup_engulf_ob ? color.green : color.gray, bgcolor=color.new(color.blue, 70), text_size=size.normal)
+row := row + 1
+
+table.cell(debug_table, 0, row, "MSS OB", text_color=color.black, bgcolor=color.new(color.blue, 70), text_size=size.small)
+table.cell(debug_table, 1, row, setup_mss_ob ? "✓" : "-", text_color=setup_mss_ob ? color.green : color.gray, bgcolor=color.new(color.blue, 70), text_size=size.normal)
+row := row + 1
+
+table.cell(debug_table, 0, row, "BPR FVG", text_color=color.black, bgcolor=color.new(color.blue, 70), text_size=size.small)
+table.cell(debug_table, 1, row, setup_bpr_fvg ? "✓" : "-", text_color=setup_bpr_fvg ? color.green : color.gray, bgcolor=color.new(color.blue, 70), text_size=size.normal)
+row := row + 1
+
+table.cell(debug_table, 0, row, "Inverted FVG", text_color=color.black, bgcolor=color.new(color.blue, 70), text_size=size.small)
+table.cell(debug_table, 1, row, setup_inv_fvg ? "✓" : "-", text_color=setup_inv_fvg ? color.green : color.gray, bgcolor=color.new(color.blue, 70), text_size=size.normal)
+row := row + 1
+
+table.cell(debug_table, 0, row, "Breaker Block", text_color=color.black, bgcolor=color.new(color.blue, 70), text_size=size.small)
+table.cell(debug_table, 1, row, setup_breaker ? "✓" : "-", text_color=setup_breaker ? color.green : color.gray, bgcolor=color.new(color.blue, 70), text_size=size.normal)
+row := row + 1
