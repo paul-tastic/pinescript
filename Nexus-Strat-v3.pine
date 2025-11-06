@@ -420,8 +420,9 @@ htf_fractal_time_2 = request.security(syminfo.tickerid, "60", time[2], gaps=barm
 bool is_htf_chart = timeframe.in_seconds() >= 3600
 
 // Detect fractals from 1H data (runs on ALL timeframes for S&D zone creation)
-bool htf_fractal_up_detected = not na(htf_fractal_high_2) and htf_fractal_high_2 > htf_fractal_high_4 and htf_fractal_high_2 > htf_fractal_high_3 and htf_fractal_high_2 > htf_fractal_high_1 and htf_fractal_high_2 > htf_fractal_high_0
-bool htf_fractal_down_detected = not na(htf_fractal_low_2) and htf_fractal_low_2 < htf_fractal_low_4 and htf_fractal_low_2 < htf_fractal_low_3 and htf_fractal_low_2 < htf_fractal_low_1 and htf_fractal_low_2 < htf_fractal_low_0
+// Williams Fractal: center bar must be higher/lower than 2 bars on EACH SIDE (not including current bar)
+bool htf_fractal_up_detected = not na(htf_fractal_high_2) and htf_fractal_high_2 > htf_fractal_high_4 and htf_fractal_high_2 > htf_fractal_high_3 and htf_fractal_high_2 > htf_fractal_high_1
+bool htf_fractal_down_detected = not na(htf_fractal_low_2) and htf_fractal_low_2 < htf_fractal_low_4 and htf_fractal_low_2 < htf_fractal_low_3 and htf_fractal_low_2 < htf_fractal_low_1
 
 // Plot fractals on ALL timeframes (so they're visible on 1m chart)
 bool htf_fractal_up = show_fractals and htf_fractal_up_detected
@@ -525,77 +526,136 @@ htf_1h_low = request.security(syminfo.tickerid, "60", low, lookahead=barmerge.lo
 htf_1h_high = request.security(syminfo.tickerid, "60", high, lookahead=barmerge.lookahead_off)
 
 // SUPPLY & DEMAND ZONE CREATION LOGIC
-// CRITICAL: Zones form when price REJECTS from a swing point, NOT when breaking out
+// CRITICAL: Zones form from swing fractals when price breaks OPPOSITE fractal type
 //
-// For SUPPLY zones (fractal highs = resistance):
-// 1. Price rallies UP to form a fractal high (swing high)
-// 2. Price then CLOSES BELOW the fractal_low (low of that consolidation)
-// 3. This confirms rejection from the high → create SUPPLY zone at fractal_high
+// For DEMAND zones (start from GREEN fractal = swing LOW):
+// 1. Price drops to form a GREEN fractal (swing low / valley)
+// 2. Fractal must remain VALID (price hasn't dropped below it - it's the lowest point)
+// 3. Price then rallies and CLOSES ABOVE a RED fractal high (swing high / peak)
+// 4. This confirms demand → create DEMAND zone at the GREEN fractal low
 //
-// For DEMAND zones (fractal lows = support):
-// 1. Price drops DOWN to form a fractal low (swing low)
-// 2. Price then CLOSES ABOVE the fractal_high (high of that consolidation)
-// 3. This confirms rejection from the low → create DEMAND zone at fractal_low
+// For SUPPLY zones (start from RED fractal = swing HIGH):
+// 1. Price rallies to form a RED fractal (swing high / peak)
+// 2. Fractal must remain VALID (price hasn't rallied above it - it's the highest point)
+// 3. Price then drops and CLOSES BELOW a GREEN fractal low (swing low / valley)
+// 4. This confirms supply → create SUPPLY zone at the RED fractal high
 
-// Supply zone detection (fractal highs):
-// Create zone when price closes BELOW the swing low of a fractal high
-if show_htf_supply_demand and array.size(htf_fh_prices) > 0
-    for i = 0 to array.size(htf_fh_prices) - 1
+// Invalidate fractals that are no longer valid swing points
+// RED fractal (high) is invalidated if price closes ABOVE it
+// GREEN fractal (low) is invalidated if price closes BELOW it
+if array.size(htf_fh_prices) > 0
+    for i = array.size(htf_fh_prices) - 1 to 0
         if not array.get(htf_fh_broken_flags, i)
             float fractal_high = array.get(htf_fh_prices, i)
-            float fractal_low = array.get(htf_fh_lows, i)
-            bool zone_created = array.get(htf_fh_zone_created_flags, i)
-
-            // When price closes BELOW fractal_low, it confirms rejection from fractal_high
-            if not zone_created and htf_1h_close < fractal_low
+            // Invalidate RED fractal if price closes above it (no longer highest point)
+            if htf_1h_close > fractal_high
                 array.set(htf_fh_broken_flags, i, true)
-                array.set(htf_fh_zone_created_flags, i, true)
 
-                // Create Supply zone FROM the fractal candle (high to low of that candle)
-                zone_top = fractal_high
-                zone_bottom = fractal_low
-                int fractal_time = array.get(htf_fh_times, i)
-
-                supply_box = box.new(fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
-                array.push(htf_supply_zones, supply_box)
-                array.push(supply_tops, zone_top)
-                array.push(supply_bottoms, zone_bottom)
-
-                if array.size(htf_supply_zones) > max_htf_sd_zones
-                    old_box = array.shift(htf_supply_zones)
-                    box.delete(old_box)
-                    array.shift(supply_tops)
-                    array.shift(supply_bottoms)
-
-// Demand zone detection (fractal lows):
-// Create zone when price closes ABOVE the swing high of a fractal low
-if show_htf_supply_demand and array.size(htf_fl_prices) > 0
-    for i = 0 to array.size(htf_fl_prices) - 1
+if array.size(htf_fl_prices) > 0
+    for i = array.size(htf_fl_prices) - 1 to 0
         if not array.get(htf_fl_broken_flags, i)
             float fractal_low = array.get(htf_fl_prices, i)
-            float fractal_high = array.get(htf_fl_highs, i)
-            bool zone_created = array.get(htf_fl_zone_created_flags, i)
-
-            // When price closes ABOVE fractal_high, it confirms rejection from fractal_low
-            if not zone_created and htf_1h_close > fractal_high
+            // Invalidate GREEN fractal if price closes below it (no longer lowest point)
+            if htf_1h_close < fractal_low
                 array.set(htf_fl_broken_flags, i, true)
-                array.set(htf_fl_zone_created_flags, i, true)
 
-                // Create Demand zone FROM the fractal candle (high to low of that candle)
-                zone_top = fractal_high
-                zone_bottom = fractal_low
-                int fractal_time = array.get(htf_fl_times, i)
+// DEMAND zone creation:
+// Starts from GREEN fractal (swing low), creates zone when price closes above RED fractal (swing high)
+if show_htf_supply_demand and array.size(htf_fl_prices) > 0 and array.size(htf_fh_prices) > 0
+    for i = 0 to array.size(htf_fl_prices) - 1
+        if not array.get(htf_fl_broken_flags, i) and not array.get(htf_fl_zone_created_flags, i)
+            float green_fractal_low = array.get(htf_fl_prices, i)
+            float green_fractal_high = array.get(htf_fl_highs, i)
+            int green_fractal_time = array.get(htf_fl_times, i)
 
-                demand_box = box.new(fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
-                array.push(htf_demand_zones, demand_box)
-                array.push(demand_tops, zone_top)
-                array.push(demand_bottoms, zone_bottom)
+            // Check if this is a SWING LOW (lower than next 2 fractals)
+            bool is_swing_low = true
+            if array.size(htf_fl_prices) > 1
+                int check_count = math.min(2, array.size(htf_fl_prices) - i - 1)
+                if check_count > 0
+                    for j = 1 to check_count
+                        if array.get(htf_fl_prices, i + j) <= green_fractal_low
+                            is_swing_low := false
+                            break
 
-                if array.size(htf_demand_zones) > max_htf_sd_zones
-                    old_box = array.shift(htf_demand_zones)
-                    box.delete(old_box)
-                    array.shift(demand_tops)
-                    array.shift(demand_bottoms)
+            // Only proceed if this is a swing low
+            if is_swing_low
+                // Check if price has closed above ANY RED fractal high that came AFTER this GREEN fractal
+                for k = 0 to array.size(htf_fh_prices) - 1
+                    int red_fractal_time = array.get(htf_fh_times, k)
+                    float red_fractal_high = array.get(htf_fh_prices, k)
+
+                    // RED fractal must come AFTER the GREEN fractal
+                    if red_fractal_time > green_fractal_time
+                        // Check if price closed above this RED fractal high
+                        if htf_1h_close > red_fractal_high
+                            // Create DEMAND zone at the GREEN fractal
+                            array.set(htf_fl_zone_created_flags, i, true)
+
+                            zone_top = green_fractal_high
+                            zone_bottom = green_fractal_low
+
+                            demand_box = box.new(green_fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_demand_zones, demand_box)
+                            array.push(demand_tops, zone_top)
+                            array.push(demand_bottoms, zone_bottom)
+
+                            if array.size(htf_demand_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_demand_zones)
+                                box.delete(old_box)
+                                array.shift(demand_tops)
+                                array.shift(demand_bottoms)
+
+                            break  // Zone created, stop checking RED fractals
+
+// SUPPLY zone creation:
+// Starts from RED fractal (swing high), creates zone when price closes below GREEN fractal (swing low)
+if show_htf_supply_demand and array.size(htf_fh_prices) > 0 and array.size(htf_fl_prices) > 0
+    for i = 0 to array.size(htf_fh_prices) - 1
+        if not array.get(htf_fh_broken_flags, i) and not array.get(htf_fh_zone_created_flags, i)
+            float red_fractal_high = array.get(htf_fh_prices, i)
+            float red_fractal_low = array.get(htf_fh_lows, i)
+            int red_fractal_time = array.get(htf_fh_times, i)
+
+            // Check if this is a SWING HIGH (higher than next 2 fractals)
+            bool is_swing_high = true
+            if array.size(htf_fh_prices) > 1
+                int check_count = math.min(2, array.size(htf_fh_prices) - i - 1)
+                if check_count > 0
+                    for j = 1 to check_count
+                        if array.get(htf_fh_prices, i + j) >= red_fractal_high
+                            is_swing_high := false
+                            break
+
+            // Only proceed if this is a swing high
+            if is_swing_high
+                // Check if price has closed below ANY GREEN fractal low that came AFTER this RED fractal
+                for k = 0 to array.size(htf_fl_prices) - 1
+                    int green_fractal_time = array.get(htf_fl_times, k)
+                    float green_fractal_low = array.get(htf_fl_prices, k)
+
+                    // GREEN fractal must come AFTER the RED fractal
+                    if green_fractal_time > red_fractal_time
+                        // Check if price closed below this GREEN fractal low
+                        if htf_1h_close < green_fractal_low
+                            // Create SUPPLY zone at the RED fractal
+                            array.set(htf_fh_zone_created_flags, i, true)
+
+                            zone_top = red_fractal_high
+                            zone_bottom = red_fractal_low
+
+                            supply_box = box.new(red_fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_supply_zones, supply_box)
+                            array.push(supply_tops, zone_top)
+                            array.push(supply_bottoms, zone_bottom)
+
+                            if array.size(htf_supply_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_supply_zones)
+                                box.delete(old_box)
+                                array.shift(supply_tops)
+                                array.shift(supply_bottoms)
+
+                            break  // Zone created, stop checking GREEN fractals
 
 // Extend S&D zones to current time
 if array.size(htf_supply_zones) > 0
