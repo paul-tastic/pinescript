@@ -1,0 +1,967 @@
+//mach2fx - NEXUS STRATEGY V4
+//@version=5
+// ============================================================================
+// Nexus Strategy v4 - Manual Zone Configuration
+// ============================================================================
+// Built from Nexus Strategy v3 with MANUAL zone input system
+//
+// MAJOR CHANGE: Manual Supply & Demand zones instead of automatic fractal-based
+//
+// TRADING LOGIC (2-Step Confirmation):
+// Step 1: Engulfing OB in HTF S&D zone (stays active until invalidated)
+// Step 2: Secondary confirmation (MSS OB, BPR FVG, or Inverted FVG)
+// Trade only executes when BOTH steps are met
+//
+// Features:
+// - MANUAL Supply & Demand zone inputs (user-defined daily)
+// - LTF (Chart TF) Fractals for visual reference
+// - Engulfing Order Block detection (Step 1) - persists until invalidated
+// - Placeholder for Step 2 confirmations (MSS OB, BPR FVG, Inverted FVG)
+// - Session high/low tracking (Asian, London, NY)
+// - No-trade time periods
+// ============================================================================
+strategy("Nexus Strategy v4 - Manual Zones", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Manual Zone Inputs (Supply first since they're at top of chart)
+use_manual_zones = input.bool(true, "Use Manual Zones", group="Manual Zones")
+manual_supply_top = input.float(0.0, "Supply Zone Top", group="Manual Zones", tooltip="Set to 0.0 to disable this supply zone")
+manual_supply_bottom = input.float(0.0, "Supply Zone Bottom", group="Manual Zones", tooltip="Set to 0.0 to disable this supply zone")
+manual_demand_top = input.float(0.0, "Demand Zone Top", group="Manual Zones", tooltip="Set to 0.0 to disable this demand zone")
+manual_demand_bottom = input.float(0.0, "Demand Zone Bottom", group="Manual Zones", tooltip="Set to 0.0 to disable this demand zone")
+show_manual_zones = input.bool(true, "Show Manual Zones on Chart", group="Manual Zones")
+manual_supply_color = input.color(color.new(color.red, 90), "Supply Zone Color", group="Manual Zones")
+manual_demand_color = input.color(color.new(color.green, 90), "Demand Zone Color", group="Manual Zones")
+
+// Session Time Settings (NY Timezone)
+asian_session = input.session("2000-0000", "Asian Session", group="Session Times")
+london_session = input.session("0300-0700", "London Session", group="Session Times")
+ny_session = input.session("0930-1600", "NY Session", group="Session Times")
+
+// Session High/Low Display Settings
+show_asian_lines = input.bool(true, "Show Asian Session Lines", group="Session Lines")
+show_london_lines = input.bool(true, "Show London Session Lines", group="Session Lines")
+show_ny_lines = input.bool(true, "Show NY Session Lines", group="Session Lines")
+show_labels = input.bool(true, "Show Session Labels", group="Session Lines")
+
+// Visual Settings
+session_high_color = input.color(color.new(color.red, 0), "Session High Color", group="Visual")
+session_low_color = input.color(color.new(color.green, 0), "Session Low Color", group="Visual")
+
+// Fractal Settings
+show_ltf_fractals = input.bool(true, "Show LTF (Chart TF) Fractals", group="Fractals")
+ltf_fractal_up_color = input.color(color.new(color.aqua, 0), "LTF Fractal Up Color", group="Fractals")
+ltf_fractal_down_color = input.color(color.new(color.orange, 0), "LTF Fractal Down Color", group="Fractals")
+
+// Trade Management
+show_trade_zones = input.bool(true, "Show TP/SL Trade Zones", group="Trade Management")
+tp_rr_ratio = input.float(2.0, "TP Risk/Reward Ratio", minval=0.5, maxval=10.0, step=0.5, group="Trade Management")
+show_debug_table = input.bool(true, "Show Debug Table", group="Trade Management")
+
+// No-Trade Times
+enable_no_trade_1 = input.bool(true, "Enable No-Trade Period 1", group="No-Trade Times")
+no_trade_1_start = input.session("1745-1815", "Period 1 Time", group="No-Trade Times")
+enable_no_trade_2 = input.bool(true, "Enable No-Trade Period 2", group="No-Trade Times")
+no_trade_2_start = input.session("1815-2359", "Period 2 Time", group="No-Trade Times")
+enable_no_trade_3 = input.bool(true, "Enable No-Trade Period 3", group="No-Trade Times")
+no_trade_3_start = input.session("0000-0930", "Period 3 Time", group="No-Trade Times")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+// Asian Session Variables
+var float prev_asian_high = na
+var float prev_asian_low = na
+var int prev_asian_high_time = na
+var int prev_asian_low_time = na
+var line asian_high_line = na
+var line asian_low_line = na
+var label asian_high_label = na
+var label asian_low_label = na
+var bool asian_high_invalidated = false
+var bool asian_low_invalidated = false
+var float current_asian_high = na
+var float current_asian_low = na
+var int current_asian_high_time = na
+var int current_asian_low_time = na
+var bool in_asian_session = false
+
+// London Session Variables
+var float prev_london_high = na
+var float prev_london_low = na
+var int prev_london_high_time = na
+var int prev_london_low_time = na
+var line london_high_line = na
+var line london_low_line = na
+var label london_high_label = na
+var label london_low_label = na
+var bool london_high_invalidated = false
+var bool london_low_invalidated = false
+var float current_london_high = na
+var float current_london_low = na
+var int current_london_high_time = na
+var int current_london_low_time = na
+var bool in_london_session = false
+
+// NY Session Variables
+var float prev_ny_high = na
+var float prev_ny_low = na
+var int prev_ny_high_time = na
+var int prev_ny_low_time = na
+var line ny_high_line = na
+var line ny_low_line = na
+var label ny_high_label = na
+var label ny_low_label = na
+var bool ny_high_invalidated = false
+var bool ny_low_invalidated = false
+var float current_ny_high = na
+var float current_ny_low = na
+var int current_ny_high_time = na
+var int current_ny_low_time = na
+var bool in_ny_session = false
+
+var int current_day = na
+
+// Manual Zone Variables
+var box manual_demand_box = na
+var box manual_supply_box = na
+var bool manual_demand_active = false
+var bool manual_supply_active = false
+
+// Engulfing Order Block Variables
+var bool bullish_eng_ob_active = false
+var float bullish_ob_top = na
+var float bullish_ob_bottom = na
+var int bullish_ob_bar = na
+var label bullish_ob_label = na
+var box bullish_ob_box = na
+
+var bool bearish_eng_ob_active = false
+var float bearish_ob_top = na
+var float bearish_ob_bottom = na
+var int bearish_ob_bar = na
+var label bearish_ob_label = na
+var box bearish_ob_box = na
+
+// LTF Fractals for MSS detection
+var array<float> ltf_mss_fh_prices = array.new<float>()
+var array<bool> ltf_mss_fh_broken_flags = array.new<bool>()
+var array<float> ltf_mss_fl_prices = array.new<float>()
+var array<bool> ltf_mss_fl_broken_flags = array.new<bool>()
+
+// Trade Management
+var bool in_long_trade = false
+var bool in_short_trade = false
+var float long_entry_price = na
+var float short_entry_price = na
+var float long_tp_price = na
+var float long_sl_price = na
+var float short_tp_price = na
+var float short_sl_price = na
+var line long_tp_line = na
+var line long_sl_line = na
+var line short_tp_line = na
+var line short_sl_line = na
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+
+bool is_no_trade_time = (enable_no_trade_1 and not na(time(timeframe.period, no_trade_1_start, "America/New_York"))) or (enable_no_trade_2 and not na(time(timeframe.period, no_trade_2_start, "America/New_York"))) or (enable_no_trade_3 and not na(time(timeframe.period, no_trade_3_start, "America/New_York")))
+
+bool is_asian = not na(time(timeframe.period, asian_session, "America/New_York"))
+bool is_london = not na(time(timeframe.period, london_session, "America/New_York"))
+bool is_ny = not na(time(timeframe.period, ny_session, "America/New_York"))
+
+int today = dayofweek(time, "America/New_York")
+bool is_new_day = na(current_day) or today != current_day
+
+if is_new_day
+    current_day := today
+
+// ============================================================================
+// ASIAN SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+if is_asian and not in_asian_session
+    in_asian_session := true
+    current_asian_high := high
+    current_asian_low := low
+    current_asian_high_time := time
+    current_asian_low_time := time
+
+if in_asian_session and is_asian
+    if high > current_asian_high
+        current_asian_high := high
+        current_asian_high_time := time
+    if low < current_asian_low
+        current_asian_low := low
+        current_asian_low_time := time
+
+if in_asian_session and not is_asian
+    in_asian_session := false
+    prev_asian_high := current_asian_high
+    prev_asian_low := current_asian_low
+    prev_asian_high_time := current_asian_high_time
+    prev_asian_low_time := current_asian_low_time
+    asian_high_invalidated := false
+    asian_low_invalidated := false
+
+    if show_asian_lines
+        if not na(asian_high_line)
+            line.delete(asian_high_line)
+        if not na(asian_low_line)
+            line.delete(asian_low_line)
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+
+        if not na(prev_asian_high)
+            asian_high_line := line.new(prev_asian_high_time, prev_asian_high, prev_asian_high_time + 1, prev_asian_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "AH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+        if not na(prev_asian_low)
+            asian_low_line := line.new(prev_asian_low_time, prev_asian_low, prev_asian_low_time + 1, prev_asian_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "AL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+// ============================================================================
+// LONDON SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+if is_london and not in_london_session
+    in_london_session := true
+    current_london_high := high
+    current_london_low := low
+    current_london_high_time := time
+    current_london_low_time := time
+
+if in_london_session and is_london
+    if high > current_london_high
+        current_london_high := high
+        current_london_high_time := time
+    if low < current_london_low
+        current_london_low := low
+        current_london_low_time := time
+
+if in_london_session and not is_london
+    in_london_session := false
+    prev_london_high := current_london_high
+    prev_london_low := current_london_low
+    prev_london_high_time := current_london_high_time
+    prev_london_low_time := current_london_low_time
+    london_high_invalidated := false
+    london_low_invalidated := false
+
+    if show_london_lines
+        if not na(london_high_line)
+            line.delete(london_high_line)
+        if not na(london_low_line)
+            line.delete(london_low_line)
+        if not na(london_high_label)
+            label.delete(london_high_label)
+        if not na(london_low_label)
+            label.delete(london_low_label)
+
+        if not na(prev_london_high)
+            london_high_line := line.new(prev_london_high_time, prev_london_high, prev_london_high_time + 1, prev_london_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                london_high_label := label.new(prev_london_high_time, prev_london_high, "LH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+        if not na(prev_london_low)
+            london_low_line := line.new(prev_london_low_time, prev_london_low, prev_london_low_time + 1, prev_london_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                london_low_label := label.new(prev_london_low_time, prev_london_low, "LL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+// ============================================================================
+// NY SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+if is_ny and not in_ny_session
+    in_ny_session := true
+    current_ny_high := high
+    current_ny_low := low
+    current_ny_high_time := time
+    current_ny_low_time := time
+
+if in_ny_session and is_ny
+    if high > current_ny_high
+        current_ny_high := high
+        current_ny_high_time := time
+    if low < current_ny_low
+        current_ny_low := low
+        current_ny_low_time := time
+
+if in_ny_session and not is_ny
+    in_ny_session := false
+    prev_ny_high := current_ny_high
+    prev_ny_low := current_ny_low
+    prev_ny_high_time := current_ny_high_time
+    prev_ny_low_time := current_ny_low_time
+    ny_high_invalidated := false
+    ny_low_invalidated := false
+
+    if show_ny_lines
+        if not na(ny_high_line)
+            line.delete(ny_high_line)
+        if not na(ny_low_line)
+            line.delete(ny_low_line)
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+
+        if not na(prev_ny_high)
+            ny_high_line := line.new(prev_ny_high_time, prev_ny_high, prev_ny_high_time + 1, prev_ny_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "NH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+        if not na(prev_ny_low)
+            ny_low_line := line.new(prev_ny_low_time, prev_ny_low, prev_ny_low_time + 1, prev_ny_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "NL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
+
+// ============================================================================
+// LINE INVALIDATION
+// ============================================================================
+
+if not na(asian_high_line) and not asian_high_invalidated and not na(prev_asian_high)
+    if high > prev_asian_high
+        asian_high_invalidated := true
+        line.delete(asian_high_line)
+        asian_high_line := na
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+            asian_high_label := na
+
+if not na(asian_low_line) and not asian_low_invalidated and not na(prev_asian_low)
+    if low < prev_asian_low
+        asian_low_invalidated := true
+        line.delete(asian_low_line)
+        asian_low_line := na
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+            asian_low_label := na
+
+if not na(london_high_line) and not london_high_invalidated and not na(prev_london_high)
+    if high > prev_london_high
+        london_high_invalidated := true
+        line.delete(london_high_line)
+        london_high_line := na
+        if not na(london_high_label)
+            label.delete(london_high_label)
+            london_high_label := na
+
+if not na(london_low_line) and not london_low_invalidated and not na(prev_london_low)
+    if low < prev_london_low
+        london_low_invalidated := true
+        line.delete(london_low_line)
+        london_low_line := na
+        if not na(london_low_label)
+            label.delete(london_low_label)
+            london_low_label := na
+
+if not na(ny_high_line) and not ny_high_invalidated and not na(prev_ny_high)
+    if high > prev_ny_high
+        ny_high_invalidated := true
+        line.delete(ny_high_line)
+        ny_high_line := na
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+            ny_high_label := na
+
+if not na(ny_low_line) and not ny_low_invalidated and not na(prev_ny_low)
+    if low < prev_ny_low
+        ny_low_invalidated := true
+        line.delete(ny_low_line)
+        ny_low_line := na
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+            ny_low_label := na
+
+// ============================================================================
+// LTF FRACTALS (CHART TIMEFRAME)
+// ============================================================================
+
+bool ltf_fractal_up_detected = show_ltf_fractals and barstate.isconfirmed and bar_index > 4 and high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
+bool ltf_fractal_down_detected = show_ltf_fractals and barstate.isconfirmed and bar_index > 4 and low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low[0]
+
+// Plot LTF fractals
+plotshape(ltf_fractal_up_detected, title="LTF Fractal Up", style=shape.triangledown, location=location.abovebar, color=ltf_fractal_down_color, size=size.auto, offset=-2)
+plotshape(ltf_fractal_down_detected, title="LTF Fractal Down", style=shape.triangleup, location=location.belowbar, color=ltf_fractal_up_color, size=size.auto, offset=-2)
+
+// Store LTF fractals for MSS detection
+if ltf_fractal_up_detected
+    array.push(ltf_mss_fh_prices, high[2])
+    array.push(ltf_mss_fh_broken_flags, false)
+
+    if array.size(ltf_mss_fh_prices) > 30
+        array.shift(ltf_mss_fh_prices)
+        array.shift(ltf_mss_fh_broken_flags)
+
+if ltf_fractal_down_detected
+    array.push(ltf_mss_fl_prices, low[2])
+    array.push(ltf_mss_fl_broken_flags, false)
+
+    if array.size(ltf_mss_fl_prices) > 30
+        array.shift(ltf_mss_fl_prices)
+        array.shift(ltf_mss_fl_broken_flags)
+
+// ============================================================================
+// MANUAL SUPPLY & DEMAND ZONES
+// ============================================================================
+
+// Check if manual zones are configured (non-zero values)
+bool demand_zone_configured = manual_demand_top > 0 and manual_demand_bottom > 0 and manual_demand_top > manual_demand_bottom
+bool supply_zone_configured = manual_supply_top > 0 and manual_supply_bottom > 0 and manual_supply_top > manual_supply_bottom
+
+// Create or update manual demand zone box
+if use_manual_zones and show_manual_zones and demand_zone_configured
+    if na(manual_demand_box) or is_new_day
+        // Delete old box if exists
+        if not na(manual_demand_box)
+            box.delete(manual_demand_box)
+        // Create new box starting from current bar
+        manual_demand_box := box.new(time, manual_demand_bottom, time, manual_demand_top, border_color=color.new(manual_demand_color, 50), bgcolor=manual_demand_color, border_width=2, xloc=xloc.bar_time)
+        manual_demand_active := true
+    else
+        // Extend existing box to current bar
+        box.set_right(manual_demand_box, time)
+else
+    // No demand zone configured, ensure it's deleted
+    if not na(manual_demand_box)
+        box.delete(manual_demand_box)
+        manual_demand_box := na
+    manual_demand_active := false
+
+// Create or update manual supply zone box
+if use_manual_zones and show_manual_zones and supply_zone_configured
+    if na(manual_supply_box) or is_new_day
+        // Delete old box if exists
+        if not na(manual_supply_box)
+            box.delete(manual_supply_box)
+        // Create new box starting from current bar
+        manual_supply_box := box.new(time, manual_supply_bottom, time, manual_supply_top, border_color=color.new(manual_supply_color, 50), bgcolor=manual_supply_color, border_width=2, xloc=xloc.bar_time)
+        manual_supply_active := true
+    else
+        // Extend existing box to current bar
+        box.set_right(manual_supply_box, time)
+else
+    // No supply zone configured, ensure it's deleted
+    if not na(manual_supply_box)
+        box.delete(manual_supply_box)
+        manual_supply_box := na
+    manual_supply_active := false
+
+// Invalidate manual zones when price closes through them
+if manual_demand_active and demand_zone_configured
+    if close < manual_demand_bottom
+        box.delete(manual_demand_box)
+        manual_demand_box := na
+        manual_demand_active := false
+
+if manual_supply_active and supply_zone_configured
+    if close > manual_supply_top
+        box.delete(manual_supply_box)
+        manual_supply_box := na
+        manual_supply_active := false
+
+// Clear Engulfing OBs if their associated zones are no longer active
+if bullish_eng_ob_active and not manual_demand_active
+    bullish_eng_ob_active := false
+    bullish_ob_top := na
+    bullish_ob_bottom := na
+    bullish_ob_bar := na
+    if not na(bullish_ob_label)
+        label.delete(bullish_ob_label)
+        bullish_ob_label := na
+    if not na(bullish_ob_box)
+        box.delete(bullish_ob_box)
+        bullish_ob_box := na
+
+if bearish_eng_ob_active and not manual_supply_active
+    bearish_eng_ob_active := false
+    bearish_ob_top := na
+    bearish_ob_bottom := na
+    bearish_ob_bar := na
+    if not na(bearish_ob_label)
+        label.delete(bearish_ob_label)
+        bearish_ob_label := na
+    if not na(bearish_ob_box)
+        box.delete(bearish_ob_box)
+        bearish_ob_box := na
+
+// ============================================================================
+// ENGULFING ORDER BLOCK DETECTION (STEP 1 of 2-step confirmation)
+// ============================================================================
+
+// Detect new Engulfing OBs (only when no setup is active)
+if barstate.isconfirmed and not bullish_eng_ob_active and not bearish_eng_ob_active
+    // Bullish Engulfing (green candle engulfs red candle)
+    bool is_bullish_engulfing = close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
+
+    // Check manual demand zone
+    if is_bullish_engulfing and manual_demand_active and demand_zone_configured
+        // Check if current or previous candle touches the demand zone
+        bool current_touches = low <= manual_demand_top and high >= manual_demand_bottom
+        bool previous_touches = low[1] <= manual_demand_top and high[1] >= manual_demand_bottom
+
+        if current_touches or previous_touches
+            bullish_eng_ob_active := true
+            bullish_ob_top := math.max(open[1], close[1])
+            bullish_ob_bottom := math.min(open[1], close[1])
+            bullish_ob_bar := bar_index
+            // Create label with black diamond below the candle
+            bullish_ob_label := label.new(bar_index, low, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal)
+            // Create yellow transparent box to highlight the OB
+            bullish_ob_box := box.new(bar_index - 1, bullish_ob_top, bar_index - 1, bullish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
+
+    // Bearish Engulfing (red candle engulfs green candle)
+    bool is_bearish_engulfing = close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
+
+    // Check manual supply zone
+    if is_bearish_engulfing and manual_supply_active and supply_zone_configured
+        // Check if current or previous candle touches the supply zone
+        bool current_touches = low <= manual_supply_top and high >= manual_supply_bottom
+        bool previous_touches = low[1] <= manual_supply_top and high[1] >= manual_supply_bottom
+
+        if current_touches or previous_touches
+            bearish_eng_ob_active := true
+            bearish_ob_top := math.max(open[1], close[1])
+            bearish_ob_bottom := math.min(open[1], close[1])
+            bearish_ob_bar := bar_index
+            // Create label with black diamond above the candle
+            bearish_ob_label := label.new(bar_index, high, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal, textalign=text.align_center, yloc=yloc.abovebar)
+            // Create yellow transparent box to highlight the OB
+            bearish_ob_box := box.new(bar_index - 1, bearish_ob_top, bar_index - 1, bearish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
+
+// Extend OB boxes to current bar
+if bullish_eng_ob_active and not na(bullish_ob_box)
+    box.set_right(bullish_ob_box, bar_index)
+
+if bearish_eng_ob_active and not na(bearish_ob_box)
+    box.set_right(bearish_ob_box, bar_index)
+
+// Invalidate Engulfing OB if price closes through it
+if bullish_eng_ob_active
+    if close < bullish_ob_bottom
+        bullish_eng_ob_active := false
+        bullish_ob_top := na
+        bullish_ob_bottom := na
+        bullish_ob_bar := na
+        // Delete the label when invalidated
+        if not na(bullish_ob_label)
+            label.delete(bullish_ob_label)
+            bullish_ob_label := na
+        // Delete the box when invalidated
+        if not na(bullish_ob_box)
+            box.delete(bullish_ob_box)
+            bullish_ob_box := na
+
+if bearish_eng_ob_active
+    if close > bearish_ob_top
+        bearish_eng_ob_active := false
+        bearish_ob_top := na
+        bearish_ob_bottom := na
+        bearish_ob_bar := na
+        // Delete the label when invalidated
+        if not na(bearish_ob_label)
+            label.delete(bearish_ob_label)
+            bearish_ob_label := na
+        // Delete the box when invalidated
+        if not na(bearish_ob_box)
+            box.delete(bearish_ob_box)
+            bearish_ob_box := na
+
+// ============================================================================
+// STEP 2 CONFIRMATIONS (MSS OB, BPR FVG, Inverted FVG)
+// ============================================================================
+
+// TODO: Add MSS OB detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for LTF fractal breaks in the direction of the setup
+// - Set confirmation flag when detected
+
+// TODO: Add BPR FVG detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for Balanced Price Range Fair Value Gap
+// - Set confirmation flag when detected
+
+// TODO: Add Inverted FVG detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for Inverted Fair Value Gap
+// - Set confirmation flag when detected
+
+// ============================================================================
+// TRADE EXECUTION
+// ============================================================================
+
+// DISABLED: Trade execution requires TWO confirmations:
+// 1. Engulfing OB (first confirmation)
+// 2. Additional strategy confirmation (MSS OB, BPR FVG, or Inverted FVG)
+// Currently no secondary confirmation strategies are active, so trades are disabled.
+
+// Long Entry - DISABLED
+// if bullish_engulfing_in_demand and not in_long_trade and not in_short_trade and not is_no_trade_time
+//     strategy.entry("Long", strategy.long, qty=1)
+//     in_long_trade := true
+//     long_entry_price := close
+
+//     float ob_range = bullish_ob_top - bullish_ob_bottom
+//     long_sl_price := bullish_ob_bottom - (ob_range * 0.5)
+//     long_tp_price := long_entry_price + ((long_entry_price - long_sl_price) * tp_rr_ratio)
+
+//     long_tp_line := line.new(bar_index, long_tp_price, bar_index + 1, long_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+//     long_sl_line := line.new(bar_index, long_sl_price, bar_index + 1, long_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+
+// Short Entry - DISABLED
+// if bearish_engulfing_in_supply and not in_long_trade and not in_short_trade and not is_no_trade_time
+//     strategy.entry("Short", strategy.short, qty=1)
+//     in_short_trade := true
+//     short_entry_price := close
+
+//     float ob_range = bearish_ob_top - bearish_ob_bottom
+//     short_sl_price := bearish_ob_top + (ob_range * 0.5)
+//     short_tp_price := short_entry_price - ((short_sl_price - short_entry_price) * tp_rr_ratio)
+
+//     short_tp_line := line.new(bar_index, short_tp_price, bar_index + 1, short_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+//     short_sl_line := line.new(bar_index, short_sl_price, bar_index + 1, short_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+
+// Extend TP/SL lines - DISABLED
+// if in_long_trade
+//     line.set_x2(long_tp_line, bar_index)
+//     line.set_x2(long_sl_line, bar_index)
+
+// if in_short_trade
+//     line.set_x2(short_tp_line, bar_index)
+//     line.set_x2(short_sl_line, bar_index)
+
+// Long Exit - DISABLED
+// if in_long_trade
+//     if high >= long_tp_price
+//         strategy.close("Long", comment="TP")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
+//     else if low <= long_sl_price
+//         strategy.close("Long", comment="SL")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
+
+// Short Exit - DISABLED
+// if in_short_trade
+//     if low <= short_tp_price
+//         strategy.close("Short", comment="TP")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
+//     else if high >= short_sl_price
+//         strategy.close("Short", comment="SL")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
+
+// Close during no-trade time - DISABLED
+// if is_no_trade_time
+//     if in_long_trade
+//         strategy.close("Long", comment="No Trade Time")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
+
+//     if in_short_trade
+//         strategy.close("Short", comment="No Trade Time")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
+
+// ============================================================================
+// DEBUG TABLE
+// ============================================================================
+
+if show_debug_table
+    var table debug_table = table.new(position.top_right, 2, 50, border_width=1)
+
+    if barstate.islast
+        int row = 0
+
+        // Colors
+        color bg_header = color.new(#000000, 10)
+        color bg_dark = color.new(#0a0a0a, 20)
+        color bg_darker = color.new(#050505, 15)
+        color text_main = color.new(color.white, 0)
+        color text_muted = color.new(#cccccc, 0)
+
+        // Header
+        table.cell(debug_table, 0, row, "NEXUS STATUS", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+        table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+        row := row + 1
+
+        // Session Info
+        table.cell(debug_table, 0, row, "Session", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+        string current_session = is_ny ? "New York" : is_asian ? "Asian" : is_london ? "London" : "None"
+        color session_color = is_ny ? color.new(color.blue, 20) : is_asian ? color.new(color.orange, 20) : is_london ? color.new(color.purple, 20) : text_muted
+        table.cell(debug_table, 1, row, current_session, bgcolor=bg_dark, text_color=session_color, text_size=size.normal)
+        row := row + 1
+
+        // Collect MANUAL ZONES ONLY with prices and metadata
+        var array<float> zone_prices = array.new<float>()
+        var array<float> zone_bottom_prices = array.new<float>()
+        var array<string> zone_names = array.new<string>()
+        var array<bool> zone_active_flags = array.new<bool>()
+        var array<bool> zone_is_supply = array.new<bool>()
+
+        array.clear(zone_prices)
+        array.clear(zone_bottom_prices)
+        array.clear(zone_names)
+        array.clear(zone_active_flags)
+        array.clear(zone_is_supply)
+
+        // Add Manual Supply Zone
+        if supply_zone_configured
+            array.push(zone_prices, manual_supply_top)
+            array.push(zone_bottom_prices, manual_supply_bottom)
+            array.push(zone_names, "Manual Supply")
+            array.push(zone_active_flags, manual_supply_active)
+            array.push(zone_is_supply, true)
+
+        // Add Manual Demand Zone
+        if demand_zone_configured
+            array.push(zone_prices, manual_demand_top)
+            array.push(zone_bottom_prices, manual_demand_bottom)
+            array.push(zone_names, "Manual Demand")
+            array.push(zone_active_flags, manual_demand_active)
+            array.push(zone_is_supply, false)
+
+        // Sort zones by price (highest to lowest)
+        if array.size(zone_prices) > 1
+            for i = 0 to array.size(zone_prices) - 2
+                for j = i + 1 to array.size(zone_prices) - 1
+                    if array.get(zone_prices, j) > array.get(zone_prices, i)
+                        // Swap all arrays
+                        float temp_price = array.get(zone_prices, i)
+                        array.set(zone_prices, i, array.get(zone_prices, j))
+                        array.set(zone_prices, j, temp_price)
+
+                        float temp_bottom = array.get(zone_bottom_prices, i)
+                        array.set(zone_bottom_prices, i, array.get(zone_bottom_prices, j))
+                        array.set(zone_bottom_prices, j, temp_bottom)
+
+                        string temp_name = array.get(zone_names, i)
+                        array.set(zone_names, i, array.get(zone_names, j))
+                        array.set(zone_names, j, temp_name)
+
+                        bool temp_flag = array.get(zone_active_flags, i)
+                        array.set(zone_active_flags, i, array.get(zone_active_flags, j))
+                        array.set(zone_active_flags, j, temp_flag)
+
+                        bool temp_supply = array.get(zone_is_supply, i)
+                        array.set(zone_is_supply, i, array.get(zone_is_supply, j))
+                        array.set(zone_is_supply, j, temp_supply)
+
+        // Display header for zones section
+        if array.size(zone_prices) > 0
+            table.cell(debug_table, 0, row, "MANUAL ZONES", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+            table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+            row := row + 1
+
+            // Display all sorted zones
+            for i = 0 to array.size(zone_prices) - 1
+                string zone_name = array.get(zone_names, i)
+                float zone_price = array.get(zone_prices, i)
+                float zone_bottom = array.get(zone_bottom_prices, i)
+                bool zone_active = array.get(zone_active_flags, i)
+                bool is_supply = array.get(zone_is_supply, i)
+
+                color zone_color = is_supply ? (zone_active ? color.new(color.red, 0) : color.new(color.gray, 50)) : (zone_active ? color.new(color.green, 0) : color.new(color.gray, 50))
+
+                // Show both top and bottom prices
+                string zone_range = str.tostring(zone_price, format.mintick) + " - " + str.tostring(zone_bottom, format.mintick)
+
+                table.cell(debug_table, 0, row, zone_name, bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+                table.cell(debug_table, 1, row, zone_range, bgcolor=bg_darker, text_color=zone_color, text_size=size.small)
+                row := row + 1
+
+        // Collect SESSION LEVELS with prices and metadata
+        var array<float> session_prices = array.new<float>()
+        var array<string> session_names = array.new<string>()
+        var array<bool> session_active_flags = array.new<bool>()
+        var array<bool> session_is_high = array.new<bool>()
+
+        array.clear(session_prices)
+        array.clear(session_names)
+        array.clear(session_active_flags)
+        array.clear(session_is_high)
+
+        // Add Session Highs
+        if not na(prev_asian_high)
+            array.push(session_prices, prev_asian_high)
+            array.push(session_names, "Asian High")
+            array.push(session_active_flags, not asian_high_invalidated)
+            array.push(session_is_high, true)
+
+        if not na(prev_london_high)
+            array.push(session_prices, prev_london_high)
+            array.push(session_names, "London High")
+            array.push(session_active_flags, not london_high_invalidated)
+            array.push(session_is_high, true)
+
+        if not na(prev_ny_high)
+            array.push(session_prices, prev_ny_high)
+            array.push(session_names, "NY High")
+            array.push(session_active_flags, not ny_high_invalidated)
+            array.push(session_is_high, true)
+
+        // Add Session Lows
+        if not na(prev_asian_low)
+            array.push(session_prices, prev_asian_low)
+            array.push(session_names, "Asian Low")
+            array.push(session_active_flags, not asian_low_invalidated)
+            array.push(session_is_high, false)
+
+        if not na(prev_london_low)
+            array.push(session_prices, prev_london_low)
+            array.push(session_names, "London Low")
+            array.push(session_active_flags, not london_low_invalidated)
+            array.push(session_is_high, false)
+
+        if not na(prev_ny_low)
+            array.push(session_prices, prev_ny_low)
+            array.push(session_names, "NY Low")
+            array.push(session_active_flags, not ny_low_invalidated)
+            array.push(session_is_high, false)
+
+        // Sort session levels by price (highest to lowest)
+        if array.size(session_prices) > 1
+            for i = 0 to array.size(session_prices) - 2
+                for j = i + 1 to array.size(session_prices) - 1
+                    if array.get(session_prices, j) > array.get(session_prices, i)
+                        // Swap all arrays
+                        float temp_price = array.get(session_prices, i)
+                        array.set(session_prices, i, array.get(session_prices, j))
+                        array.set(session_prices, j, temp_price)
+
+                        string temp_name = array.get(session_names, i)
+                        array.set(session_names, i, array.get(session_names, j))
+                        array.set(session_names, j, temp_name)
+
+                        bool temp_flag = array.get(session_active_flags, i)
+                        array.set(session_active_flags, i, array.get(session_active_flags, j))
+                        array.set(session_active_flags, j, temp_flag)
+
+                        bool temp_high = array.get(session_is_high, i)
+                        array.set(session_is_high, i, array.get(session_is_high, j))
+                        array.set(session_is_high, j, temp_high)
+
+        // Display header for session levels
+        if array.size(session_prices) > 0
+            table.cell(debug_table, 0, row, "SESSION LEVELS", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+            table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+            row := row + 1
+
+            // Display all sorted session levels
+            for i = 0 to array.size(session_prices) - 1
+                string session_name = array.get(session_names, i)
+                float session_price = array.get(session_prices, i)
+                bool session_active = array.get(session_active_flags, i)
+                bool is_high = array.get(session_is_high, i)
+
+                color session_color = is_high ? (session_active ? session_high_color : color.new(color.gray, 50)) : (session_active ? session_low_color : color.new(color.gray, 50))
+
+                table.cell(debug_table, 0, row, session_name, bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+                table.cell(debug_table, 1, row, str.tostring(session_price, format.mintick), bgcolor=bg_darker, text_color=session_color, text_size=size.small)
+                row := row + 1
+
+        // Separator
+        table.cell(debug_table, 0, row, "ENTRY CRITERIA", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+        table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+        row := row + 1
+
+        // Status (moved here)
+        bool has_any_aoi = manual_demand_active or manual_supply_active
+        string status_text = "Waiting"
+        color status_color = text_muted
+
+        if in_long_trade
+            status_text := "In Long Trade"
+            status_color := color.new(color.yellow, 0)
+        else if in_short_trade
+            status_text := "In Short Trade"
+            status_color := color.new(color.yellow, 0)
+        else if manual_demand_active or bullish_eng_ob_active
+            status_text := "Bullish"
+            status_color := color.new(color.green, 0)
+        else if manual_supply_active or bearish_eng_ob_active
+            status_text := "Bearish"
+            status_color := color.new(color.red, 0)
+
+        table.cell(debug_table, 0, row, "Status", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+        table.cell(debug_table, 1, row, status_text, bgcolor=bg_dark, text_color=status_color, text_size=size.normal)
+        row := row + 1
+
+        // Engulfing OB (Step 1)
+        string eng_text = bullish_eng_ob_active or bearish_eng_ob_active ? "✓" : "—"
+        color eng_color = bullish_eng_ob_active ? color.new(color.green, 0) : bearish_eng_ob_active ? color.new(color.red, 0) : text_muted
+        table.cell(debug_table, 0, row, "Eng OB", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+        table.cell(debug_table, 1, row, eng_text, bgcolor=bg_dark, text_color=eng_color, text_size=size.normal)
+        row := row + 1
+
+        // MSS OB (Step 2 - placeholder)
+        table.cell(debug_table, 0, row, "MSS OB", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+        table.cell(debug_table, 1, row, "—", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+        row := row + 1
+
+        // No Trade Time (only show if in no-trade time)
+        if is_no_trade_time
+            table.cell(debug_table, 0, row, "No Trade", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, "YES", bgcolor=bg_dark, text_color=color.new(color.red, 0), text_size=size.normal)
+            row := row + 1
+
+        // Trade Info (only if in trade)
+        if in_long_trade or in_short_trade
+            table.cell(debug_table, 0, row, "TRADE INFO", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+            table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+            row := row + 1
+
+        if in_long_trade
+            table.cell(debug_table, 0, row, "Long Entry", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(long_entry_price, format.mintick), bgcolor=bg_dark, text_color=color.new(color.green, 0), text_size=size.normal)
+            row := row + 1
+
+            float long_pnl = ((close - long_entry_price) / long_entry_price) * 100
+            table.cell(debug_table, 0, row, "P&L", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(long_pnl, "#.##") + "%", bgcolor=bg_darker, text_color=long_pnl >= 0 ? color.new(color.green, 0) : color.new(color.red, 0), text_size=size.normal)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "TP", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(long_tp_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.green, 30), text_size=size.normal)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "SL", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(long_sl_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.red, 30), text_size=size.normal)
+            row := row + 1
+
+        if in_short_trade
+            table.cell(debug_table, 0, row, "Short Entry", bgcolor=bg_dark, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(short_entry_price, format.mintick), bgcolor=bg_dark, text_color=color.new(color.red, 0), text_size=size.normal)
+            row := row + 1
+
+            float short_pnl = ((short_entry_price - close) / short_entry_price) * 100
+            table.cell(debug_table, 0, row, "P&L", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(short_pnl, "#.##") + "%", bgcolor=bg_darker, text_color=short_pnl >= 0 ? color.new(color.green, 0) : color.new(color.red, 0), text_size=size.normal)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "TP", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(short_tp_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.green, 30), text_size=size.normal)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "SL", bgcolor=bg_darker, text_color=text_muted, text_size=size.normal)
+            table.cell(debug_table, 1, row, str.tostring(short_sl_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.red, 30), text_size=size.normal)
+            row := row + 1
