@@ -139,6 +139,7 @@ var float bullish_ob_bottom = na
 var int bullish_ob_bar = na
 var label bullish_ob_label = na
 var box bullish_ob_box = na
+var float bullish_deepest_low = na  // Track deepest penetration into demand zone
 
 var bool bearish_eng_ob_active = false
 var float bearish_ob_top = na
@@ -146,6 +147,7 @@ var float bearish_ob_bottom = na
 var int bearish_ob_bar = na
 var label bearish_ob_label = na
 var box bearish_ob_box = na
+var float bearish_deepest_high = na  // Track deepest penetration into supply zone
 
 // LTF Fractals for MSS detection
 var array<float> ltf_mss_fh_prices = array.new<float>()
@@ -478,6 +480,7 @@ if bullish_eng_ob_active and not manual_demand_active
     bullish_ob_top := na
     bullish_ob_bottom := na
     bullish_ob_bar := na
+    bullish_deepest_low := na
     if not na(bullish_ob_label)
         label.delete(bullish_ob_label)
         bullish_ob_label := na
@@ -490,6 +493,7 @@ if bearish_eng_ob_active and not manual_supply_active
     bearish_ob_top := na
     bearish_ob_bottom := na
     bearish_ob_bar := na
+    bearish_deepest_high := na
     if not na(bearish_ob_label)
         label.delete(bearish_ob_label)
         bearish_ob_label := na
@@ -501,45 +505,84 @@ if bearish_eng_ob_active and not manual_supply_active
 // ENGULFING ORDER BLOCK DETECTION (STEP 1 of 2-step confirmation)
 // ============================================================================
 
+// Track deepest penetration and check for invalidation when in AOI but no OB yet
+if manual_demand_active and demand_zone_configured and not bullish_eng_ob_active
+    // Price is in demand zone - track deepest low
+    bool in_zone = low <= manual_demand_top and high >= manual_demand_bottom
+    if in_zone
+        if na(bullish_deepest_low) or low < bullish_deepest_low
+            bullish_deepest_low := low
+    else
+        // Price exited zone without forming OB - reset deepest tracker
+        if not na(bullish_deepest_low)
+            bullish_deepest_low := na
+
+if manual_supply_active and supply_zone_configured and not bearish_eng_ob_active
+    // Price is in supply zone - track deepest high
+    bool in_zone = low <= manual_supply_top and high >= manual_supply_bottom
+    if in_zone
+        if na(bearish_deepest_high) or high > bearish_deepest_high
+            bearish_deepest_high := high
+    else
+        // Price exited zone without forming OB - reset deepest tracker
+        if not na(bearish_deepest_high)
+            bearish_deepest_high := na
+
 // Detect new Engulfing OBs (only when no setup is active)
 if barstate.isconfirmed and not bullish_eng_ob_active and not bearish_eng_ob_active
     // Bullish Engulfing (green candle engulfs red candle)
+    // Current candle must be green, previous must be red
+    // Current body must engulf previous body AND close higher
     bool is_bullish_engulfing = close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
 
     // Check manual demand zone
     if is_bullish_engulfing and manual_demand_active and demand_zone_configured
-        // Check if current or previous candle touches the demand zone
+        // Engulfing or engulfee must touch the zone
         bool current_touches = low <= manual_demand_top and high >= manual_demand_bottom
         bool previous_touches = low[1] <= manual_demand_top and high[1] >= manual_demand_bottom
 
         if current_touches or previous_touches
-            bullish_eng_ob_active := true
-            bullish_ob_top := math.max(open[1], close[1])
-            bullish_ob_bottom := math.min(open[1], close[1])
-            bullish_ob_bar := bar_index
-            // Create label with black diamond below the candle
-            bullish_ob_label := label.new(bar_index, low, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal)
-            // Create yellow transparent box to highlight the OB
-            bullish_ob_box := box.new(bar_index - 1, bullish_ob_top, bar_index - 1, bullish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
+            // One of the 2 candles must be the deepest in the zone
+            float deepest_of_pair = math.min(low, low[1])
+            bool is_deepest = na(bullish_deepest_low) or (deepest_of_pair <= bullish_deepest_low)
+
+            if is_deepest
+                bullish_eng_ob_active := true
+                bullish_ob_top := math.max(open[1], close[1])
+                bullish_ob_bottom := math.min(open[1], close[1])
+                bullish_ob_bar := bar_index
+                bullish_deepest_low := deepest_of_pair  // Lock in the deepest
+                // Create label with black diamond below the candle
+                bullish_ob_label := label.new(bar_index, low, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal)
+                // Create yellow transparent box to highlight the OB
+                bullish_ob_box := box.new(bar_index - 1, bullish_ob_top, bar_index - 1, bullish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
 
     // Bearish Engulfing (red candle engulfs green candle)
+    // Current candle must be red, previous must be green
+    // Current body must engulf previous body AND close lower
     bool is_bearish_engulfing = close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
 
     // Check manual supply zone
     if is_bearish_engulfing and manual_supply_active and supply_zone_configured
-        // Check if current or previous candle touches the supply zone
+        // Engulfing or engulfee must touch the zone
         bool current_touches = low <= manual_supply_top and high >= manual_supply_bottom
         bool previous_touches = low[1] <= manual_supply_top and high[1] >= manual_supply_bottom
 
         if current_touches or previous_touches
-            bearish_eng_ob_active := true
-            bearish_ob_top := math.max(open[1], close[1])
-            bearish_ob_bottom := math.min(open[1], close[1])
-            bearish_ob_bar := bar_index
-            // Create label with black diamond above the candle
-            bearish_ob_label := label.new(bar_index, high, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal, textalign=text.align_center, yloc=yloc.abovebar)
-            // Create yellow transparent box to highlight the OB
-            bearish_ob_box := box.new(bar_index - 1, bearish_ob_top, bar_index - 1, bearish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
+            // One of the 2 candles must be the deepest in the zone
+            float deepest_of_pair = math.max(high, high[1])
+            bool is_deepest = na(bearish_deepest_high) or (deepest_of_pair >= bearish_deepest_high)
+
+            if is_deepest
+                bearish_eng_ob_active := true
+                bearish_ob_top := math.max(open[1], close[1])
+                bearish_ob_bottom := math.min(open[1], close[1])
+                bearish_ob_bar := bar_index
+                bearish_deepest_high := deepest_of_pair  // Lock in the deepest
+                // Create label with black diamond above the candle
+                bearish_ob_label := label.new(bar_index, high, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal, textalign=text.align_center, yloc=yloc.abovebar)
+                // Create yellow transparent box to highlight the OB
+                bearish_ob_box := box.new(bar_index - 1, bearish_ob_top, bar_index - 1, bearish_ob_bottom, border_color=color.new(color.yellow, 100), bgcolor=color.new(color.yellow, 85), border_width=0)
 
 // Extend OB boxes to current bar
 if bullish_eng_ob_active and not na(bullish_ob_box)
@@ -548,33 +591,61 @@ if bullish_eng_ob_active and not na(bullish_ob_box)
 if bearish_eng_ob_active and not na(bearish_ob_box)
     box.set_right(bearish_ob_box, bar_index)
 
-// Invalidate Engulfing OB if price closes through it OR on new day
+// Invalidate Engulfing OBs based on the rules
 if bullish_eng_ob_active
-    if close < bullish_ob_bottom or is_new_day
+    bool invalidate = false
+
+    // Rule 1: Price closes through the OB
+    if close < bullish_ob_bottom
+        invalidate := true
+
+    // Rule 2: Price goes deeper into the zone after OB formed
+    if manual_demand_active and demand_zone_configured
+        if low < bullish_deepest_low
+            invalidate := true
+
+    // Rule 3: Price exits AOI without staying in zone
+    if not manual_demand_active
+        invalidate := true
+
+    if invalidate
         bullish_eng_ob_active := false
         bullish_ob_top := na
         bullish_ob_bottom := na
         bullish_ob_bar := na
-        // Delete the label when invalidated
+        bullish_deepest_low := na
         if not na(bullish_ob_label)
             label.delete(bullish_ob_label)
             bullish_ob_label := na
-        // Delete the box when invalidated
         if not na(bullish_ob_box)
             box.delete(bullish_ob_box)
             bullish_ob_box := na
 
 if bearish_eng_ob_active
-    if close > bearish_ob_top or is_new_day
+    bool invalidate = false
+
+    // Rule 1: Price closes through the OB
+    if close > bearish_ob_top
+        invalidate := true
+
+    // Rule 2: Price goes deeper into the zone after OB formed
+    if manual_supply_active and supply_zone_configured
+        if high > bearish_deepest_high
+            invalidate := true
+
+    // Rule 3: Price exits AOI without staying in zone
+    if not manual_supply_active
+        invalidate := true
+
+    if invalidate
         bearish_eng_ob_active := false
         bearish_ob_top := na
         bearish_ob_bottom := na
         bearish_ob_bar := na
-        // Delete the label when invalidated
+        bearish_deepest_high := na
         if not na(bearish_ob_label)
             label.delete(bearish_ob_label)
             bearish_ob_label := na
-        // Delete the box when invalidated
         if not na(bearish_ob_box)
             box.delete(bearish_ob_box)
             bearish_ob_box := na
