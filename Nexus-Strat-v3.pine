@@ -1,14 +1,21 @@
 //mach2fx - NEXUS STRATEGY V3
 //@version=5
 // ============================================================================
-// Nexus Strategy v3 - MSS Order Block Trading System
+// Nexus Strategy v3 - 2-Step Confirmation Trading System
 // ============================================================================
 // Built from clean HTF-Sessions-FVG-SupplyDemand-Baseline
-// Adds:
-// - LTF Fractals for MSS detection
-// - Engulfing Order Block detection in HTF S&D zones
-// - MSS Order Block confirmation (LTF fractal break + Engulfing)
-// - Trade execution with TP/SL management
+//
+// TRADING LOGIC (2-Step Confirmation):
+// Step 1: Engulfing OB in HTF S&D zone (stays active until invalidated)
+// Step 2: Secondary confirmation (MSS OB, BPR FVG, or Inverted FVG)
+// Trade only executes when BOTH steps are met
+//
+// Features:
+// - HTF (1H) Fractals for Supply & Demand zone creation
+// - LTF (Chart TF) Fractals for visual reference
+// - Engulfing Order Block detection (Step 1) - persists until invalidated
+// - Placeholder for Step 2 confirmations (MSS OB, BPR FVG, Inverted FVG)
+// - Session high/low tracking (Asian, London, NY)
 // - No-trade time periods
 // ============================================================================
 strategy("Nexus Strategy v3", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
@@ -136,11 +143,27 @@ var array<int> broken_lows = array.new<int>()
 var array<int> invalidated_highs = array.new<int>()
 var array<int> invalidated_lows = array.new<int>()
 
-// LTF Fractals for MSS detection
-var array<float> ltf_fh_prices = array.new<float>()
-var array<bool> ltf_fh_broken_flags = array.new<bool>()
-var array<float> ltf_fl_prices = array.new<float>()
-var array<bool> ltf_fl_broken_flags = array.new<bool>()
+// HTF Fractal tracking for S&D zone creation
+var array<float> htf_fh_prices = array.new<float>()
+var array<int> htf_fh_times = array.new<int>()
+var array<bool> htf_fh_broken_flags = array.new<bool>()
+var array<float> htf_fh_lows = array.new<float>()  // Store the low of each fractal high (consolidation range)
+var array<bool> htf_fh_touched_flags = array.new<bool>()  // Track if price has touched/reacted from fractal level
+var array<bool> htf_fh_moved_away_flags = array.new<bool>()  // Track if price has moved away from fractal first
+var array<bool> htf_fh_zone_created_flags = array.new<bool>()  // Track if zone was already created from this fractal
+var array<float> htf_fl_prices = array.new<float>()
+var array<int> htf_fl_times = array.new<int>()
+var array<bool> htf_fl_broken_flags = array.new<bool>()
+var array<float> htf_fl_highs = array.new<float>()  // Store the high of each fractal low (consolidation range)
+var array<bool> htf_fl_touched_flags = array.new<bool>()  // Track if price has touched/reacted from fractal level
+var array<bool> htf_fl_moved_away_flags = array.new<bool>()  // Track if price has moved away from fractal first
+var array<bool> htf_fl_zone_created_flags = array.new<bool>()  // Track if zone was already created from this fractal
+
+// LTF Fractals for MSS detection (separate from HTF fractal tracking)
+var array<float> ltf_mss_fh_prices = array.new<float>()
+var array<bool> ltf_mss_fh_broken_flags = array.new<bool>()
+var array<float> ltf_mss_fl_prices = array.new<float>()
+var array<bool> ltf_mss_fl_broken_flags = array.new<bool>()
 
 // Trade Management
 var bool in_long_trade = false
@@ -213,12 +236,12 @@ if in_asian_session and not is_asian
         if not na(prev_asian_high)
             asian_high_line := line.new(prev_asian_high_time, prev_asian_high, prev_asian_high_time + 1, prev_asian_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
             if show_labels
-                asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "PAH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+                asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "AH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
         if not na(prev_asian_low)
             asian_low_line := line.new(prev_asian_low_time, prev_asian_low, prev_asian_low_time + 1, prev_asian_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
             if show_labels
-                asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "PAL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+                asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "AL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
 // ============================================================================
 // LONDON SESSION HIGH/LOW TRACKING
@@ -261,12 +284,12 @@ if in_london_session and not is_london
         if not na(prev_london_high)
             london_high_line := line.new(prev_london_high_time, prev_london_high, prev_london_high_time + 1, prev_london_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
             if show_labels
-                london_high_label := label.new(prev_london_high_time, prev_london_high, "PLH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+                london_high_label := label.new(prev_london_high_time, prev_london_high, "LH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
         if not na(prev_london_low)
             london_low_line := line.new(prev_london_low_time, prev_london_low, prev_london_low_time + 1, prev_london_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
             if show_labels
-                london_low_label := label.new(prev_london_low_time, prev_london_low, "PLL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+                london_low_label := label.new(prev_london_low_time, prev_london_low, "LL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
 // ============================================================================
 // NY SESSION HIGH/LOW TRACKING
@@ -309,12 +332,12 @@ if in_ny_session and not is_ny
         if not na(prev_ny_high)
             ny_high_line := line.new(prev_ny_high_time, prev_ny_high, prev_ny_high_time + 1, prev_ny_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
             if show_labels
-                ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "PNH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+                ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "NH", xloc=xloc.bar_time, style=label.style_label_down, color=session_high_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
         if not na(prev_ny_low)
             ny_low_line := line.new(prev_ny_low_time, prev_ny_low, prev_ny_low_time + 1, prev_ny_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
             if show_labels
-                ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "PNL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+                ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "NL", xloc=xloc.bar_time, style=label.style_label_up, color=session_low_color, textcolor=color.white, size=size.tiny, yloc=yloc.price)
 
 // ============================================================================
 // LINE INVALIDATION
@@ -400,29 +423,65 @@ bool is_htf_chart = timeframe.in_seconds() >= 3600
 bool htf_fractal_up_detected = not na(htf_fractal_high_2) and htf_fractal_high_2 > htf_fractal_high_4 and htf_fractal_high_2 > htf_fractal_high_3 and htf_fractal_high_2 > htf_fractal_high_1 and htf_fractal_high_2 > htf_fractal_high_0
 bool htf_fractal_down_detected = not na(htf_fractal_low_2) and htf_fractal_low_2 < htf_fractal_low_4 and htf_fractal_low_2 < htf_fractal_low_3 and htf_fractal_low_2 < htf_fractal_low_1 and htf_fractal_low_2 < htf_fractal_low_0
 
-// Only plot fractals when chart is 1H or higher (to avoid clutter on LTF)
-bool htf_fractal_up = show_fractals and is_htf_chart and htf_fractal_up_detected
-bool htf_fractal_down = show_fractals and is_htf_chart and htf_fractal_down_detected
+// Plot fractals on ALL timeframes (so they're visible on 1m chart)
+bool htf_fractal_up = show_fractals and htf_fractal_up_detected
+bool htf_fractal_down = show_fractals and htf_fractal_down_detected
 
 if htf_fractal_up_detected
     array.push(fractal_highs, htf_fractal_high_2)
     array.push(fractal_highs_time, htf_fractal_time_2)
     array.push(fractal_highs_low, htf_fractal_low_2)
 
+    // Also push to htf_fh arrays for S&D zone creation
+    array.push(htf_fh_prices, htf_fractal_high_2)
+    array.push(htf_fh_times, htf_fractal_time_2)
+    array.push(htf_fh_broken_flags, false)
+    array.push(htf_fh_lows, htf_fractal_low_2)  // Store consolidation range
+    array.push(htf_fh_touched_flags, false)  // Initialize as not touched
+    array.push(htf_fh_moved_away_flags, false)  // Initialize as not moved away
+    array.push(htf_fh_zone_created_flags, false)  // Initialize as zone not created
+
     if array.size(fractal_highs) > 50
         array.shift(fractal_highs)
         array.shift(fractal_highs_time)
         array.shift(fractal_highs_low)
+
+    if array.size(htf_fh_prices) > 50
+        array.shift(htf_fh_prices)
+        array.shift(htf_fh_times)
+        array.shift(htf_fh_broken_flags)
+        array.shift(htf_fh_lows)
+        array.shift(htf_fh_touched_flags)
+        array.shift(htf_fh_moved_away_flags)
+        array.shift(htf_fh_zone_created_flags)
 
 if htf_fractal_down_detected
     array.push(fractal_lows, htf_fractal_low_2)
     array.push(fractal_lows_time, htf_fractal_time_2)
     array.push(fractal_lows_high, htf_fractal_high_2)
 
+    // Also push to htf_fl arrays for S&D zone creation
+    array.push(htf_fl_prices, htf_fractal_low_2)
+    array.push(htf_fl_times, htf_fractal_time_2)
+    array.push(htf_fl_broken_flags, false)
+    array.push(htf_fl_highs, htf_fractal_high_2)  // Store consolidation range
+    array.push(htf_fl_touched_flags, false)  // Initialize as not touched
+    array.push(htf_fl_moved_away_flags, false)  // Initialize as not moved away
+    array.push(htf_fl_zone_created_flags, false)  // Initialize as zone not created
+
     if array.size(fractal_lows) > 50
         array.shift(fractal_lows)
         array.shift(fractal_lows_time)
         array.shift(fractal_lows_high)
+
+    if array.size(htf_fl_prices) > 50
+        array.shift(htf_fl_prices)
+        array.shift(htf_fl_times)
+        array.shift(htf_fl_broken_flags)
+        array.shift(htf_fl_highs)
+        array.shift(htf_fl_touched_flags)
+        array.shift(htf_fl_moved_away_flags)
+        array.shift(htf_fl_zone_created_flags)
 
 // Plot HTF fractals with small triangles
 plotshape(htf_fractal_up, title="HTF Fractal Up", style=shape.triangledown, location=location.abovebar, color=fractal_down_color, size=size.tiny, offset=-2)
@@ -442,60 +501,101 @@ plotshape(ltf_fractal_down_detected, title="LTF Fractal Down", style=shape.trian
 
 // Store LTF fractals for MSS detection
 if ltf_fractal_up_detected
-    array.push(ltf_fh_prices, high[2])
-    array.push(ltf_fh_broken_flags, false)
+    array.push(ltf_mss_fh_prices, high[2])
+    array.push(ltf_mss_fh_broken_flags, false)
 
-    if array.size(ltf_fh_prices) > 30
-        array.shift(ltf_fh_prices)
-        array.shift(ltf_fh_broken_flags)
+    if array.size(ltf_mss_fh_prices) > 30
+        array.shift(ltf_mss_fh_prices)
+        array.shift(ltf_mss_fh_broken_flags)
 
 if ltf_fractal_down_detected
-    array.push(ltf_fl_prices, low[2])
-    array.push(ltf_fl_broken_flags, false)
+    array.push(ltf_mss_fl_prices, low[2])
+    array.push(ltf_mss_fl_broken_flags, false)
 
-    if array.size(ltf_fl_prices) > 30
-        array.shift(ltf_fl_prices)
-        array.shift(ltf_fl_broken_flags)
+    if array.size(ltf_mss_fl_prices) > 30
+        array.shift(ltf_mss_fl_prices)
+        array.shift(ltf_mss_fl_broken_flags)
 
 // ============================================================================
 // HTF SUPPLY & DEMAND ZONES (Simplified from baseline)
 // ============================================================================
 
 htf_1h_close = request.security(syminfo.tickerid, "60", close, lookahead=barmerge.lookahead_off)
+htf_1h_low = request.security(syminfo.tickerid, "60", low, lookahead=barmerge.lookahead_off)
+htf_1h_high = request.security(syminfo.tickerid, "60", high, lookahead=barmerge.lookahead_off)
 
-// Simplified S&D: Create zones when 1H closes above fractal highs or below fractal lows
-if show_htf_supply_demand and bar_index > 2
-    // Demand zones: 1H closes above fractal high
-    if htf_fractal_up_detected
-        zone_top = htf_fractal_high_2
-        zone_bottom = htf_fractal_high_2 * 0.9985  // 0.15% range
+// SUPPLY & DEMAND ZONE CREATION LOGIC
+// CRITICAL: Zones form when price REJECTS from a swing point, NOT when breaking out
+//
+// For SUPPLY zones (fractal highs = resistance):
+// 1. Price rallies UP to form a fractal high (swing high)
+// 2. Price then CLOSES BELOW the fractal_low (low of that consolidation)
+// 3. This confirms rejection from the high → create SUPPLY zone at fractal_high
+//
+// For DEMAND zones (fractal lows = support):
+// 1. Price drops DOWN to form a fractal low (swing low)
+// 2. Price then CLOSES ABOVE the fractal_high (high of that consolidation)
+// 3. This confirms rejection from the low → create DEMAND zone at fractal_low
 
-        demand_box = box.new(htf_fractal_time_2, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
-        array.push(htf_demand_zones, demand_box)
-        array.push(demand_tops, zone_top)
-        array.push(demand_bottoms, zone_bottom)
+// Supply zone detection (fractal highs):
+// Create zone when price closes BELOW the swing low of a fractal high
+if show_htf_supply_demand and array.size(htf_fh_prices) > 0
+    for i = 0 to array.size(htf_fh_prices) - 1
+        if not array.get(htf_fh_broken_flags, i)
+            float fractal_high = array.get(htf_fh_prices, i)
+            float fractal_low = array.get(htf_fh_lows, i)
+            bool zone_created = array.get(htf_fh_zone_created_flags, i)
 
-        if array.size(htf_demand_zones) > max_htf_sd_zones
-            old_box = array.shift(htf_demand_zones)
-            box.delete(old_box)
-            array.shift(demand_tops)
-            array.shift(demand_bottoms)
+            // When price closes BELOW fractal_low, it confirms rejection from fractal_high
+            if not zone_created and htf_1h_close < fractal_low
+                array.set(htf_fh_broken_flags, i, true)
+                array.set(htf_fh_zone_created_flags, i, true)
 
-    // Supply zones: 1H closes below fractal low
-    if htf_fractal_down_detected
-        zone_bottom = htf_fractal_low_2
-        zone_top = htf_fractal_low_2 * 1.0015  // 0.15% range
+                // Create Supply zone FROM the fractal candle (high to low of that candle)
+                zone_top = fractal_high
+                zone_bottom = fractal_low
+                int fractal_time = array.get(htf_fh_times, i)
 
-        supply_box = box.new(htf_fractal_time_2, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
-        array.push(htf_supply_zones, supply_box)
-        array.push(supply_tops, zone_top)
-        array.push(supply_bottoms, zone_bottom)
+                supply_box = box.new(fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
+                array.push(htf_supply_zones, supply_box)
+                array.push(supply_tops, zone_top)
+                array.push(supply_bottoms, zone_bottom)
 
-        if array.size(htf_supply_zones) > max_htf_sd_zones
-            old_box = array.shift(htf_supply_zones)
-            box.delete(old_box)
-            array.shift(supply_tops)
-            array.shift(supply_bottoms)
+                if array.size(htf_supply_zones) > max_htf_sd_zones
+                    old_box = array.shift(htf_supply_zones)
+                    box.delete(old_box)
+                    array.shift(supply_tops)
+                    array.shift(supply_bottoms)
+
+// Demand zone detection (fractal lows):
+// Create zone when price closes ABOVE the swing high of a fractal low
+if show_htf_supply_demand and array.size(htf_fl_prices) > 0
+    for i = 0 to array.size(htf_fl_prices) - 1
+        if not array.get(htf_fl_broken_flags, i)
+            float fractal_low = array.get(htf_fl_prices, i)
+            float fractal_high = array.get(htf_fl_highs, i)
+            bool zone_created = array.get(htf_fl_zone_created_flags, i)
+
+            // When price closes ABOVE fractal_high, it confirms rejection from fractal_low
+            if not zone_created and htf_1h_close > fractal_high
+                array.set(htf_fl_broken_flags, i, true)
+                array.set(htf_fl_zone_created_flags, i, true)
+
+                // Create Demand zone FROM the fractal candle (high to low of that candle)
+                zone_top = fractal_high
+                zone_bottom = fractal_low
+                int fractal_time = array.get(htf_fl_times, i)
+
+                demand_box = box.new(fractal_time, zone_bottom, time, zone_top, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
+                array.push(htf_demand_zones, demand_box)
+                array.push(demand_tops, zone_top)
+                array.push(demand_bottoms, zone_bottom)
+
+                if array.size(htf_demand_zones) > max_htf_sd_zones
+                    old_box = array.shift(htf_demand_zones)
+                    box.delete(old_box)
+                    array.shift(demand_tops)
+                    array.shift(demand_bottoms)
 
 // Extend S&D zones to current time
 if array.size(htf_supply_zones) > 0
@@ -506,10 +606,13 @@ if array.size(htf_demand_zones) > 0
     for i = 0 to array.size(htf_demand_zones) - 1
         box.set_right(array.get(htf_demand_zones, i), time)
 
-// Invalidate zones when price closes through them
+// Invalidate zones when HTF 1H price CLOSES through them
+// CRITICAL: Once invalidated, zones are completely removed from arrays and chart
+// Use HTF close for consistency since zones are created based on HTF closes
 if array.size(htf_demand_zones) > 0
     for i = array.size(htf_demand_zones) - 1 to 0
-        if close < array.get(demand_bottoms, i)
+        // Demand zone invalidated when price closes BELOW the zone bottom
+        if htf_1h_close < array.get(demand_bottoms, i)
             box.delete(array.get(htf_demand_zones, i))
             array.remove(htf_demand_zones, i)
             array.remove(demand_tops, i)
@@ -517,342 +620,422 @@ if array.size(htf_demand_zones) > 0
 
 if array.size(htf_supply_zones) > 0
     for i = array.size(htf_supply_zones) - 1 to 0
-        if close > array.get(supply_tops, i)
+        // Supply zone invalidated when price closes ABOVE the zone top
+        if htf_1h_close > array.get(supply_tops, i)
             box.delete(array.get(htf_supply_zones, i))
             array.remove(htf_supply_zones, i)
             array.remove(supply_tops, i)
             array.remove(supply_bottoms, i)
 
 // ============================================================================
-// ENGULFING ORDER BLOCK DETECTION
+// ENGULFING ORDER BLOCK DETECTION (STEP 1 of 2-step confirmation)
 // ============================================================================
 
-var bool bullish_engulfing_in_demand = false
+// Step 1: Engulfing OB - stays active until invalidated or trade taken
+var bool bullish_eng_ob_active = false
 var float bullish_ob_top = na
 var float bullish_ob_bottom = na
+var int bullish_ob_bar = na
+var label bullish_ob_label = na
 
-var bool bearish_engulfing_in_supply = false
+var bool bearish_eng_ob_active = false
 var float bearish_ob_top = na
 var float bearish_ob_bottom = na
+var int bearish_ob_bar = na
+var label bearish_ob_label = na
 
-if barstate.isconfirmed
-    bullish_engulfing_in_demand := false
-    bearish_engulfing_in_supply := false
-
-    // Bullish Engulfing
+// Detect new Engulfing OBs (only when no setup is active)
+if barstate.isconfirmed and not bullish_eng_ob_active and not bearish_eng_ob_active
+    // Bullish Engulfing (green candle engulfs red candle)
     bool is_bullish_engulfing = close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
 
     if is_bullish_engulfing and array.size(htf_demand_zones) > 0
         for i = 0 to array.size(htf_demand_zones) - 1
-            if low >= array.get(demand_bottoms, i) and high <= array.get(demand_tops, i)
-                bullish_engulfing_in_demand := true
+            float aoi_price = array.get(demand_tops, i)  // Demand zone is at fractal high
+            // Either current candle OR previous candle must touch the AOI
+            bool current_touches = low <= aoi_price and high >= aoi_price
+            bool previous_touches = low[1] <= aoi_price and high[1] >= aoi_price
+
+            if current_touches or previous_touches
+                bullish_eng_ob_active := true
                 bullish_ob_top := math.max(open[1], close[1])
                 bullish_ob_bottom := math.min(open[1], close[1])
+                bullish_ob_bar := bar_index
+                // Create label with black diamond
+                bullish_ob_label := label.new(bar_index, low, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal)
                 break
 
-    // Bearish Engulfing
+    // Bearish Engulfing (red candle engulfs green candle)
     bool is_bearish_engulfing = close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
 
     if is_bearish_engulfing and array.size(htf_supply_zones) > 0
         for i = 0 to array.size(htf_supply_zones) - 1
-            if low >= array.get(supply_bottoms, i) and high <= array.get(supply_tops, i)
-                bearish_engulfing_in_supply := true
+            float aoi_price = array.get(supply_bottoms, i)  // Supply zone is at fractal low
+            // Either current candle OR previous candle must touch the AOI
+            bool current_touches = low <= aoi_price and high >= aoi_price
+            bool previous_touches = low[1] <= aoi_price and high[1] >= aoi_price
+
+            if current_touches or previous_touches
+                bearish_eng_ob_active := true
                 bearish_ob_top := math.max(open[1], close[1])
                 bearish_ob_bottom := math.min(open[1], close[1])
+                bearish_ob_bar := bar_index
+                // Create label with black diamond
+                bearish_ob_label := label.new(bar_index, high, "◆", color=color.new(color.white, 100), textcolor=color.black, style=label.style_none, size=size.normal, textalign=text.align_center, yloc=yloc.abovebar)
                 break
 
-plotshape(bullish_engulfing_in_demand, "Bullish Engulfing OB", shape.labelup, location.belowbar, color.new(color.green, 0), text="ENG", textcolor=color.white, size=size.small)
-plotshape(bearish_engulfing_in_supply, "Bearish Engulfing OB", shape.labeldown, location.abovebar, color.new(color.red, 0), text="ENG", textcolor=color.white, size=size.small)
+// Invalidate Engulfing OB if price closes through it
+if bullish_eng_ob_active
+    if close < bullish_ob_bottom
+        bullish_eng_ob_active := false
+        bullish_ob_top := na
+        bullish_ob_bottom := na
+        bullish_ob_bar := na
+        // Delete the label when invalidated
+        if not na(bullish_ob_label)
+            label.delete(bullish_ob_label)
+            bullish_ob_label := na
+
+if bearish_eng_ob_active
+    if close > bearish_ob_top
+        bearish_eng_ob_active := false
+        bearish_ob_top := na
+        bearish_ob_bottom := na
+        bearish_ob_bar := na
+        // Delete the label when invalidated
+        if not na(bearish_ob_label)
+            label.delete(bearish_ob_label)
+            bearish_ob_label := na
 
 // ============================================================================
-// MSS ORDER BLOCK DETECTION
+// STEP 2 CONFIRMATIONS (MSS OB, BPR FVG, Inverted FVG)
 // ============================================================================
 
-var bool mss_bullish_ob_triggered = false
-var float mss_bullish_ob_top = na
-var float mss_bullish_ob_bottom = na
+// TODO: Add MSS OB detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for LTF fractal breaks in the direction of the setup
+// - Set confirmation flag when detected
 
-var bool mss_bearish_ob_triggered = false
-var float mss_bearish_ob_top = na
-var float mss_bearish_ob_bottom = na
+// TODO: Add BPR FVG detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for Balanced Price Range Fair Value Gap
+// - Set confirmation flag when detected
 
-if bullish_engulfing_in_demand and array.size(ltf_fh_prices) > 0
-    for i = 0 to array.size(ltf_fh_prices) - 1
-        if not array.get(ltf_fh_broken_flags, i)
-            if close > array.get(ltf_fh_prices, i)
-                array.set(ltf_fh_broken_flags, i, true)
-                mss_bullish_ob_triggered := true
-                mss_bullish_ob_top := bullish_ob_top
-                mss_bullish_ob_bottom := bullish_ob_bottom
-                break
-
-if bearish_engulfing_in_supply and array.size(ltf_fl_prices) > 0
-    for i = 0 to array.size(ltf_fl_prices) - 1
-        if not array.get(ltf_fl_broken_flags, i)
-            if close < array.get(ltf_fl_prices, i)
-                array.set(ltf_fl_broken_flags, i, true)
-                mss_bearish_ob_triggered := true
-                mss_bearish_ob_top := bearish_ob_top
-                mss_bearish_ob_bottom := bearish_ob_bottom
-                break
-
-plotshape(mss_bullish_ob_triggered, "MSS Bullish OB", shape.triangleup, location.belowbar, color.new(color.blue, 0), text="MSS", textcolor=color.white, size=size.normal)
-plotshape(mss_bearish_ob_triggered, "MSS Bearish OB", shape.triangledown, location.abovebar, color.new(color.orange, 0), text="MSS", textcolor=color.white, size=size.normal)
+// TODO: Add Inverted FVG detection here
+// - Only check when bullish_eng_ob_active or bearish_eng_ob_active is true
+// - Look for Inverted Fair Value Gap
+// - Set confirmation flag when detected
 
 // ============================================================================
 // TRADE EXECUTION
 // ============================================================================
 
-// Long Entry
-if mss_bullish_ob_triggered and not in_long_trade and not in_short_trade and not is_no_trade_time
-    strategy.entry("Long", strategy.long, qty=1)
-    in_long_trade := true
-    long_entry_price := close
+// DISABLED: Trade execution requires TWO confirmations:
+// 1. Engulfing OB (first confirmation)
+// 2. Additional strategy confirmation (MSS OB, BPR FVG, or Inverted FVG)
+// Currently no secondary confirmation strategies are active, so trades are disabled.
 
-    float ob_range = mss_bullish_ob_top - mss_bullish_ob_bottom
-    long_sl_price := mss_bullish_ob_bottom - (ob_range * 0.5)
-    long_tp_price := long_entry_price + ((long_entry_price - long_sl_price) * tp_rr_ratio)
+// Long Entry - DISABLED
+// if bullish_engulfing_in_demand and not in_long_trade and not in_short_trade and not is_no_trade_time
+//     strategy.entry("Long", strategy.long, qty=1)
+//     in_long_trade := true
+//     long_entry_price := close
 
-    long_tp_line := line.new(bar_index, long_tp_price, bar_index + 1, long_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
-    long_sl_line := line.new(bar_index, long_sl_price, bar_index + 1, long_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+//     float ob_range = bullish_ob_top - bullish_ob_bottom
+//     long_sl_price := bullish_ob_bottom - (ob_range * 0.5)
+//     long_tp_price := long_entry_price + ((long_entry_price - long_sl_price) * tp_rr_ratio)
 
-// Short Entry
-if mss_bearish_ob_triggered and not in_long_trade and not in_short_trade and not is_no_trade_time
-    strategy.entry("Short", strategy.short, qty=1)
-    in_short_trade := true
-    short_entry_price := close
+//     long_tp_line := line.new(bar_index, long_tp_price, bar_index + 1, long_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+//     long_sl_line := line.new(bar_index, long_sl_price, bar_index + 1, long_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
 
-    float ob_range = mss_bearish_ob_top - mss_bearish_ob_bottom
-    short_sl_price := mss_bearish_ob_top + (ob_range * 0.5)
-    short_tp_price := short_entry_price - ((short_sl_price - short_entry_price) * tp_rr_ratio)
+// Short Entry - DISABLED
+// if bearish_engulfing_in_supply and not in_long_trade and not in_short_trade and not is_no_trade_time
+//     strategy.entry("Short", strategy.short, qty=1)
+//     in_short_trade := true
+//     short_entry_price := close
 
-    short_tp_line := line.new(bar_index, short_tp_price, bar_index + 1, short_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
-    short_sl_line := line.new(bar_index, short_sl_price, bar_index + 1, short_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+//     float ob_range = bearish_ob_top - bearish_ob_bottom
+//     short_sl_price := bearish_ob_top + (ob_range * 0.5)
+//     short_tp_price := short_entry_price - ((short_sl_price - short_entry_price) * tp_rr_ratio)
 
-// Extend TP/SL lines
-if in_long_trade
-    line.set_x2(long_tp_line, bar_index)
-    line.set_x2(long_sl_line, bar_index)
+//     short_tp_line := line.new(bar_index, short_tp_price, bar_index + 1, short_tp_price, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+//     short_sl_line := line.new(bar_index, short_sl_price, bar_index + 1, short_sl_price, color=color.new(color.red, 0), width=2, style=line.style_dashed)
 
-if in_short_trade
-    line.set_x2(short_tp_line, bar_index)
-    line.set_x2(short_sl_line, bar_index)
+// Extend TP/SL lines - DISABLED
+// if in_long_trade
+//     line.set_x2(long_tp_line, bar_index)
+//     line.set_x2(long_sl_line, bar_index)
 
-// Long Exit
-if in_long_trade
-    if high >= long_tp_price
-        strategy.close("Long", comment="TP")
-        in_long_trade := false
-        line.delete(long_tp_line)
-        line.delete(long_sl_line)
-    else if low <= long_sl_price
-        strategy.close("Long", comment="SL")
-        in_long_trade := false
-        line.delete(long_tp_line)
-        line.delete(long_sl_line)
+// if in_short_trade
+//     line.set_x2(short_tp_line, bar_index)
+//     line.set_x2(short_sl_line, bar_index)
 
-// Short Exit
-if in_short_trade
-    if low <= short_tp_price
-        strategy.close("Short", comment="TP")
-        in_short_trade := false
-        line.delete(short_tp_line)
-        line.delete(short_sl_line)
-    else if high >= short_sl_price
-        strategy.close("Short", comment="SL")
-        in_short_trade := false
-        line.delete(short_tp_line)
-        line.delete(short_sl_line)
+// Long Exit - DISABLED
+// if in_long_trade
+//     if high >= long_tp_price
+//         strategy.close("Long", comment="TP")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
+//     else if low <= long_sl_price
+//         strategy.close("Long", comment="SL")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
 
-// Close during no-trade time
-if is_no_trade_time
-    if in_long_trade
-        strategy.close("Long", comment="No Trade Time")
-        in_long_trade := false
-        line.delete(long_tp_line)
-        line.delete(long_sl_line)
+// Short Exit - DISABLED
+// if in_short_trade
+//     if low <= short_tp_price
+//         strategy.close("Short", comment="TP")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
+//     else if high >= short_sl_price
+//         strategy.close("Short", comment="SL")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
 
-    if in_short_trade
-        strategy.close("Short", comment="No Trade Time")
-        in_short_trade := false
-        line.delete(short_tp_line)
-        line.delete(short_sl_line)
+// Close during no-trade time - DISABLED
+// if is_no_trade_time
+//     if in_long_trade
+//         strategy.close("Long", comment="No Trade Time")
+//         in_long_trade := false
+//         line.delete(long_tp_line)
+//         line.delete(long_sl_line)
+
+//     if in_short_trade
+//         strategy.close("Short", comment="No Trade Time")
+//         in_short_trade := false
+//         line.delete(short_tp_line)
+//         line.delete(short_sl_line)
 
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
 
 if show_debug_table
-    var table debug_table = table.new(position.top_right, 2, 20, border_width=1)
+    var table debug_table = table.new(position.top_right, 2, 25, border_width=1)
 
     if barstate.islast
         int row = 0
 
+        // More transparent background colors
+        color bg_header = color.new(#0a0a0a, 40)
+        color bg_dark = color.new(#1a1a1a, 50)
+        color bg_darker = color.new(#0f0f0f, 50)
+        color text_main = color.new(color.white, 0)
+        color text_muted = color.new(#cccccc, 0)
+
         // Header
-        table.cell(debug_table, 0, row, "Metric", bgcolor=color.new(color.black, 20), text_color=color.white)
-        table.cell(debug_table, 1, row, "Value", bgcolor=color.new(color.black, 20), text_color=color.white)
+        table.cell(debug_table, 0, row, "NEXUS STATUS", bgcolor=bg_header, text_color=text_main, text_size=size.normal)
+        table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
         row := row + 1
 
         // Session Info
-        table.cell(debug_table, 0, row, "Session", bgcolor=color.new(color.black, 50), text_color=color.white)
-        string current_session = is_asian ? "Asian" : is_london ? "London" : is_ny ? "NY" : "Other"
-        table.cell(debug_table, 1, row, current_session, bgcolor=color.new(color.black, 50), text_color=color.white)
+        table.cell(debug_table, 0, row, "Session", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        string current_session = is_ny ? "New York" : is_asian ? "Asian" : is_london ? "London" : "None"
+        color session_color = is_ny ? color.new(color.blue, 20) : is_asian ? color.new(color.orange, 20) : is_london ? color.new(color.purple, 20) : text_muted
+        table.cell(debug_table, 1, row, current_session, bgcolor=bg_dark, text_color=session_color, text_size=size.small)
         row := row + 1
 
-        table.cell(debug_table, 0, row, "No Trade Time", bgcolor=color.new(color.black, 50), text_color=color.white)
-        table.cell(debug_table, 1, row, is_no_trade_time ? "YES" : "NO", bgcolor=color.new(color.black, 50), text_color=is_no_trade_time ? color.red : color.green)
-        row := row + 1
+        // Session highs - sorted by price (highest to lowest)
+        var array<float> session_highs = array.new<float>()
+        var array<string> session_high_names = array.new<string>()
+        var array<bool> session_high_invalidated_flags = array.new<bool>()
 
-        // Session Highs (ordered by price, highest to lowest)
-        table.cell(debug_table, 0, row, "SESSION HIGHS", bgcolor=color.new(color.blue, 70), text_color=color.white)
-        table.cell(debug_table, 1, row, "", bgcolor=color.new(color.blue, 70), text_color=color.white)
-        row := row + 1
-
-        // Collect all highs with labels and status
-        var array<float> high_prices = array.new<float>()
-        var array<string> high_labels = array.new<string>()
-        var array<bool> high_invalidated = array.new<bool>()
-
-        array.clear(high_prices)
-        array.clear(high_labels)
-        array.clear(high_invalidated)
+        array.clear(session_highs)
+        array.clear(session_high_names)
+        array.clear(session_high_invalidated_flags)
 
         if not na(prev_asian_high)
-            array.push(high_prices, prev_asian_high)
-            array.push(high_labels, "Asian High")
-            array.push(high_invalidated, asian_high_invalidated)
+            array.push(session_highs, prev_asian_high)
+            array.push(session_high_names, "Asian High")
+            array.push(session_high_invalidated_flags, asian_high_invalidated)
 
         if not na(prev_london_high)
-            array.push(high_prices, prev_london_high)
-            array.push(high_labels, "London High")
-            array.push(high_invalidated, london_high_invalidated)
+            array.push(session_highs, prev_london_high)
+            array.push(session_high_names, "London High")
+            array.push(session_high_invalidated_flags, london_high_invalidated)
 
         if not na(prev_ny_high)
-            array.push(high_prices, prev_ny_high)
-            array.push(high_labels, "NY High")
-            array.push(high_invalidated, ny_high_invalidated)
+            array.push(session_highs, prev_ny_high)
+            array.push(session_high_names, "NY High")
+            array.push(session_high_invalidated_flags, ny_high_invalidated)
 
-        // Bubble sort - highest to lowest
-        int high_size = array.size(high_prices)
-        if high_size > 1
-            for i = 0 to high_size - 2
-                for j = 0 to high_size - 2 - i
-                    if array.get(high_prices, j) < array.get(high_prices, j + 1)
+        // Sort highs descending (highest to lowest)
+        if array.size(session_highs) > 1
+            for i = 0 to array.size(session_highs) - 2
+                for j = i + 1 to array.size(session_highs) - 1
+                    if array.get(session_highs, j) > array.get(session_highs, i)
                         // Swap prices
-                        temp_price = array.get(high_prices, j)
-                        array.set(high_prices, j, array.get(high_prices, j + 1))
-                        array.set(high_prices, j + 1, temp_price)
-                        // Swap labels
-                        temp_label = array.get(high_labels, j)
-                        array.set(high_labels, j, array.get(high_labels, j + 1))
-                        array.set(high_labels, j + 1, temp_label)
-                        // Swap invalidated
-                        temp_inv = array.get(high_invalidated, j)
-                        array.set(high_invalidated, j, array.get(high_invalidated, j + 1))
-                        array.set(high_invalidated, j + 1, temp_inv)
+                        float temp_price = array.get(session_highs, i)
+                        array.set(session_highs, i, array.get(session_highs, j))
+                        array.set(session_highs, j, temp_price)
+                        // Swap names
+                        string temp_name = array.get(session_high_names, i)
+                        array.set(session_high_names, i, array.get(session_high_names, j))
+                        array.set(session_high_names, j, temp_name)
+                        // Swap invalidated flags
+                        bool temp_flag = array.get(session_high_invalidated_flags, i)
+                        array.set(session_high_invalidated_flags, i, array.get(session_high_invalidated_flags, j))
+                        array.set(session_high_invalidated_flags, j, temp_flag)
 
-        // Display highs
-        for i = 0 to array.size(high_prices) - 1
-            label_text = array.get(high_labels, i)
-            is_inv = array.get(high_invalidated, i)
-            if is_inv
-                label_text := "X " + label_text
-
-            table.cell(debug_table, 0, row, label_text, bgcolor=color.new(color.black, 50), text_color=is_inv ? color.gray : session_high_color)
-            table.cell(debug_table, 1, row, str.tostring(array.get(high_prices, i), format.mintick), bgcolor=color.new(color.black, 50), text_color=is_inv ? color.gray : session_high_color)
+        // Display sorted highs
+        for i = 0 to array.size(session_highs) - 1
+            table.cell(debug_table, 0, row, array.get(session_high_names, i), bgcolor=bg_darker, text_color=text_muted, text_size=size.tiny)
+            table.cell(debug_table, 1, row, str.tostring(array.get(session_highs, i), format.mintick), bgcolor=bg_darker, text_color=array.get(session_high_invalidated_flags, i) ? color.new(color.gray, 50) : text_main, text_size=size.tiny)
             row := row + 1
 
-        // Session Lows (ordered by price, highest to lowest)
-        table.cell(debug_table, 0, row, "SESSION LOWS", bgcolor=color.new(color.green, 70), text_color=color.white)
-        table.cell(debug_table, 1, row, "", bgcolor=color.new(color.green, 70), text_color=color.white)
-        row := row + 1
+        // Session lows - sorted by price (highest to lowest)
+        var array<float> session_lows = array.new<float>()
+        var array<string> session_low_names = array.new<string>()
+        var array<bool> session_low_invalidated_flags = array.new<bool>()
 
-        // Collect all lows with labels and status
-        var array<float> low_prices = array.new<float>()
-        var array<string> low_labels = array.new<string>()
-        var array<bool> low_invalidated = array.new<bool>()
-
-        array.clear(low_prices)
-        array.clear(low_labels)
-        array.clear(low_invalidated)
+        array.clear(session_lows)
+        array.clear(session_low_names)
+        array.clear(session_low_invalidated_flags)
 
         if not na(prev_asian_low)
-            array.push(low_prices, prev_asian_low)
-            array.push(low_labels, "Asian Low")
-            array.push(low_invalidated, asian_low_invalidated)
+            array.push(session_lows, prev_asian_low)
+            array.push(session_low_names, "Asian Low")
+            array.push(session_low_invalidated_flags, asian_low_invalidated)
 
         if not na(prev_london_low)
-            array.push(low_prices, prev_london_low)
-            array.push(low_labels, "London Low")
-            array.push(low_invalidated, london_low_invalidated)
+            array.push(session_lows, prev_london_low)
+            array.push(session_low_names, "London Low")
+            array.push(session_low_invalidated_flags, london_low_invalidated)
 
         if not na(prev_ny_low)
-            array.push(low_prices, prev_ny_low)
-            array.push(low_labels, "NY Low")
-            array.push(low_invalidated, ny_low_invalidated)
+            array.push(session_lows, prev_ny_low)
+            array.push(session_low_names, "NY Low")
+            array.push(session_low_invalidated_flags, ny_low_invalidated)
 
-        // Bubble sort - highest to lowest (for consistency)
-        int low_size = array.size(low_prices)
-        if low_size > 1
-            for i = 0 to low_size - 2
-                for j = 0 to low_size - 2 - i
-                    if array.get(low_prices, j) < array.get(low_prices, j + 1)
+        // Sort lows descending (highest to lowest)
+        if array.size(session_lows) > 1
+            for i = 0 to array.size(session_lows) - 2
+                for j = i + 1 to array.size(session_lows) - 1
+                    if array.get(session_lows, j) > array.get(session_lows, i)
                         // Swap prices
-                        temp_price = array.get(low_prices, j)
-                        array.set(low_prices, j, array.get(low_prices, j + 1))
-                        array.set(low_prices, j + 1, temp_price)
-                        // Swap labels
-                        temp_label = array.get(low_labels, j)
-                        array.set(low_labels, j, array.get(low_labels, j + 1))
-                        array.set(low_labels, j + 1, temp_label)
-                        // Swap invalidated
-                        temp_inv = array.get(low_invalidated, j)
-                        array.set(low_invalidated, j, array.get(low_invalidated, j + 1))
-                        array.set(low_invalidated, j + 1, temp_inv)
+                        float temp_price = array.get(session_lows, i)
+                        array.set(session_lows, i, array.get(session_lows, j))
+                        array.set(session_lows, j, temp_price)
+                        // Swap names
+                        string temp_name = array.get(session_low_names, i)
+                        array.set(session_low_names, i, array.get(session_low_names, j))
+                        array.set(session_low_names, j, temp_name)
+                        // Swap invalidated flags
+                        bool temp_flag = array.get(session_low_invalidated_flags, i)
+                        array.set(session_low_invalidated_flags, i, array.get(session_low_invalidated_flags, j))
+                        array.set(session_low_invalidated_flags, j, temp_flag)
 
-        // Display lows
-        for i = 0 to array.size(low_prices) - 1
-            label_text = array.get(low_labels, i)
-            is_inv = array.get(low_invalidated, i)
-            if is_inv
-                label_text := "X " + label_text
-
-            table.cell(debug_table, 0, row, label_text, bgcolor=color.new(color.black, 50), text_color=is_inv ? color.gray : session_low_color)
-            table.cell(debug_table, 1, row, str.tostring(array.get(low_prices, i), format.mintick), bgcolor=color.new(color.black, 50), text_color=is_inv ? color.gray : session_low_color)
+        // Display sorted lows
+        for i = 0 to array.size(session_lows) - 1
+            table.cell(debug_table, 0, row, array.get(session_low_names, i), bgcolor=bg_darker, text_color=text_muted, text_size=size.tiny)
+            table.cell(debug_table, 1, row, str.tostring(array.get(session_lows, i), format.mintick), bgcolor=bg_darker, text_color=array.get(session_low_invalidated_flags, i) ? color.new(color.gray, 50) : text_main, text_size=size.tiny)
             row := row + 1
 
-        // Zones
-        table.cell(debug_table, 0, row, "Demand Zones", bgcolor=color.new(color.black, 50), text_color=color.white)
-        table.cell(debug_table, 1, row, str.tostring(array.size(htf_demand_zones)), bgcolor=color.new(color.black, 50), text_color=color.green)
+        // Status
+        string status_text = in_long_trade or in_short_trade ? "In Trade" : bullish_eng_ob_active or bearish_eng_ob_active ? "Eng OB Active" : array.size(htf_demand_zones) > 0 or array.size(htf_supply_zones) > 0 ? "In AOI" : "Wait AOI"
+        color status_color = in_long_trade or in_short_trade ? color.new(color.yellow, 0) : bullish_eng_ob_active or bearish_eng_ob_active ? color.new(color.orange, 0) : array.size(htf_demand_zones) > 0 or array.size(htf_supply_zones) > 0 ? color.new(color.aqua, 0) : text_muted
+        table.cell(debug_table, 0, row, "STATUS", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, status_text, bgcolor=bg_dark, text_color=status_color, text_size=size.small)
         row := row + 1
 
-        table.cell(debug_table, 0, row, "Supply Zones", bgcolor=color.new(color.black, 50), text_color=color.white)
-        table.cell(debug_table, 1, row, str.tostring(array.size(htf_supply_zones)), bgcolor=color.new(color.black, 50), text_color=color.red)
+        // Separator
+        table.cell(debug_table, 0, row, "ENTRY CRITERIA", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+        table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
         row := row + 1
 
-        // Trade Status
-        table.cell(debug_table, 0, row, "In Long Trade", bgcolor=color.new(color.black, 50), text_color=color.white)
-        table.cell(debug_table, 1, row, in_long_trade ? "YES" : "NO", bgcolor=color.new(color.black, 50), text_color=in_long_trade ? color.green : color.gray)
+        // AOI (Supply/Demand zones)
+        bool in_demand = array.size(htf_demand_zones) > 0
+        bool in_supply = array.size(htf_supply_zones) > 0
+        string aoi_text = in_demand and in_supply ? "✓ Bull + Bear" : in_demand ? "✓ Bull" : in_supply ? "✓ Bear" : "—"
+        color aoi_color = in_demand and in_supply ? color.new(color.yellow, 0) : in_demand ? color.new(color.green, 0) : in_supply ? color.new(color.red, 0) : text_muted
+        table.cell(debug_table, 0, row, "AOI (S&D)", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, aoi_text, bgcolor=bg_dark, text_color=aoi_color, text_size=size.small)
         row := row + 1
 
-        table.cell(debug_table, 0, row, "In Short Trade", bgcolor=color.new(color.black, 50), text_color=color.white)
-        table.cell(debug_table, 1, row, in_short_trade ? "YES" : "NO", bgcolor=color.new(color.black, 50), text_color=in_short_trade ? color.red : color.gray)
+        // Engulfing OB (Step 1)
+        string eng_text = bullish_eng_ob_active and bearish_eng_ob_active ? "✓ Bull + Bear" : bullish_eng_ob_active ? "✓ Bull ACTIVE" : bearish_eng_ob_active ? "✓ Bear ACTIVE" : "—"
+        color eng_color = bullish_eng_ob_active and bearish_eng_ob_active ? color.new(color.yellow, 0) : bullish_eng_ob_active ? color.new(color.green, 0) : bearish_eng_ob_active ? color.new(color.red, 0) : text_muted
+        table.cell(debug_table, 0, row, "Eng OB (Step 1)", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, eng_text, bgcolor=bg_dark, text_color=eng_color, text_size=size.small)
         row := row + 1
+
+        // MSS OB (Step 2 - placeholder)
+        table.cell(debug_table, 0, row, "MSS OB (Step 2)", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, "—", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        row := row + 1
+
+        // BPR FVG (Step 2 - placeholder)
+        table.cell(debug_table, 0, row, "BPR FVG (Step 2)", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, "—", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        row := row + 1
+
+        // Inverted FVG (Step 2 - placeholder)
+        table.cell(debug_table, 0, row, "Inv FVG (Step 2)", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, "—", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+        row := row + 1
+
+        // No Trade Time (only show if in no-trade time)
+        if is_no_trade_time
+            table.cell(debug_table, 0, row, "No Trade", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, "YES", bgcolor=bg_dark, text_color=color.new(color.red, 0), text_size=size.small)
+            row := row + 1
+
+        // Separator
+        table.cell(debug_table, 0, row, "ZONES & STATS", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+        table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+        row := row + 1
+
+        // Zone counts
+        table.cell(debug_table, 0, row, "Demand", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, str.tostring(array.size(htf_demand_zones)), bgcolor=bg_darker, text_color=color.new(color.green, 30), text_size=size.small)
+        row := row + 1
+
+        table.cell(debug_table, 0, row, "Supply", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+        table.cell(debug_table, 1, row, str.tostring(array.size(htf_supply_zones)), bgcolor=bg_darker, text_color=color.new(color.red, 30), text_size=size.small)
+        row := row + 1
+
+        // Trade Info (only if in trade)
+        if in_long_trade or in_short_trade
+            table.cell(debug_table, 0, row, "TRADE INFO", bgcolor=bg_header, text_color=text_main, text_size=size.small)
+            table.cell(debug_table, 1, row, "", bgcolor=bg_header, text_color=text_main)
+            row := row + 1
 
         if in_long_trade
-            table.cell(debug_table, 0, row, "Long TP", bgcolor=color.new(color.black, 50), text_color=color.white)
-            table.cell(debug_table, 1, row, str.tostring(long_tp_price, format.mintick), bgcolor=color.new(color.black, 50), text_color=color.green)
+            table.cell(debug_table, 0, row, "Long Entry", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(long_entry_price, format.mintick), bgcolor=bg_dark, text_color=color.new(color.green, 0), text_size=size.small)
             row := row + 1
 
-            table.cell(debug_table, 0, row, "Long SL", bgcolor=color.new(color.black, 50), text_color=color.white)
-            table.cell(debug_table, 1, row, str.tostring(long_sl_price, format.mintick), bgcolor=color.new(color.black, 50), text_color=color.red)
+            float long_pnl = ((close - long_entry_price) / long_entry_price) * 100
+            table.cell(debug_table, 0, row, "P&L", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(long_pnl, "#.##") + "%", bgcolor=bg_darker, text_color=long_pnl >= 0 ? color.new(color.green, 0) : color.new(color.red, 0), text_size=size.small)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "TP", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(long_tp_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.green, 30), text_size=size.small)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "SL", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(long_sl_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.red, 30), text_size=size.small)
             row := row + 1
 
         if in_short_trade
-            table.cell(debug_table, 0, row, "Short TP", bgcolor=color.new(color.black, 50), text_color=color.white)
-            table.cell(debug_table, 1, row, str.tostring(short_tp_price, format.mintick), bgcolor=color.new(color.black, 50), text_color=color.green)
+            table.cell(debug_table, 0, row, "Short Entry", bgcolor=bg_dark, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(short_entry_price, format.mintick), bgcolor=bg_dark, text_color=color.new(color.red, 0), text_size=size.small)
             row := row + 1
 
-            table.cell(debug_table, 0, row, "Short SL", bgcolor=color.new(color.black, 50), text_color=color.white)
-            table.cell(debug_table, 1, row, str.tostring(short_sl_price, format.mintick), bgcolor=color.new(color.black, 50), text_color=color.red)
+            float short_pnl = ((short_entry_price - close) / short_entry_price) * 100
+            table.cell(debug_table, 0, row, "P&L", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(short_pnl, "#.##") + "%", bgcolor=bg_darker, text_color=short_pnl >= 0 ? color.new(color.green, 0) : color.new(color.red, 0), text_size=size.small)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "TP", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(short_tp_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.green, 30), text_size=size.small)
+            row := row + 1
+
+            table.cell(debug_table, 0, row, "SL", bgcolor=bg_darker, text_color=text_muted, text_size=size.small)
+            table.cell(debug_table, 1, row, str.tostring(short_sl_price, format.mintick), bgcolor=bg_darker, text_color=color.new(color.red, 30), text_size=size.small)
             row := row + 1
