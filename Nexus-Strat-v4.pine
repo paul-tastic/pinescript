@@ -548,9 +548,9 @@ if bullish_eng_ob_active and not na(bullish_ob_box)
 if bearish_eng_ob_active and not na(bearish_ob_box)
     box.set_right(bearish_ob_box, bar_index)
 
-// Invalidate Engulfing OB if price closes through it
+// Invalidate Engulfing OB if price closes through it OR on new day
 if bullish_eng_ob_active
-    if close < bullish_ob_bottom
+    if close < bullish_ob_bottom or is_new_day
         bullish_eng_ob_active := false
         bullish_ob_top := na
         bullish_ob_bottom := na
@@ -565,7 +565,7 @@ if bullish_eng_ob_active
             bullish_ob_box := na
 
 if bearish_eng_ob_active
-    if close > bearish_ob_top
+    if close > bearish_ob_top or is_new_day
         bearish_eng_ob_active := false
         bearish_ob_top := na
         bearish_ob_bottom := na
