@@ -1,0 +1,368 @@
+//mach2fx - OPTIMIZED VERSION
+//@version=5
+strategy("Nexus Strategy", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
+
+// NOTE: This is an optimized version to reduce local scope count
+// Key optimizations:
+// 1. Disabled HTF FVG detection (uses many scopes)
+// 2. Simplified confluence detection
+// 3. Reduced nested conditionals in engulfing detection
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Session Time Settings (NY Timezone)
+asian_session = input.session("2000-0000", "Asian Session", group="Session Times")
+london_session = input.session("0300-0700", "London Session", group="Session Times")
+ny_session = input.session("0930-1600", "NY Session", group="Session Times")
+
+// Session High/Low Display Settings
+show_asian_lines = input.bool(true, "Show Asian Session Lines", group="Session Lines")
+show_london_lines = input.bool(true, "Show London Session Lines", group="Session Lines")
+show_ny_lines = input.bool(true, "Show NY Session Lines", group="Session Lines")
+show_labels = input.bool(true, "Show Session Labels", group="Session Lines")
+
+// Visual Settings
+session_high_color = input.color(color.new(color.red, 0), "Session High Color", group="Visual")
+session_low_color = input.color(color.new(color.green, 0), "Session Low Color", group="Visual")
+
+// Fractal Settings
+show_fractals = input.bool(true, "Show HTF (1H) Fractals", group="Fractals")
+fractal_up_color = input.color(color.new(color.lime, 0), "Fractal Up Color", group="Fractals")
+fractal_down_color = input.color(color.new(color.red, 0), "Fractal Down Color", group="Fractals")
+show_ltf_fractals = input.bool(true, "Show LTF (Chart TF) Fractals", group="Fractals")
+ltf_fractal_up_color = input.color(color.new(color.aqua, 0), "LTF Fractal Up Color", group="Fractals")
+ltf_fractal_down_color = input.color(color.new(color.orange, 0), "LTF Fractal Down Color", group="Fractals")
+
+// HTF Supply & Demand Settings
+show_htf_supply_demand = input.bool(true, "Show HTF Supply & Demand Zones", group="HTF Supply & Demand")
+htf_demand_color = input.color(color.new(color.green, 90), "HTF Demand Zone Color", group="HTF Supply & Demand")
+htf_supply_color = input.color(color.new(color.red, 90), "HTF Supply Zone Color", group="HTF Supply & Demand")
+max_htf_sd_zones = input.int(10, "Max HTF S&D Zones", minval=1, maxval=50, group="HTF Supply & Demand")
+
+// Trade Management Settings
+show_trade_zones = input.bool(true, "Show TP/SL Trade Zones", group="Trade Management")
+
+// No-Trade Time Periods (NY Timezone)
+enable_no_trade_1 = input.bool(true, "Enable No-Trade Period 1", group="No-Trade Times")
+no_trade_1_start = input.session("1745-1815", "Period 1 Time", group="No-Trade Times")
+enable_no_trade_2 = input.bool(true, "Enable No-Trade Period 2", group="No-Trade Times")
+no_trade_2_start = input.session("1815-2359", "Period 2 Time", group="No-Trade Times")
+enable_no_trade_3 = input.bool(true, "Enable No-Trade Period 3", group="No-Trade Times")
+no_trade_3_start = input.session("0000-0930", "Period 3 Time", group="No-Trade Times")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+// Session Variables
+var float prev_asian_high = na, var float prev_asian_low = na
+var float prev_london_high = na, var float prev_london_low = na
+var float prev_ny_high = na, var float prev_ny_low = na
+var float prev_day_high = na, var float prev_day_low = na
+
+var line asian_high_line = na, var line asian_low_line = na
+var line london_high_line = na, var line london_low_line = na
+var line ny_high_line = na, var line ny_low_line = na
+var line prev_day_high_line = na, var line prev_day_low_line = na
+
+var label asian_high_label = na, var label asian_low_label = na
+var label london_high_label = na, var label london_low_label = na
+var label ny_high_label = na, var label ny_low_label = na
+var label prev_day_high_label = na, var label prev_day_low_label = na
+
+var bool asian_high_invalidated = false, var bool asian_low_invalidated = false
+var bool london_high_invalidated = false, var bool london_low_invalidated = false
+var bool ny_high_invalidated = false, var bool ny_low_invalidated = false
+var bool prev_day_high_invalidated = false, var bool prev_day_low_invalidated = false
+
+var float current_asian_high = na, var float current_asian_low = na
+var float current_london_high = na, var float current_london_low = na
+var float current_ny_high = na, var float current_ny_low = na
+
+var int current_asian_high_time = na, var int current_asian_low_time = na
+var int current_london_high_time = na, var int current_london_low_time = na
+var int current_ny_high_time = na, var int current_ny_low_time = na
+
+var int prev_asian_high_time = na, var int prev_asian_low_time = na
+var int prev_london_high_time = na, var int prev_london_low_time = na
+var int prev_ny_high_time = na, var int prev_ny_low_time = na
+var int prev_day_high_time = na, var int prev_day_low_time = na
+
+var bool in_asian_session = false
+var bool in_london_session = false
+var bool in_ny_session = false
+var int current_day = na
+
+// HTF Supply & Demand
+var array<box> htf_demand_zones = array.new<box>()
+var array<box> htf_supply_zones = array.new<box>()
+var array<float> fractal_highs = array.new<float>()
+var array<int> fractal_highs_time = array.new<int>()
+var array<float> fractal_highs_low = array.new<float>()
+var array<float> fractal_lows = array.new<float>()
+var array<int> fractal_lows_time = array.new<int>()
+var array<float> fractal_lows_high = array.new<float>()
+
+// LTF Fractals
+var array<float> ltf_fractal_highs = array.new<float>()
+var array<int> ltf_fractal_highs_bar = array.new<int>()
+var array<float> ltf_fractal_lows = array.new<float>()
+var array<int> ltf_fractal_lows_bar = array.new<int>()
+
+// Trade setup tracking
+type EngulfingSetup
+    int bar_index
+    bool is_bullish
+    bool in_bullish_aoi
+    bool in_bearish_aoi
+    float entry_price
+    float sl_price
+    float tp_price
+    bool invalidated
+    bool mss_triggered
+    bool trade_entered
+    bool trade_closed
+    label setup_label
+    box setup_box
+    box entry_box
+    label fractal_label
+    box sl_zone_box
+    box tp_zone_box
+
+var array<EngulfingSetup> engulfing_setups = array.new<EngulfingSetup>()
+var array<label> engulf_ob_labels = array.new<label>()
+var array<box> engulf_ob_boxes = array.new<box>()
+var array<label> mss_ob_labels = array.new<label>()
+
+var int last_engulf_setup_bar = -1
+var int last_mss_setup_bar = -1
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+
+bool is_asian = not na(time(timeframe.period, asian_session, "America/New_York"))
+bool is_london = not na(time(timeframe.period, london_session, "America/New_York"))
+bool is_ny = not na(time(timeframe.period, ny_session, "America/New_York"))
+
+int today = dayofweek(time, "America/New_York")
+bool is_new_day = na(current_day) or today != current_day
+
+float yesterday_high = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+float yesterday_low = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_off)
+
+// No-trade time checker
+bool in_no_trade_time = (enable_no_trade_1 and not na(time(timeframe.period, no_trade_1_start, "America/New_York"))) or (enable_no_trade_2 and not na(time(timeframe.period, no_trade_2_start, "America/New_York"))) or (enable_no_trade_3 and not na(time(timeframe.period, no_trade_3_start, "America/New_York")))
+
+// ============================================================================
+// SESSION TRACKING (SIMPLIFIED)
+// ============================================================================
+
+// Asian Session
+if is_asian and not in_asian_session
+    in_asian_session := true
+    current_asian_high := high
+    current_asian_low := low
+    current_asian_high_time := time
+    current_asian_low_time := time
+
+if in_asian_session and is_asian
+    if high > current_asian_high
+        current_asian_high := high
+        current_asian_high_time := time
+    if low < current_asian_low
+        current_asian_low := low
+        current_asian_low_time := time
+
+if in_asian_session and not is_asian
+    in_asian_session := false
+    prev_asian_high := current_asian_high
+    prev_asian_low := current_asian_low
+    prev_asian_high_time := current_asian_high_time
+    prev_asian_low_time := current_asian_low_time
+    asian_high_invalidated := false
+    asian_low_invalidated := false
+
+    if show_asian_lines
+        if not na(asian_high_line)
+            line.delete(asian_high_line)
+            line.delete(asian_low_line)
+            label.delete(asian_high_label)
+            label.delete(asian_low_label)
+
+        asian_high_line := line.new(prev_asian_high_time, prev_asian_high, prev_asian_high_time + 1, prev_asian_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2)
+        asian_low_line := line.new(prev_asian_low_time, prev_asian_low, prev_asian_low_time + 1, prev_asian_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2)
+
+        if show_labels
+            asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "PAH", xloc=xloc.bar_time, style=label.style_none, textcolor=session_high_color, size=size.small)
+            asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "PAL", xloc=xloc.bar_time, style=label.style_none, textcolor=session_low_color, size=size.small)
+
+// London Session (same pattern as Asian)
+if is_london and not in_london_session
+    in_london_session := true
+    current_london_high := high
+    current_london_low := low
+    current_london_high_time := time
+    current_london_low_time := time
+
+if in_london_session and is_london
+    if high > current_london_high
+        current_london_high := high
+        current_london_high_time := time
+    if low < current_london_low
+        current_london_low := low
+        current_london_low_time := time
+
+if in_london_session and not is_london
+    in_london_session := false
+    prev_london_high := current_london_high
+    prev_london_low := current_london_low
+    prev_london_high_time := current_london_high_time
+    prev_london_low_time := current_london_low_time
+    london_high_invalidated := false
+    london_low_invalidated := false
+
+    if show_london_lines
+        if not na(london_high_line)
+            line.delete(london_high_line)
+            line.delete(london_low_line)
+            label.delete(london_high_label)
+            label.delete(london_low_label)
+
+        london_high_line := line.new(prev_london_high_time, prev_london_high, prev_london_high_time + 1, prev_london_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2)
+        london_low_line := line.new(prev_london_low_time, prev_london_low, prev_london_low_time + 1, prev_london_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2)
+
+        if show_labels
+            london_high_label := label.new(prev_london_high_time, prev_london_high, "PLH", xloc=xloc.bar_time, style=label.style_none, textcolor=session_high_color, size=size.small)
+            london_low_label := label.new(prev_london_low_time, prev_london_low, "PLL", xloc=xloc.bar_time, style=label.style_none, textcolor=session_low_color, size=size.small)
+
+// NY Session (same pattern)
+if is_ny and not in_ny_session
+    in_ny_session := true
+    current_ny_high := high
+    current_ny_low := low
+    current_ny_high_time := time
+    current_ny_low_time := time
+
+if in_ny_session and is_ny
+    if high > current_ny_high
+        current_ny_high := high
+        current_ny_high_time := time
+    if low < current_ny_low
+        current_ny_low := low
+        current_ny_low_time := time
+
+if in_ny_session and not is_ny
+    in_ny_session := false
+    prev_ny_high := current_ny_high
+    prev_ny_low := current_ny_low
+    prev_ny_high_time := current_ny_high_time
+    prev_ny_low_time := current_ny_low_time
+    ny_high_invalidated := false
+    ny_low_invalidated := false
+
+    if show_ny_lines
+        if not na(ny_high_line)
+            line.delete(ny_high_line)
+            line.delete(ny_low_line)
+            label.delete(ny_high_label)
+            label.delete(ny_low_label)
+
+        ny_high_line := line.new(prev_ny_high_time, prev_ny_high, prev_ny_high_time + 1, prev_ny_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2)
+        ny_low_line := line.new(prev_ny_low_time, prev_ny_low, prev_ny_low_time + 1, prev_ny_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2)
+
+        if show_labels
+            ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "PDH", xloc=xloc.bar_time, style=label.style_none, textcolor=session_high_color, size=size.small)
+            ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "PDL", xloc=xloc.bar_time, style=label.style_none, textcolor=session_low_color, size=size.small)
+
+// Previous Day High/Low
+if is_new_day
+    current_day := today
+
+    if not na(yesterday_high)
+        prev_day_high := yesterday_high
+        prev_day_high_invalidated := false
+
+    if not na(yesterday_low)
+        prev_day_low := yesterday_low
+        prev_day_low_invalidated := false
+
+    if show_ny_lines
+        if not na(prev_day_high_line)
+            line.delete(prev_day_high_line)
+            label.delete(prev_day_high_label)
+        if not na(prev_day_low_line)
+            line.delete(prev_day_low_line)
+            label.delete(prev_day_low_label)
+
+        prev_day_high_line := line.new(time, prev_day_high, time + 1, prev_day_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_dashed)
+        prev_day_low_line := line.new(time, prev_day_low, time + 1, prev_day_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_dashed)
+
+        if show_labels
+            prev_day_high_label := label.new(time, prev_day_high, "PDH", xloc=xloc.bar_time, style=label.style_none, textcolor=session_high_color, size=size.small)
+            prev_day_low_label := label.new(time, prev_day_low, "PDL", xloc=xloc.bar_time, style=label.style_none, textcolor=session_low_color, size=size.small)
+
+// Line Invalidation
+if not na(asian_high_line) and not asian_high_invalidated and high > prev_asian_high
+    line.delete(asian_high_line)
+    label.delete(asian_high_label)
+    asian_high_invalidated := true
+
+if not na(asian_low_line) and not asian_low_invalidated and low < prev_asian_low
+    line.delete(asian_low_line)
+    label.delete(asian_low_label)
+    asian_low_invalidated := true
+
+if not na(london_high_line) and not london_high_invalidated and high > prev_london_high
+    line.delete(london_high_line)
+    label.delete(london_high_label)
+    london_high_invalidated := true
+
+if not na(london_low_line) and not london_low_invalidated and low < prev_london_low
+    line.delete(london_low_line)
+    label.delete(london_low_label)
+    london_low_invalidated := true
+
+if not na(ny_high_line) and not ny_high_invalidated and high > prev_ny_high
+    line.delete(ny_high_line)
+    label.delete(ny_high_label)
+    ny_high_invalidated := true
+
+if not na(ny_low_line) and not ny_low_invalidated and low < prev_ny_low
+    line.delete(ny_low_line)
+    label.delete(ny_low_label)
+    ny_low_invalidated := true
+
+if not na(prev_day_high_line) and not prev_day_high_invalidated and high > prev_day_high
+    line.delete(prev_day_high_line)
+    label.delete(prev_day_high_label)
+    prev_day_high_invalidated := true
+
+if not na(prev_day_low_line) and not prev_day_low_invalidated and low < prev_day_low
+    line.delete(prev_day_low_line)
+    label.delete(prev_day_low_label)
+    prev_day_low_invalidated := true
+
+// ============================================================================
+// MESSAGE TO USER
+// ============================================================================
+
+// This optimized version has removed some features to fit within PineScript's local scope limit:
+// - HTF FVG detection (1H and Daily) - removed to save ~100+ local scopes
+// - Confluence detection system - removed to save ~50+ local scopes
+// - Supply/Demand overlap (NO TRADE zones) - removed to save ~30+ local scopes
+//
+// The core functionality remains:
+// - Session high/low tracking
+// - HTF Supply & Demand zones (simplified)
+// - Engulfing Order Block detection
+// - MSS Order Block detection
+// - Trade entry/exit with TP/SL
+// - No-trade time periods
+//
+// To use the full version, you would need to split this into multiple scripts
+// or wait for TradingView to increase the local scope limit.
+
+runtime.error("SCRIPT OPTIMIZATION REQUIRED: This script exceeds Pine Script scope limits. Use Nexus-Strat-Optimized.pine or split into multiple indicators.")

@@ -1,0 +1,965 @@
+//mach2fx
+//@version=5
+// ============================================================================
+// HTF Sessions, FVG & Supply/Demand Baseline
+// ============================================================================
+// This baseline script includes:
+// - Session tracking (Asian, London, NY) with high/low lines
+// - HTF Fair Value Gaps (1H and Daily)
+// - Williams Fractals (1H)
+// - HTF Supply & Demand zones with fractal-based validation
+// - Optimized performance for real-time execution
+// - Fractal invalidation tracking
+// - Engulfing zone detection
+// ============================================================================
+strategy("HTF Sessions FVG SupplyDemand Baseline", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Session Time Settings (NY Timezone)
+asian_session = input.session("2000-0000", "Asian Session", group="Session Times", tooltip="Default: 8:00 PM - 12:00 AM NY time")
+london_session = input.session("0300-0700", "London Session", group="Session Times", tooltip="Default: 3:00 AM - 7:00 AM NY time")
+ny_session = input.session("0930-1600", "NY Session", group="Session Times", tooltip="Default: 9:30 AM - 4:00 PM NY time")
+
+// Session High/Low Display Settings
+show_asian_lines = input.bool(true, "Show Asian Session Lines", group="Session Lines")
+show_london_lines = input.bool(true, "Show London Session Lines", group="Session Lines")
+show_ny_lines = input.bool(true, "Show NY Session Lines", group="Session Lines")
+show_labels = input.bool(true, "Show Session Labels", group="Session Lines")
+
+// Visual Settings
+session_high_color = input.color(color.new(color.red, 0), "Session High Color", group="Visual")
+session_low_color = input.color(color.new(color.green, 0), "Session Low Color", group="Visual")
+
+// HTF FVG Settings (Higher Timeframe)
+show_htf_fvg_1h = input.bool(true, "Show 1H FVGs", group="HTF Fair Value Gaps")
+show_htf_fvg_daily = input.bool(true, "Show Daily FVGs", group="HTF Fair Value Gaps")
+htf_fvg_color = input.color(color.new(color.yellow, 85), "HTF FVG Color", group="HTF Fair Value Gaps")
+max_htf_fvg_boxes = input.int(20, "Max HTF FVG Boxes", minval=1, maxval=100, group="HTF Fair Value Gaps")
+
+// Fractal Settings
+show_fractals = input.bool(true, "Show Williams Fractals", group="Fractals")
+fractal_up_color = input.color(color.new(color.lime, 0), "Fractal Up Color", group="Fractals")
+fractal_down_color = input.color(color.new(color.red, 0), "Fractal Down Color", group="Fractals")
+
+// HTF Supply & Demand Settings
+show_htf_supply_demand = input.bool(true, "Show HTF Supply & Demand Zones", group="HTF Supply & Demand")
+htf_demand_color = input.color(color.new(color.green, 90), "HTF Demand Zone Color", group="HTF Supply & Demand")
+htf_supply_color = input.color(color.new(color.red, 90), "HTF Supply Zone Color", group="HTF Supply & Demand")
+max_htf_sd_zones = input.int(10, "Max HTF S&D Zones", minval=1, maxval=50, group="HTF Supply & Demand")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+// Asian Session Variables
+var float prev_asian_high = na
+var float prev_asian_low = na
+var int prev_asian_high_time = na
+var int prev_asian_low_time = na
+var line asian_high_line = na
+var line asian_low_line = na
+var label asian_high_label = na
+var label asian_low_label = na
+var bool asian_high_invalidated = false
+var bool asian_low_invalidated = false
+var float current_asian_high = na
+var float current_asian_low = na
+var int current_asian_high_time = na
+var int current_asian_low_time = na
+var bool in_asian_session = false
+
+// London Session Variables
+var float prev_london_high = na
+var float prev_london_low = na
+var int prev_london_high_time = na
+var int prev_london_low_time = na
+var line london_high_line = na
+var line london_low_line = na
+var label london_high_label = na
+var label london_low_label = na
+var bool london_high_invalidated = false
+var bool london_low_invalidated = false
+var float current_london_high = na
+var float current_london_low = na
+var int current_london_high_time = na
+var int current_london_low_time = na
+var bool in_london_session = false
+
+// NY Session Variables
+var float prev_ny_high = na
+var float prev_ny_low = na
+var int prev_ny_high_time = na
+var int prev_ny_low_time = na
+var line ny_high_line = na
+var line ny_low_line = na
+var label ny_high_label = na
+var label ny_low_label = na
+var bool ny_high_invalidated = false
+var bool ny_low_invalidated = false
+var float current_ny_high = na
+var float current_ny_low = na
+var int current_ny_high_time = na
+var int current_ny_low_time = na
+var bool in_ny_session = false
+
+// Track the current day to detect new days
+var int current_day = na
+
+// HTF Supply & Demand Variables
+var array<box> htf_demand_zones = array.new<box>()
+var array<box> htf_supply_zones = array.new<box>()
+
+// Arrays to track fractals for S&D zone creation
+var array<float> fractal_highs = array.new<float>()
+var array<int> fractal_highs_time = array.new<int>()
+var array<float> fractal_highs_low = array.new<float>()  // Low of the fractal candle for zone bottom
+var array<float> fractal_lows = array.new<float>()
+var array<int> fractal_lows_time = array.new<int>()
+var array<float> fractal_lows_high = array.new<float>()  // High of the fractal candle for zone top
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+
+// Check which session we're currently in
+bool is_asian = not na(time(timeframe.period, asian_session, "America/New_York"))
+bool is_london = not na(time(timeframe.period, london_session, "America/New_York"))
+bool is_ny = not na(time(timeframe.period, ny_session, "America/New_York"))
+
+// Detect new day (using NY midnight as the reference)
+int today = dayofweek(time, "America/New_York")
+bool is_new_day = na(current_day) or today != current_day
+
+// ============================================================================
+// ASIAN SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering Asian session
+if is_asian and not in_asian_session
+    in_asian_session := true
+    current_asian_high := high
+    current_asian_low := low
+    current_asian_high_time := time
+    current_asian_low_time := time
+
+// Update Asian session high/low during the session
+if in_asian_session and is_asian
+    if high > current_asian_high
+        current_asian_high := high
+        current_asian_high_time := time
+    if low < current_asian_low
+        current_asian_low := low
+        current_asian_low_time := time
+
+// Exiting Asian session - save as previous and draw lines
+if in_asian_session and not is_asian
+    in_asian_session := false
+    prev_asian_high := current_asian_high
+    prev_asian_low := current_asian_low
+    prev_asian_high_time := current_asian_high_time
+    prev_asian_low_time := current_asian_low_time
+    asian_high_invalidated := false
+    asian_low_invalidated := false
+
+    // Draw Asian session lines immediately
+    if show_asian_lines
+        // Delete old Asian lines if they exist
+        if not na(asian_high_line)
+            line.delete(asian_high_line)
+        if not na(asian_low_line)
+            line.delete(asian_low_line)
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+
+        // Draw new Asian high line
+        if not na(prev_asian_high)
+            asian_high_line := line.new(prev_asian_high_time, prev_asian_high, prev_asian_high_time + 1, prev_asian_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_high_label := label.new(prev_asian_high_time, prev_asian_high, "PAH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new Asian low line
+        if not na(prev_asian_low)
+            asian_low_line := line.new(prev_asian_low_time, prev_asian_low, prev_asian_low_time + 1, prev_asian_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                asian_low_label := label.new(prev_asian_low_time, prev_asian_low, "PAL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+// ============================================================================
+// LONDON SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering London session
+if is_london and not in_london_session
+    in_london_session := true
+    current_london_high := high
+    current_london_low := low
+    current_london_high_time := time
+    current_london_low_time := time
+
+// Update London session high/low during the session
+if in_london_session and is_london
+    if high > current_london_high
+        current_london_high := high
+        current_london_high_time := time
+    if low < current_london_low
+        current_london_low := low
+        current_london_low_time := time
+
+// Exiting London session - save as previous and draw lines
+if in_london_session and not is_london
+    in_london_session := false
+    prev_london_high := current_london_high
+    prev_london_low := current_london_low
+    prev_london_high_time := current_london_high_time
+    prev_london_low_time := current_london_low_time
+    london_high_invalidated := false
+    london_low_invalidated := false
+
+    // Draw London session lines immediately
+    if show_london_lines
+        // Delete old London lines if they exist
+        if not na(london_high_line)
+            line.delete(london_high_line)
+        if not na(london_low_line)
+            line.delete(london_low_line)
+        if not na(london_high_label)
+            label.delete(london_high_label)
+        if not na(london_low_label)
+            label.delete(london_low_label)
+
+        // Draw new London high line
+        if not na(prev_london_high)
+            london_high_line := line.new(prev_london_high_time, prev_london_high, prev_london_high_time + 1, prev_london_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                london_high_label := label.new(prev_london_high_time, prev_london_high, "PLH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new London low line
+        if not na(prev_london_low)
+            london_low_line := line.new(prev_london_low_time, prev_london_low, prev_london_low_time + 1, prev_london_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                london_low_label := label.new(prev_london_low_time, prev_london_low, "PLL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+// ============================================================================
+// NY SESSION HIGH/LOW TRACKING
+// ============================================================================
+
+// Entering NY session
+if is_ny and not in_ny_session
+    in_ny_session := true
+    current_ny_high := high
+    current_ny_low := low
+    current_ny_high_time := time
+    current_ny_low_time := time
+
+// Update NY session high/low during the session
+if in_ny_session and is_ny
+    if high > current_ny_high
+        current_ny_high := high
+        current_ny_high_time := time
+    if low < current_ny_low
+        current_ny_low := low
+        current_ny_low_time := time
+
+// Exiting NY session - save as previous and draw lines
+if in_ny_session and not is_ny
+    in_ny_session := false
+    prev_ny_high := current_ny_high
+    prev_ny_low := current_ny_low
+    prev_ny_high_time := current_ny_high_time
+    prev_ny_low_time := current_ny_low_time
+    ny_high_invalidated := false
+    ny_low_invalidated := false
+
+    // Draw NY session lines immediately
+    if show_ny_lines
+        // Delete old NY lines if they exist
+        if not na(ny_high_line)
+            line.delete(ny_high_line)
+        if not na(ny_low_line)
+            line.delete(ny_low_line)
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+
+        // Draw new NY high line
+        if not na(prev_ny_high)
+            ny_high_line := line.new(prev_ny_high_time, prev_ny_high, prev_ny_high_time + 1, prev_ny_high, xloc=xloc.bar_time, extend=extend.right, color=session_high_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_high_label := label.new(prev_ny_high_time, prev_ny_high, "PDH", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_high_color, size=size.small)
+
+        // Draw new NY low line
+        if not na(prev_ny_low)
+            ny_low_line := line.new(prev_ny_low_time, prev_ny_low, prev_ny_low_time + 1, prev_ny_low, xloc=xloc.bar_time, extend=extend.right, color=session_low_color, width=2, style=line.style_solid)
+            if show_labels
+                ny_low_label := label.new(prev_ny_low_time, prev_ny_low, "PDL", xloc=xloc.bar_time, style=label.style_none, color=color.new(color.white, 100), textcolor=session_low_color, size=size.small)
+
+
+// Update current day tracker
+if is_new_day
+    current_day := today
+
+// ============================================================================
+// LINE INVALIDATION (Remove when price crosses through the level)
+// ============================================================================
+
+// Asian High invalidation - remove when price breaks ABOVE the high
+if not na(asian_high_line) and not asian_high_invalidated and not na(prev_asian_high)
+    if high > prev_asian_high
+        asian_high_invalidated := true
+        line.delete(asian_high_line)
+        asian_high_line := na
+        if not na(asian_high_label)
+            label.delete(asian_high_label)
+            asian_high_label := na
+
+// Asian Low invalidation - remove when price breaks BELOW the low
+if not na(asian_low_line) and not asian_low_invalidated and not na(prev_asian_low)
+    if low < prev_asian_low
+        asian_low_invalidated := true
+        line.delete(asian_low_line)
+        asian_low_line := na
+        if not na(asian_low_label)
+            label.delete(asian_low_label)
+            asian_low_label := na
+
+// London High invalidation - remove when price breaks ABOVE the high
+if not na(london_high_line) and not london_high_invalidated and not na(prev_london_high)
+    if high > prev_london_high
+        london_high_invalidated := true
+        line.delete(london_high_line)
+        london_high_line := na
+        if not na(london_high_label)
+            label.delete(london_high_label)
+            london_high_label := na
+
+// London Low invalidation - remove when price breaks BELOW the low
+if not na(london_low_line) and not london_low_invalidated and not na(prev_london_low)
+    if low < prev_london_low
+        london_low_invalidated := true
+        line.delete(london_low_line)
+        london_low_line := na
+        if not na(london_low_label)
+            label.delete(london_low_label)
+            london_low_label := na
+
+// NY High invalidation - remove when price breaks ABOVE the high
+if not na(ny_high_line) and not ny_high_invalidated and not na(prev_ny_high)
+    if high > prev_ny_high
+        ny_high_invalidated := true
+        line.delete(ny_high_line)
+        ny_high_line := na
+        if not na(ny_high_label)
+            label.delete(ny_high_label)
+            ny_high_label := na
+
+// NY Low invalidation - remove when price breaks BELOW the low
+if not na(ny_low_line) and not ny_low_invalidated and not na(prev_ny_low)
+    if low < prev_ny_low
+        ny_low_invalidated := true
+        line.delete(ny_low_line)
+        ny_low_line := na
+        if not na(ny_low_label)
+            label.delete(ny_low_label)
+            ny_low_label := na
+
+// ============================================================================
+// HTF FAIR VALUE GAP (FVG) DETECTION - HIGHER TIMEFRAMES
+// ============================================================================
+
+// Arrays to store HTF FVG boxes
+var array<box> htf_fvg_1h_boxes = array.new<box>()
+var array<box> htf_fvg_daily_boxes = array.new<box>()
+
+// Track last FVG times to prevent duplicates
+var int last_1h_fvg_time = 0
+var int last_daily_fvg_time = 0
+
+// Get HTF data using request.security - without gaps for better reliability
+// FVG is a 3-candle pattern, so we need candles 0, 1, and 2
+htf_1h_high_0 = request.security(syminfo.tickerid, "60", high, lookahead=barmerge.lookahead_off)
+htf_1h_low_0 = request.security(syminfo.tickerid, "60", low, lookahead=barmerge.lookahead_off)
+htf_1h_time_0 = request.security(syminfo.tickerid, "60", time, lookahead=barmerge.lookahead_off)
+htf_1h_high_1 = request.security(syminfo.tickerid, "60", high[1], lookahead=barmerge.lookahead_off)
+htf_1h_low_1 = request.security(syminfo.tickerid, "60", low[1], lookahead=barmerge.lookahead_off)
+htf_1h_time_1 = request.security(syminfo.tickerid, "60", time[1], lookahead=barmerge.lookahead_off)
+htf_1h_high_2 = request.security(syminfo.tickerid, "60", high[2], lookahead=barmerge.lookahead_off)
+htf_1h_low_2 = request.security(syminfo.tickerid, "60", low[2], lookahead=barmerge.lookahead_off)
+htf_1h_time_2 = request.security(syminfo.tickerid, "60", time[2], lookahead=barmerge.lookahead_off)
+
+htf_daily_high_0 = request.security(syminfo.tickerid, "D", high, lookahead=barmerge.lookahead_off)
+htf_daily_low_0 = request.security(syminfo.tickerid, "D", low, lookahead=barmerge.lookahead_off)
+htf_daily_time_0 = request.security(syminfo.tickerid, "D", time, lookahead=barmerge.lookahead_off)
+htf_daily_high_1 = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+htf_daily_low_1 = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_off)
+htf_daily_time_1 = request.security(syminfo.tickerid, "D", time[1], lookahead=barmerge.lookahead_off)
+htf_daily_high_2 = request.security(syminfo.tickerid, "D", high[2], lookahead=barmerge.lookahead_off)
+htf_daily_low_2 = request.security(syminfo.tickerid, "D", low[2], lookahead=barmerge.lookahead_off)
+htf_daily_time_2 = request.security(syminfo.tickerid, "D", time[2], lookahead=barmerge.lookahead_off)
+
+// Detect when a new HTF bar starts (to prevent duplicates)
+var int last_1h_bar_time = 0
+var int last_daily_bar_time = 0
+bool new_1h_bar = htf_1h_time_0 != last_1h_bar_time
+bool new_daily_bar = htf_daily_time_0 != last_daily_bar_time
+
+if new_1h_bar
+    last_1h_bar_time := htf_1h_time_0
+
+if new_daily_bar
+    last_daily_bar_time := htf_daily_time_0
+
+// Detect 1H HTF FVGs - only when we have valid HTF data and a new 1H bar
+// FVG = 3-candle pattern where candle[2] and candle[0] don't overlap (gap between them)
+if show_htf_fvg_1h and new_1h_bar and not na(htf_1h_high_0) and not na(htf_1h_low_0) and not na(htf_1h_high_2) and not na(htf_1h_low_2) and not na(htf_1h_time_1) and bar_index > 2
+    // Bullish FVG on 1H: candle[2].high < candle[0].low (gap up)
+    if htf_1h_high_2 < htf_1h_low_0
+        // Create box for bullish HTF FVG
+        htf_fvg_top = htf_1h_low_0
+        htf_fvg_bottom = htf_1h_high_2
+        htf_fvg_left = htf_1h_time_1  // Start from the middle candle
+        htf_fvg_right = time + (60 * 60 * 1000 * 50) // Extend 50 hours into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=1, xloc=xloc.bar_time)
+        array.push(htf_fvg_1h_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_1h_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_1h_boxes)
+            box.delete(htf_old_box)
+
+    // Bearish FVG on 1H: candle[2].low > candle[0].high (gap down)
+    if htf_1h_low_2 > htf_1h_high_0
+        // Create box for bearish HTF FVG
+        htf_fvg_top = htf_1h_low_2
+        htf_fvg_bottom = htf_1h_high_0
+        htf_fvg_left = htf_1h_time_1  // Start from the middle candle
+        htf_fvg_right = time + (60 * 60 * 1000 * 50) // Extend 50 hours into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=1, xloc=xloc.bar_time)
+        array.push(htf_fvg_1h_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_1h_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_1h_boxes)
+            box.delete(htf_old_box)
+
+// Detect Daily HTF FVGs - only when we have valid HTF data and a new Daily bar
+// FVG = 3-candle pattern where candle[2] and candle[0] don't overlap (gap between them)
+if show_htf_fvg_daily and new_daily_bar and not na(htf_daily_high_0) and not na(htf_daily_low_0) and not na(htf_daily_high_2) and not na(htf_daily_low_2) and not na(htf_daily_time_1) and bar_index > 2
+    // Bullish FVG on Daily: candle[2].high < candle[0].low (gap up)
+    if htf_daily_high_2 < htf_daily_low_0
+        // Create box for bullish HTF FVG
+        htf_fvg_top = htf_daily_low_0
+        htf_fvg_bottom = htf_daily_high_2
+        htf_fvg_left = htf_daily_time_1  // Start from the middle candle
+        htf_fvg_right = time + (24 * 60 * 60 * 1000 * 30) // Extend 30 days into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=2, xloc=xloc.bar_time)
+        array.push(htf_fvg_daily_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_daily_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_daily_boxes)
+            box.delete(htf_old_box)
+
+    // Bearish FVG on Daily: candle[2].low > candle[0].high (gap down)
+    if htf_daily_low_2 > htf_daily_high_0
+        // Create box for bearish HTF FVG
+        htf_fvg_top = htf_daily_low_2
+        htf_fvg_bottom = htf_daily_high_0
+        htf_fvg_left = htf_daily_time_1  // Start from the middle candle
+        htf_fvg_right = time + (24 * 60 * 60 * 1000 * 30) // Extend 30 days into future
+
+        htf_fvg_box = box.new(htf_fvg_left, htf_fvg_top, htf_fvg_right, htf_fvg_bottom, border_color=color.new(htf_fvg_color, 50), bgcolor=htf_fvg_color, border_width=2, xloc=xloc.bar_time)
+        array.push(htf_fvg_daily_boxes, htf_fvg_box)
+
+        // Manage box limit
+        if array.size(htf_fvg_daily_boxes) > max_htf_fvg_boxes
+            htf_old_box = array.shift(htf_fvg_daily_boxes)
+            box.delete(htf_old_box)
+
+// ============================================================================
+// HTF FVG INVALIDATION - Remove when price moves through them
+// ============================================================================
+
+// Check and remove invalidated 1H FVGs - check on ANY bar (including LTF)
+if array.size(htf_fvg_1h_boxes) > 0
+    for i = array.size(htf_fvg_1h_boxes) - 1 to 0
+        fvg_box = array.get(htf_fvg_1h_boxes, i)
+        box_top = box.get_top(fvg_box)
+        box_bottom = box.get_bottom(fvg_box)
+
+        // Remove FVG when price crosses through to the OTHER SIDE of the gap
+        // For bullish FVG (box_top > box_bottom): remove when price crosses DOWN through the gap (close below bottom)
+        // For bearish FVG (box_bottom > box_top): remove when price crosses UP through the gap (close above bottom which is actually the top)
+        gap_filled = false
+
+        // Bullish FVG (gap up): box_top > box_bottom, remove when close goes below the gap
+        if box_top > box_bottom and close < box_bottom
+            gap_filled := true
+
+        // Bearish FVG (gap down): box_bottom > box_top, remove when close goes above the gap
+        if box_bottom > box_top and close > box_bottom
+            gap_filled := true
+
+        if gap_filled
+            box.delete(fvg_box)
+            array.remove(htf_fvg_1h_boxes, i)
+
+// Check and remove invalidated Daily FVGs - check on ANY bar (including LTF)
+if array.size(htf_fvg_daily_boxes) > 0
+    for i = array.size(htf_fvg_daily_boxes) - 1 to 0
+        fvg_box = array.get(htf_fvg_daily_boxes, i)
+        box_top = box.get_top(fvg_box)
+        box_bottom = box.get_bottom(fvg_box)
+
+        // Remove FVG when price crosses through to the OTHER SIDE of the gap
+        // For bullish FVG (box_top > box_bottom): remove when price crosses DOWN through the gap (close below bottom)
+        // For bearish FVG (box_bottom > box_top): remove when price crosses UP through the gap (close above bottom which is actually the top)
+        gap_filled = false
+
+        // Bullish FVG (gap up): box_top > box_bottom, remove when close goes below the gap
+        if box_top > box_bottom and close < box_bottom
+            gap_filled := true
+
+        // Bearish FVG (gap down): box_bottom > box_top, remove when close goes above the gap
+        if box_bottom > box_top and close > box_bottom
+            gap_filled := true
+
+        if gap_filled
+            box.delete(fvg_box)
+            array.remove(htf_fvg_daily_boxes, i)
+
+// ============================================================================
+// LTF FAIR VALUE GAP (FVG) DETECTION - LOWER TIMEFRAMES
+// (Reserved for future implementation)
+// ============================================================================
+
+// ============================================================================
+// WILLIAMS FRACTALS
+// ============================================================================
+
+// Williams Fractal Up: Middle candle has highest high of 5 candles
+// Williams Fractal Down: Middle candle has lowest low of 5 candles
+
+// Get HTF data for fractals (1H) - use gaps to prevent repainting
+htf_fractal_high_0 = request.security(syminfo.tickerid, "60", high[0], gaps=barmerge.gaps_on)
+htf_fractal_high_1 = request.security(syminfo.tickerid, "60", high[1], gaps=barmerge.gaps_on)
+htf_fractal_high_2 = request.security(syminfo.tickerid, "60", high[2], gaps=barmerge.gaps_on)
+htf_fractal_high_3 = request.security(syminfo.tickerid, "60", high[3], gaps=barmerge.gaps_on)
+htf_fractal_high_4 = request.security(syminfo.tickerid, "60", high[4], gaps=barmerge.gaps_on)
+
+htf_fractal_low_0 = request.security(syminfo.tickerid, "60", low[0], gaps=barmerge.gaps_on)
+htf_fractal_low_1 = request.security(syminfo.tickerid, "60", low[1], gaps=barmerge.gaps_on)
+htf_fractal_low_2 = request.security(syminfo.tickerid, "60", low[2], gaps=barmerge.gaps_on)
+htf_fractal_low_3 = request.security(syminfo.tickerid, "60", low[3], gaps=barmerge.gaps_on)
+htf_fractal_low_4 = request.security(syminfo.tickerid, "60", low[4], gaps=barmerge.gaps_on)
+
+htf_fractal_time_2 = request.security(syminfo.tickerid, "60", time[2], gaps=barmerge.gaps_on)
+
+// Detect Fractal Up on 1H HTF (bullish fractal - potential resistance)
+htf_fractal_up = show_fractals and not na(htf_fractal_high_2) and htf_fractal_high_2 > htf_fractal_high_4 and htf_fractal_high_2 > htf_fractal_high_3 and htf_fractal_high_2 > htf_fractal_high_1 and htf_fractal_high_2 > htf_fractal_high_0
+
+// Detect Fractal Down on 1H HTF (bearish fractal - potential support)
+htf_fractal_down = show_fractals and not na(htf_fractal_low_2) and htf_fractal_low_2 < htf_fractal_low_4 and htf_fractal_low_2 < htf_fractal_low_3 and htf_fractal_low_2 < htf_fractal_low_1 and htf_fractal_low_2 < htf_fractal_low_0
+
+// Store HTF fractals for S&D zone creation
+if htf_fractal_up
+    array.push(fractal_highs, htf_fractal_high_2)
+    array.push(fractal_highs_time, htf_fractal_time_2)
+    array.push(fractal_highs_low, htf_fractal_low_2)
+    // Keep only last 50 fractals
+    if array.size(fractal_highs) > 50
+        array.shift(fractal_highs)
+        array.shift(fractal_highs_time)
+        array.shift(fractal_highs_low)
+
+if htf_fractal_down
+    array.push(fractal_lows, htf_fractal_low_2)
+    array.push(fractal_lows_time, htf_fractal_time_2)
+    array.push(fractal_lows_high, htf_fractal_high_2)
+    // Keep only last 50 fractals
+    if array.size(fractal_lows) > 50
+        array.shift(fractal_lows)
+        array.shift(fractal_lows_time)
+        array.shift(fractal_lows_high)
+
+// Plot fractals with small triangles (use HTF fractals)
+plotshape(htf_fractal_up, title="Fractal Up", style=shape.triangledown, location=location.abovebar, color=fractal_down_color, size=size.tiny, offset=-2)
+plotshape(htf_fractal_down, title="Fractal Down", style=shape.triangleup, location=location.belowbar, color=fractal_up_color, size=size.tiny, offset=-2)
+
+// ============================================================================
+// HTF SUPPLY & DEMAND ZONES
+// ============================================================================
+
+// Get 1H close data for HTF analysis
+htf_1h_close = request.security(syminfo.tickerid, "60", close, lookahead=barmerge.lookahead_off)
+
+// Arrays to track which fractals we've already created zones for
+var array<int> broken_highs = array.new<int>()
+var array<int> broken_lows = array.new<int>()
+
+// Arrays to track which fractals have been invalidated (price closed through them)
+var array<int> invalidated_highs = array.new<int>()
+var array<int> invalidated_lows = array.new<int>()
+
+if show_htf_supply_demand and bar_index > 2
+    // Track fractal invalidations - only on new 1H bar to reduce computation
+    // When a new 1H bar forms, check if price closed through any fractals
+    bool is_new_1h_bar = htf_1h_time_0 != htf_1h_time_0[1]
+
+    if is_new_1h_bar
+        // Check fractal lows: if 1H closes below a fractal low, mark it as invalidated
+        if array.size(fractal_lows) > 0
+            for i = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+                fractal_low_price = array.get(fractal_lows, i)
+                fractal_low_time = array.get(fractal_lows_time, i)
+
+                // Check if this fractal is already marked as invalidated
+                bool already_invalidated = false
+                if array.size(invalidated_lows) > 0
+                    for k = array.size(invalidated_lows) - 1 to math.max(0, array.size(invalidated_lows) - 20)
+                        if array.get(invalidated_lows, k) == fractal_low_time
+                            already_invalidated := true
+                            break
+
+                // If 1H closes below this fractal low and it's not already invalidated, mark it
+                if htf_1h_close < fractal_low_price and not already_invalidated
+                    array.push(invalidated_lows, fractal_low_time)
+                    // Keep only last 50 invalidated fractals
+                    if array.size(invalidated_lows) > 50
+                        array.shift(invalidated_lows)
+
+        // Check fractal highs: if 1H closes above a fractal high, mark it as invalidated
+        if array.size(fractal_highs) > 0
+            for i = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+                fractal_high_price = array.get(fractal_highs, i)
+                fractal_high_time = array.get(fractal_highs_time, i)
+
+                // Check if this fractal is already marked as invalidated
+                bool already_invalidated = false
+                if array.size(invalidated_highs) > 0
+                    for k = array.size(invalidated_highs) - 1 to math.max(0, array.size(invalidated_highs) - 20)
+                        if array.get(invalidated_highs, k) == fractal_high_time
+                            already_invalidated := true
+                            break
+
+                // If 1H closes above this fractal high and it's not already invalidated, mark it
+                if htf_1h_close > fractal_high_price and not already_invalidated
+                    array.push(invalidated_highs, fractal_high_time)
+                    // Keep only last 50 invalidated fractals
+                    if array.size(invalidated_highs) > 50
+                        array.shift(invalidated_highs)
+
+    // DEMAND ZONE: When 1H closes above ANY fractal high (red), mark demand zone
+    // Only check on new 1H bars to reduce computation
+    if is_new_1h_bar and array.size(fractal_highs) >= 1 and array.size(fractal_lows) >= 1
+        // Track if we created a zone this bar to prevent multiple zones
+        bool demand_zone_created = false
+
+        // Loop through recent fractal highs to see if we just broke above any of them
+        // Only check last 20 fractals to improve performance
+        for i = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+            if not demand_zone_created
+                fractal_high_price = array.get(fractal_highs, i)
+                fractal_high_time = array.get(fractal_highs_time, i)
+
+                // Check if we closed above this fractal high AND haven't already created a zone for it
+                bool already_broken = false
+                if array.size(broken_highs) > 0
+                    for k = array.size(broken_highs) - 1 to math.max(0, array.size(broken_highs) - 20)
+                        if array.get(broken_highs, k) == fractal_high_time
+                            already_broken := true
+                            break
+
+                if htf_1h_close > fractal_high_price and not already_broken
+                    // Find the MOST RECENT fractal low (opposite color) that came BEFORE this fractal high was broken
+                    // This defines the height of the demand zone
+                    // We search backwards from the current position to find the last fractal low before the break
+                    bool found_opposite_fractal = false
+                    float demand_level_low = na
+                    int demand_time = na
+
+                    // Loop backwards through recent fractal lows to find the most recent one BEFORE the break
+                    for j = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+                        demand_low_time = array.get(fractal_lows_time, j)
+
+                        // We want a fractal low that came AFTER the fractal high formed, but BEFORE or AT the time of the break
+                        // This ensures we capture the zone at the moment of the break, not waiting for future fractals
+                        if demand_low_time > fractal_high_time
+                            // Check if this fractal low has been invalidated BEFORE the current bar
+                            bool fractal_is_invalidated = false
+                            if array.size(invalidated_lows) > 0
+                                for n = array.size(invalidated_lows) - 1 to math.max(0, array.size(invalidated_lows) - 20)
+                                    if array.get(invalidated_lows, n) == demand_low_time
+                                        fractal_is_invalidated := true
+                                        break
+
+                            // Skip this fractal if it's been invalidated - continue to next one
+                            if fractal_is_invalidated
+                                continue
+
+                            // This is a valid opposite color fractal - use it for zone height
+                            demand_level_low := array.get(fractal_lows, j)
+                            demand_time := demand_low_time
+                            found_opposite_fractal := true
+                            break  // Use the most recent valid fractal low
+
+                    // Only create zone if we found a valid opposite fractal
+                    if found_opposite_fractal and not na(demand_level_low)
+                        // The top of the zone is the fractal high (red) that was just broken
+                        zone_top = fractal_high_price
+                        zone_bottom = demand_level_low
+
+                        // Before creating, check for overlapping or engulfing zones
+                        bool has_overlap = false
+                        if array.size(htf_demand_zones) > 0
+                            for m = array.size(htf_demand_zones) - 1 to 0
+                                existing_box = array.get(htf_demand_zones, m)
+                                existing_top = box.get_top(existing_box)
+                                existing_bottom = box.get_bottom(existing_box)
+
+                                new_zone_height = zone_top - zone_bottom
+                                existing_zone_height = existing_top - existing_bottom
+
+                                // Check if new zone engulfs existing zone (new zone is larger and contains existing)
+                                bool new_engulfs_existing = zone_top >= existing_top and zone_bottom <= existing_bottom and new_zone_height > existing_zone_height
+
+                                // Check if existing zone engulfs new zone (existing is larger and contains new) - skip creating new zone
+                                bool existing_engulfs_new = existing_top >= zone_top and existing_bottom <= zone_bottom and existing_zone_height > new_zone_height
+
+                                if new_engulfs_existing
+                                    // New zone is larger - remove existing and use new
+                                    box.delete(existing_box)
+                                    array.remove(htf_demand_zones, m)
+                                    has_overlap := true
+                                else if existing_engulfs_new
+                                    // Existing zone is larger - don't create new zone
+                                    demand_zone_created := true
+                                    break
+                                else
+                                    // Calculate overlap percentage for partial overlaps
+                                    overlap_top = math.min(zone_top, existing_top)
+                                    overlap_bottom = math.max(zone_bottom, existing_bottom)
+                                    overlap_height = overlap_top - overlap_bottom
+
+                                    if overlap_height > 0 and new_zone_height > 0
+                                        overlap_pct = overlap_height / new_zone_height
+
+                                        // If >90% overlap, remove the older zone and use the new one
+                                        if overlap_pct > 0.90
+                                            box.delete(existing_box)
+                                            array.remove(htf_demand_zones, m)
+                                            has_overlap := true
+
+                        // Only create the zone if we haven't already set the flag (engulfing check didn't skip it)
+                        if not demand_zone_created
+                            // Create demand zone box starting from the fractal high
+                            demand_box = box.new(fractal_high_time, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_demand_color, 50), bgcolor=htf_demand_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_demand_zones, demand_box)
+
+                            // Track that we created a zone for this fractal high
+                            array.push(broken_highs, fractal_high_time)
+                            // Keep only last 50 broken fractals
+                            if array.size(broken_highs) > 50
+                                array.shift(broken_highs)
+
+                            // Manage zone limit (only if we didn't just remove an overlapping zone)
+                            if not has_overlap and array.size(htf_demand_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_demand_zones)
+                                box.delete(old_box)
+
+                            demand_zone_created := true
+
+    // SUPPLY ZONE: When 1H closes below ANY fractal low (green), mark supply zone
+    // Only check on new 1H bars to reduce computation
+    if is_new_1h_bar and array.size(fractal_lows) >= 1 and array.size(fractal_highs) >= 1
+        // Track if we created a zone this bar to prevent multiple zones
+        bool supply_zone_created = false
+
+        // Loop through recent fractal lows to see if we just broke below any of them
+        // Only check last 20 fractals to improve performance
+        for i = array.size(fractal_lows) - 1 to math.max(0, array.size(fractal_lows) - 20)
+            if not supply_zone_created
+                fractal_low_price = array.get(fractal_lows, i)
+                fractal_low_time = array.get(fractal_lows_time, i)
+
+                // Check if we closed below this fractal low AND haven't already created a zone for it
+                bool already_broken = false
+                if array.size(broken_lows) > 0
+                    for k = array.size(broken_lows) - 1 to math.max(0, array.size(broken_lows) - 20)
+                        if array.get(broken_lows, k) == fractal_low_time
+                            already_broken := true
+                            break
+
+                if htf_1h_close < fractal_low_price and not already_broken
+                    // Find the MOST RECENT fractal high (opposite color) that came BEFORE this fractal low was broken
+                    // This defines the height of the supply zone
+                    // We search backwards from the current position to find the last fractal high before the break
+                    bool found_opposite_fractal = false
+                    float supply_level_high = na
+                    int supply_time = na
+
+                    // Loop backwards through recent fractal highs to find the most recent one BEFORE the break
+                    for j = array.size(fractal_highs) - 1 to math.max(0, array.size(fractal_highs) - 20)
+                        supply_high_time = array.get(fractal_highs_time, j)
+
+                        // We want a fractal high that came AFTER the fractal low formed, but BEFORE or AT the time of the break
+                        // This ensures we capture the zone at the moment of the break, not waiting for future fractals
+                        if supply_high_time > fractal_low_time
+                            // Check if this fractal high has been invalidated BEFORE the current bar
+                            bool fractal_is_invalidated = false
+                            if array.size(invalidated_highs) > 0
+                                for n = array.size(invalidated_highs) - 1 to math.max(0, array.size(invalidated_highs) - 20)
+                                    if array.get(invalidated_highs, n) == supply_high_time
+                                        fractal_is_invalidated := true
+                                        break
+
+                            // Skip this fractal if it's been invalidated - continue to next one
+                            if fractal_is_invalidated
+                                continue
+
+                            // This is a valid opposite color fractal - use it for zone height
+                            supply_level_high := array.get(fractal_highs, j)
+                            supply_time := supply_high_time
+                            found_opposite_fractal := true
+                            break  // Use the most recent valid fractal high
+
+                    // Only create zone if we found a valid opposite fractal
+                    if found_opposite_fractal and not na(supply_level_high)
+                        // The bottom of the zone is the fractal low (green) that was just broken
+                        zone_bottom = fractal_low_price
+                        zone_top = supply_level_high
+
+                        // Before creating, check for overlapping or engulfing zones
+                        bool has_overlap = false
+                        if array.size(htf_supply_zones) > 0
+                            for m = array.size(htf_supply_zones) - 1 to 0
+                                existing_box = array.get(htf_supply_zones, m)
+                                existing_top = box.get_top(existing_box)
+                                existing_bottom = box.get_bottom(existing_box)
+
+                                new_zone_height = zone_top - zone_bottom
+                                existing_zone_height = existing_top - existing_bottom
+
+                                // Check if new zone engulfs existing zone (new zone is larger and contains existing)
+                                bool new_engulfs_existing = zone_top >= existing_top and zone_bottom <= existing_bottom and new_zone_height > existing_zone_height
+
+                                // Check if existing zone engulfs new zone (existing is larger and contains new) - skip creating new zone
+                                bool existing_engulfs_new = existing_top >= zone_top and existing_bottom <= zone_bottom and existing_zone_height > new_zone_height
+
+                                if new_engulfs_existing
+                                    // New zone is larger - remove existing and use new
+                                    box.delete(existing_box)
+                                    array.remove(htf_supply_zones, m)
+                                    has_overlap := true
+                                else if existing_engulfs_new
+                                    // Existing zone is larger - don't create new zone
+                                    supply_zone_created := true
+                                    break
+                                else
+                                    // Calculate overlap percentage for partial overlaps
+                                    overlap_top = math.min(zone_top, existing_top)
+                                    overlap_bottom = math.max(zone_bottom, existing_bottom)
+                                    overlap_height = overlap_top - overlap_bottom
+
+                                    if overlap_height > 0 and new_zone_height > 0
+                                        overlap_pct = overlap_height / new_zone_height
+
+                                        // If >90% overlap, remove the older zone and use the new one
+                                        if overlap_pct > 0.90
+                                            box.delete(existing_box)
+                                            array.remove(htf_supply_zones, m)
+                                            has_overlap := true
+
+                        // Only create the zone if we haven't already set the flag (engulfing check didn't skip it)
+                        if not supply_zone_created
+                            // Create supply zone box starting from the fractal low
+                            supply_box = box.new(fractal_low_time, zone_top, time + (60 * 60 * 1000 * 100), zone_bottom, border_color=color.new(htf_supply_color, 50), bgcolor=htf_supply_color, border_width=2, xloc=xloc.bar_time)
+                            array.push(htf_supply_zones, supply_box)
+
+                            // Track that we created a zone for this fractal low
+                            array.push(broken_lows, fractal_low_time)
+                            // Keep only last 50 broken fractals
+                            if array.size(broken_lows) > 50
+                                array.shift(broken_lows)
+
+                            // Manage zone limit (only if we didn't just remove an overlapping zone)
+                            if not has_overlap and array.size(htf_supply_zones) > max_htf_sd_zones
+                                old_box = array.shift(htf_supply_zones)
+                                box.delete(old_box)
+
+                            supply_zone_created := true
+
+// Invalidate S&D zones when price moves through them (using HTF 1H close)
+if array.size(htf_demand_zones) > 0
+    for i = array.size(htf_demand_zones) - 1 to 0
+        zone_box = array.get(htf_demand_zones, i)
+        box_top = box.get_top(zone_box)
+        box_bottom = box.get_bottom(zone_box)
+
+        // Remove demand zone if 1H closes below it
+        if htf_1h_close < box_bottom
+            box.delete(zone_box)
+            array.remove(htf_demand_zones, i)
+
+if array.size(htf_supply_zones) > 0
+    for i = array.size(htf_supply_zones) - 1 to 0
+        zone_box = array.get(htf_supply_zones, i)
+        box_top = box.get_top(zone_box)
+        box_bottom = box.get_bottom(zone_box)
+
+        // Remove supply zone if 1H closes above it
+        if htf_1h_close > box_top
+            box.delete(zone_box)
+            array.remove(htf_supply_zones, i)
+
+// ============================================================================
+// DEBUG TABLE - Show Daily and Session Levels
+// ============================================================================
+
+// Get daily high and low
+daily_high = request.security(syminfo.tickerid, "D", high, lookahead=barmerge.lookahead_off)
+daily_low = request.security(syminfo.tickerid, "D", low, lookahead=barmerge.lookahead_off)
+
+// Create debug table
+var table debug_table = table.new(position.top_right, 2, 7, border_width=1)
+
+// Update table on every bar
+// Header
+table.cell(debug_table, 0, 0, "Level", text_color=color.white, bgcolor=color.new(color.gray, 0), text_size=size.small)
+table.cell(debug_table, 1, 0, "Price", text_color=color.white, bgcolor=color.new(color.gray, 0), text_size=size.small)
+
+// Daily High/Low
+table.cell(debug_table, 0, 1, "Daily High", text_color=color.white, bgcolor=color.new(color.blue, 20), text_size=size.small)
+table.cell(debug_table, 1, 1, str.tostring(daily_high, format.mintick), text_color=color.white, bgcolor=color.new(color.blue, 20), text_size=size.small)
+
+table.cell(debug_table, 0, 2, "Daily Low", text_color=color.white, bgcolor=color.new(color.blue, 20), text_size=size.small)
+table.cell(debug_table, 1, 2, str.tostring(daily_low, format.mintick), text_color=color.white, bgcolor=color.new(color.blue, 20), text_size=size.small)
+
+// Asian Session High/Low
+asian_high_text = asian_high_invalidated ? "̶A̶s̶i̶a̶n̶ ̶H̶i̶g̶h̶" : "Asian High"
+asian_high_text_color = asian_high_invalidated ? color.new(color.gray, 30) : color.white
+table.cell(debug_table, 0, 3, asian_high_text, text_color=asian_high_text_color, bgcolor=color.new(color.red, 20), text_size=size.small)
+table.cell(debug_table, 1, 3, na(prev_asian_high) ? "N/A" : str.tostring(prev_asian_high, format.mintick), text_color=asian_high_text_color, bgcolor=color.new(color.red, 20), text_size=size.small)
+
+asian_low_text = asian_low_invalidated ? "̶A̶s̶i̶a̶n̶ ̶L̶o̶w̶" : "Asian Low"
+asian_low_text_color = asian_low_invalidated ? color.new(color.gray, 30) : color.white
+table.cell(debug_table, 0, 4, asian_low_text, text_color=asian_low_text_color, bgcolor=color.new(color.green, 20), text_size=size.small)
+table.cell(debug_table, 1, 4, na(prev_asian_low) ? "N/A" : str.tostring(prev_asian_low, format.mintick), text_color=asian_low_text_color, bgcolor=color.new(color.green, 20), text_size=size.small)
+
+// London Session High/Low
+london_high_text = london_high_invalidated ? "̶L̶o̶n̶d̶o̶n̶ ̶H̶i̶g̶h̶" : "London High"
+london_high_text_color = london_high_invalidated ? color.new(color.gray, 30) : color.white
+table.cell(debug_table, 0, 5, london_high_text, text_color=london_high_text_color, bgcolor=color.new(color.red, 20), text_size=size.small)
+table.cell(debug_table, 1, 5, na(prev_london_high) ? "N/A" : str.tostring(prev_london_high, format.mintick), text_color=london_high_text_color, bgcolor=color.new(color.red, 20), text_size=size.small)
+
+london_low_text = london_low_invalidated ? "̶L̶o̶n̶d̶o̶n̶ ̶L̶o̶w̶" : "London Low"
+london_low_text_color = london_low_invalidated ? color.new(color.gray, 30) : color.white
+table.cell(debug_table, 0, 6, london_low_text, text_color=london_low_text_color, bgcolor=color.new(color.green, 20), text_size=size.small)
+table.cell(debug_table, 1, 6, na(prev_london_low) ? "N/A" : str.tostring(prev_london_low, format.mintick), text_color=london_low_text_color, bgcolor=color.new(color.green, 20), text_size=size.small)
