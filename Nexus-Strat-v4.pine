@@ -508,7 +508,8 @@ if bearish_eng_ob_active and not manual_supply_active
 // Track deepest penetration and check for invalidation when in AOI but no OB yet
 if manual_demand_active and demand_zone_configured and not bullish_eng_ob_active
     // Price is in demand zone - track deepest low
-    bool in_zone = low <= manual_demand_top and high >= manual_demand_bottom
+    // Price is IN zone when bar overlaps (not completely above or below)
+    bool in_zone = not (low > manual_demand_top or high < manual_demand_bottom)
     if in_zone
         if na(bullish_deepest_low) or low < bullish_deepest_low
             bullish_deepest_low := low
@@ -519,7 +520,8 @@ if manual_demand_active and demand_zone_configured and not bullish_eng_ob_active
 
 if manual_supply_active and supply_zone_configured and not bearish_eng_ob_active
     // Price is in supply zone - track deepest high
-    bool in_zone = low <= manual_supply_top and high >= manual_supply_bottom
+    // Price is IN zone when bar overlaps (not completely above or below)
+    bool in_zone = not (low > manual_supply_top or high < manual_supply_bottom)
     if in_zone
         if na(bearish_deepest_high) or high > bearish_deepest_high
             bearish_deepest_high := high
@@ -537,9 +539,9 @@ if barstate.isconfirmed and not bullish_eng_ob_active and not bearish_eng_ob_act
 
     // Check manual demand zone
     if is_bullish_engulfing and manual_demand_active and demand_zone_configured
-        // Engulfing or engulfee must touch the zone
-        bool current_touches = low <= manual_demand_top and high >= manual_demand_bottom
-        bool previous_touches = low[1] <= manual_demand_top and high[1] >= manual_demand_bottom
+        // Engulfing or engulfee must touch the zone (bar overlaps with zone)
+        bool current_touches = not (low > manual_demand_top or high < manual_demand_bottom)
+        bool previous_touches = not (low[1] > manual_demand_top or high[1] < manual_demand_bottom)
 
         if current_touches or previous_touches
             // One of the 2 candles must be the deepest in the zone
@@ -564,9 +566,9 @@ if barstate.isconfirmed and not bullish_eng_ob_active and not bearish_eng_ob_act
 
     // Check manual supply zone
     if is_bearish_engulfing and manual_supply_active and supply_zone_configured
-        // Engulfing or engulfee must touch the zone
-        bool current_touches = low <= manual_supply_top and high >= manual_supply_bottom
-        bool previous_touches = low[1] <= manual_supply_top and high[1] >= manual_supply_bottom
+        // Engulfing or engulfee must touch the zone (bar overlaps with zone)
+        bool current_touches = not (low > manual_supply_top or high < manual_supply_bottom)
+        bool previous_touches = not (low[1] > manual_supply_top or high[1] < manual_supply_bottom)
 
         if current_touches or previous_touches
             // One of the 2 candles must be the deepest in the zone
@@ -595,17 +597,22 @@ if bearish_eng_ob_active and not na(bearish_ob_box)
 if bullish_eng_ob_active
     bool invalidate = false
 
+    // Check if price is currently in the demand zone
+    // Price is IN the zone when bar overlaps with zone range (not completely above or below)
+    // OUT when: entire bar above zone (low > top) OR entire bar below zone (high < bottom)
+    bool price_in_demand_zone = demand_zone_configured and not (low > manual_demand_top or high < manual_demand_bottom)
+
     // Rule 1: Price closes through the OB
     if close < bullish_ob_bottom
         invalidate := true
 
     // Rule 2: Price goes deeper into the zone after OB formed
-    if manual_demand_active and demand_zone_configured
+    if price_in_demand_zone
         if low < bullish_deepest_low
             invalidate := true
 
-    // Rule 3: Price exits AOI without staying in zone
-    if not manual_demand_active
+    // Rule 3: Price exits AOI/zone
+    if not price_in_demand_zone or not manual_demand_active or not demand_zone_configured
         invalidate := true
 
     if invalidate
@@ -624,17 +631,22 @@ if bullish_eng_ob_active
 if bearish_eng_ob_active
     bool invalidate = false
 
+    // Check if price is currently in the supply zone
+    // Price is IN the zone when bar overlaps with zone range (not completely above or below)
+    // OUT when: entire bar above zone (low > top) OR entire bar below zone (high < bottom)
+    bool price_in_supply_zone = supply_zone_configured and not (low > manual_supply_top or high < manual_supply_bottom)
+
     // Rule 1: Price closes through the OB
     if close > bearish_ob_top
         invalidate := true
 
     // Rule 2: Price goes deeper into the zone after OB formed
-    if manual_supply_active and supply_zone_configured
+    if price_in_supply_zone
         if high > bearish_deepest_high
             invalidate := true
 
-    // Rule 3: Price exits AOI without staying in zone
-    if not manual_supply_active
+    // Rule 3: Price exits AOI/zone
+    if not price_in_supply_zone or not manual_supply_active or not supply_zone_configured
         invalidate := true
 
     if invalidate
