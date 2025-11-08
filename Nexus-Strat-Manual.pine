@@ -37,6 +37,15 @@ var float supply_highest_high = na
 // Track if we're completely outside both zones (ready to reset)
 var bool was_outside_zones = true
 
+// Track if ENG OB is active (declare early so it can be used in zone logic)
+var bool eng_ob_active = false
+var bool eng_ob_is_bullish = false
+var float eng_ob_deepest_level = na
+var float target_fractal_level = na
+var int eng_ob_bar_index = na
+var float eng_ob_candle_high = na
+var float eng_ob_candle_low = na
+
 // Check if currently outside both zones
 bool outside_both_zones = not in_supply and not in_demand
 
@@ -126,17 +135,6 @@ if supply_triggered and bar_index > 0
     is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
-
-// Track if ENG OB is active (stays active until invalidated)
-var bool eng_ob_active = false
-var bool eng_ob_is_bullish = false
-var float eng_ob_deepest_level = na  // Track the deepest level when ENG OB formed
-var float target_fractal_level = na   // Track the target fractal level for MSS OB
-
-// Track the specific ENG OB candle for invalidation (which candle in the 2-candle pattern is the OB)
-var int eng_ob_bar_index = na
-var float eng_ob_candle_high = na
-var float eng_ob_candle_low = na
 
 // INVALIDATION: Clear setup when zones are disabled
 if clear_supply or clear_demand
