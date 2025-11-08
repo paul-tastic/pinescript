@@ -48,7 +48,8 @@ if barstate.isnew
         demand_triggered := false
 
     // Track when we're outside both zones
-    if outside_both_zones
+    // Only set was_outside_zones if there's NO active ENG OB setup
+    if outside_both_zones and not eng_ob_active
         was_outside_zones := true
 
 if in_supply
