@@ -206,10 +206,11 @@ else if is_bearish_engulfing
         eng_ob_candle_low := low[1]
 
 // INVALIDATION: Price goes deeper into zone than ENG OB candle (before MSS OB is crossed)
+// Only invalidate if price is IN the zone and goes deeper than the OB candle
 // TODO: Once MSS OB crossing detection is implemented, add condition to stop invalidation after cross
 if eng_ob_active
-    if eng_ob_is_bullish and not na(eng_ob_candle_low)
-        // Bullish setup invalidated if price makes new lower low than ENG OB candle's low
+    if eng_ob_is_bullish and demand_triggered and not na(eng_ob_candle_low)
+        // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
         if low < eng_ob_candle_low
             eng_ob_active := false
             eng_ob_is_bullish := false
@@ -218,8 +219,8 @@ if eng_ob_active
             eng_ob_candle_high := na
             eng_ob_candle_low := na
             target_fractal_level := na
-    else if not eng_ob_is_bullish and not na(eng_ob_candle_high)
-        // Bearish setup invalidated if price makes new higher high than ENG OB candle's high
+    else if not eng_ob_is_bullish and supply_triggered and not na(eng_ob_candle_high)
+        // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
         if high > eng_ob_candle_high
             eng_ob_active := false
             eng_ob_is_bullish := false
@@ -332,8 +333,12 @@ table.cell(debugTable, 1, 2, "-", text_color=color.white, bgcolor=value_bgcolor,
 
 // Fractal Level - show target price for MSS OB (only when setup is active)
 string fractal_level = "-"
-if eng_ob_active and not na(target_fractal_level)
-    fractal_level := str.tostring(target_fractal_level, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
+if eng_ob_active
+    if not na(target_fractal_level)
+        fractal_level := str.tostring(target_fractal_level, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
+    else
+        // Show "SEARCHING" if we have an active ENG OB but no fractal yet
+        fractal_level := "SEARCHING"
 table.cell(debugTable, 0, 3, "Fractal Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 3, fractal_level, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
