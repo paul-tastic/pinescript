@@ -1,0 +1,319 @@
+if enable_superman
+    // Reset signals
+    buy_signal := false
+    sell_signal := false
+
+    // ========================================================================
+    // DEMAND ZONE SETUP (LONG) - Buy Setup
+    // ========================================================================
+
+    // STEP 1: Enter demand zone (Hurdle #1)
+    if current_in_demand and not in_demand_zone
+        in_demand_zone := true
+        active_zone_idx := current_demand_idx
+        // Reset all setup variables
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        if not na(sandwich_line)
+            line.delete(sandwich_line)
+            sandwich_line := na
+        if not na(entry_box)
+            box.delete(entry_box)
+            entry_box := na
+
+    // STEP 2: Track point candle (deepest candle in zone - lowest low)
+    // If price closes in zone and goes deeper, update point candle
+    if in_demand_zone and current_in_demand and active_zone_idx >= 0 and active_zone_idx < array.size(demand_zones)
+        zone_bottom_check = box.get_bottom(array.get(demand_zones, active_zone_idx))
+        zone_top_check = box.get_top(array.get(demand_zones, active_zone_idx))
+        if close >= zone_bottom_check and close <= zone_top_check
+            // Update point candle if this is deeper in the zone (lower low)
+            if na(point_candle_low) or low < point_candle_low
+                point_candle_open := open
+                point_candle_close := close
+                point_candle_high := high
+                point_candle_low := low
+                point_candle_bar := bar_index
+
+                // Reset sandwich if price went deeper
+                if not na(sandwich_high)
+                    sandwich_high := na
+                    sandwich_low := na
+                    sandwich_bar := na
+                    if not na(sandwich_line)
+                        line.delete(sandwich_line)
+                        sandwich_line := na
+
+    // STEP 2a: Find closest stick sandwich pattern after point candle
+    // Sandwich = bullish candle where high is above previous candle's high
+    if in_demand_zone and not na(point_candle_low) and na(sandwich_high) and not sandwich_breached
+        // Check if price has moved away from point candle
+        if bar_index > point_candle_bar
+            // Look for bullish candle (close > open) that forms a sandwich
+            is_bullish = close > open
+            if is_bullish and bar_index > 0
+                // Check if this candle's high is higher than previous candle's high (sandwich pattern)
+                if high > high[1]
+                    sandwich_high := high
+                    sandwich_low := low
+                    sandwich_bar := bar_index
+
+                    // Draw sandwich line at the high (this is the level to breach)
+                    if not na(sandwich_line)
+                        line.delete(sandwich_line)
+                    sandwich_line := line.new(time, sandwich_high, time, sandwich_high, xloc=xloc.bar_time, extend=extend.right, color=sandwich_line_color, width=2, style=line.style_solid)
+                    array.push(all_sandwich_lines, sandwich_line)
+
+                    // Keep only last 100 lines
+                    if array.size(all_sandwich_lines) > 100
+                        old_line = array.shift(all_sandwich_lines)
+                        line.delete(old_line)
+
+    // STEP 3: Check if price closes above sandwich line
+    if in_demand_zone and not na(sandwich_high) and not sandwich_breached and close > sandwich_high
+        sandwich_breached := true
+        waiting_for_entry := true
+
+        // Draw entry box around point candle's BODY (open to close)
+        body_top = math.max(point_candle_open, point_candle_close)
+        body_bottom = math.min(point_candle_open, point_candle_close)
+
+        if not na(entry_box)
+            box.delete(entry_box)
+        point_candle_time = time[bar_index - point_candle_bar]
+        entry_box := box.new(point_candle_time, body_top, time, body_bottom, xloc=xloc.bar_time, extend=extend.right, border_color=point_candle_color, bgcolor=point_candle_color, border_width=2, border_style=line.style_solid)
+        array.push(all_entry_boxes, entry_box)
+
+        // Keep only last 100 boxes
+        if array.size(all_entry_boxes) > 100
+            old_box = array.shift(all_entry_boxes)
+            box.delete(old_box)
+
+        // Calculate trade levels
+        entry_price := body_top  // Entry at top of body
+        stop_loss := body_bottom - (stop_loss_ticks * syminfo.mintick)  // SL 2 ticks below entry zone
+        risk = entry_price - stop_loss
+        take_profit := entry_price + (risk * risk_reward_ratio)  // TP at 2:1 RR
+
+    // STEP 4: Check for entry signal (buy when price enters point candle body)
+    if waiting_for_entry and not na(entry_price)
+        body_top = math.max(point_candle_open, point_candle_close)
+        body_bottom = math.min(point_candle_open, point_candle_close)
+
+        if low <= body_top and high >= body_bottom
+            buy_signal := true
+            if show_hurdles
+                signal_label := label.new(bar_index, low, "BUY",
+                                         style=label.style_label_up,
+                                         color=color.new(color.green, 0),
+                                         textcolor=color.white, size=size.normal)
+                array.push(all_labels, signal_label)
+
+                // Keep only last 100 labels
+                if array.size(all_labels) > 100
+                    old_label = array.shift(all_labels)
+                    label.delete(old_label)
+
+            // Draw SL and TP lines
+            sl_line = line.new(time, stop_loss, time, stop_loss, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=1, style=line.style_dashed)
+            tp_line = line.new(time, take_profit, time, take_profit, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=1, style=line.style_dashed)
+            array.push(all_sl_lines, sl_line)
+            array.push(all_tp_lines, tp_line)
+
+            // Keep only last 100 lines
+            if array.size(all_sl_lines) > 100
+                old_sl = array.shift(all_sl_lines)
+                line.delete(old_sl)
+            if array.size(all_tp_lines) > 100
+                old_tp = array.shift(all_tp_lines)
+                line.delete(old_tp)
+
+            // Reset setup after signal
+            in_demand_zone := false
+            waiting_for_entry := false
+
+    // Invalidate if price exits zone on low side
+    if in_demand_zone and not current_in_demand and active_zone_idx >= 0 and active_zone_idx < array.size(demand_zones)
+        zone_bottom = box.get_bottom(array.get(demand_zones, active_zone_idx))
+        if close < zone_bottom
+            // Exited on the low side - invalidate setup
+            in_demand_zone := false
+            point_candle_open := na
+            point_candle_close := na
+            point_candle_high := na
+            point_candle_low := na
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_breached := false
+            waiting_for_entry := false
+            if not na(sandwich_line)
+                line.delete(sandwich_line)
+                sandwich_line := na
+            if not na(entry_box)
+                box.delete(entry_box)
+                entry_box := na
+
+    // ========================================================================
+    // SUPPLY ZONE SETUP (SHORT) - Sell Setup
+    // ========================================================================
+
+    // STEP 1: Enter supply zone (Hurdle #1)
+    if current_in_supply and not in_supply_zone
+        in_supply_zone := true
+        active_zone_idx := current_supply_idx
+        // Reset all setup variables
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        if not na(sandwich_line)
+            line.delete(sandwich_line)
+            sandwich_line := na
+        if not na(entry_box)
+            box.delete(entry_box)
+            entry_box := na
+
+    // STEP 2: Track point candle (deepest candle in zone - highest high)
+    if in_supply_zone and current_in_supply and active_zone_idx >= 0 and active_zone_idx < array.size(supply_zones)
+        zone_bottom_check = box.get_bottom(array.get(supply_zones, active_zone_idx))
+        zone_top_check = box.get_top(array.get(supply_zones, active_zone_idx))
+        if close >= zone_bottom_check and close <= zone_top_check
+            // Update point candle if this is deeper in the zone (higher high)
+            if na(point_candle_high) or high > point_candle_high
+                point_candle_open := open
+                point_candle_close := close
+                point_candle_high := high
+                point_candle_low := low
+                point_candle_bar := bar_index
+
+                // Reset sandwich if price went deeper
+                if not na(sandwich_low)
+                    sandwich_high := na
+                    sandwich_low := na
+                    sandwich_bar := na
+                    if not na(sandwich_line)
+                        line.delete(sandwich_line)
+                        sandwich_line := na
+
+    // STEP 2a: Find closest stick sandwich pattern after point candle
+    // Sandwich = bearish candle where low is below previous candle's low
+    if in_supply_zone and not na(point_candle_high) and na(sandwich_low) and not sandwich_breached
+        // Check if price has moved away from point candle
+        if bar_index > point_candle_bar
+            // Look for bearish candle (close < open) that forms a sandwich
+            is_bearish = close < open
+            if is_bearish and bar_index > 0
+                // Check if this candle's low is lower than previous candle's low (sandwich pattern)
+                if low < low[1]
+                    sandwich_high := high
+                    sandwich_low := low
+                    sandwich_bar := bar_index
+
+                    // Draw sandwich line at the low (this is the level to breach)
+                    if not na(sandwich_line)
+                        line.delete(sandwich_line)
+                    sandwich_line := line.new(time, sandwich_low, time, sandwich_low, xloc=xloc.bar_time, extend=extend.right, color=sandwich_line_color, width=2, style=line.style_solid)
+                    array.push(all_sandwich_lines, sandwich_line)
+
+                    // Keep only last 100 lines
+                    if array.size(all_sandwich_lines) > 100
+                        old_line = array.shift(all_sandwich_lines)
+                        line.delete(old_line)
+
+    // STEP 3: Check if price closes below sandwich line
+    if in_supply_zone and not na(sandwich_low) and not sandwich_breached and close < sandwich_low
+        sandwich_breached := true
+        waiting_for_entry := true
+
+        // Draw entry box around point candle's BODY (open to close)
+        body_top = math.max(point_candle_open, point_candle_close)
+        body_bottom = math.min(point_candle_open, point_candle_close)
+
+        if not na(entry_box)
+            box.delete(entry_box)
+        point_candle_time = time[bar_index - point_candle_bar]
+        entry_box := box.new(point_candle_time, body_top, time, body_bottom, xloc=xloc.bar_time, extend=extend.right, border_color=point_candle_color, bgcolor=point_candle_color, border_width=2, border_style=line.style_solid)
+        array.push(all_entry_boxes, entry_box)
+
+        // Keep only last 100 boxes
+        if array.size(all_entry_boxes) > 100
+            old_box = array.shift(all_entry_boxes)
+            box.delete(old_box)
+
+        // Calculate trade levels
+        entry_price := body_bottom  // Entry at bottom of body
+        stop_loss := body_top + (stop_loss_ticks * syminfo.mintick)  // SL 2 ticks above entry zone
+        risk = stop_loss - entry_price
+        take_profit := entry_price - (risk * risk_reward_ratio)  // TP at 2:1 RR
+
+    // STEP 4: Check for entry signal (sell when price enters point candle body)
+    if waiting_for_entry and not na(entry_price)
+        body_top = math.max(point_candle_open, point_candle_close)
+        body_bottom = math.min(point_candle_open, point_candle_close)
+
+        if low <= body_top and high >= body_bottom
+            sell_signal := true
+            if show_hurdles
+                signal_label := label.new(bar_index, high, "SELL",
+                                         style=label.style_label_down,
+                                         color=color.new(color.red, 0),
+                                         textcolor=color.white, size=size.normal)
+                array.push(all_labels, signal_label)
+
+                // Keep only last 100 labels
+                if array.size(all_labels) > 100
+                    old_label = array.shift(all_labels)
+                    label.delete(old_label)
+
+            // Draw SL and TP lines
+            sl_line = line.new(time, stop_loss, time, stop_loss, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=1, style=line.style_dashed)
+            tp_line = line.new(time, take_profit, time, take_profit, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=1, style=line.style_dashed)
+            array.push(all_sl_lines, sl_line)
+            array.push(all_tp_lines, tp_line)
+
+            // Keep only last 100 lines
+            if array.size(all_sl_lines) > 100
+                old_sl = array.shift(all_sl_lines)
+                line.delete(old_sl)
+            if array.size(all_tp_lines) > 100
+                old_tp = array.shift(all_tp_lines)
+                line.delete(old_tp)
+
+            // Reset setup after signal
+            in_supply_zone := false
+            waiting_for_entry := false
+
+    // Invalidate if price exits zone on high side
+    if in_supply_zone and not current_in_supply and active_zone_idx >= 0 and active_zone_idx < array.size(supply_zones)
+        zone_top = box.get_top(array.get(supply_zones, active_zone_idx))
+        if close > zone_top
+            // Exited on the high side - invalidate setup
+            in_supply_zone := false
+            point_candle_open := na
+            point_candle_close := na
+            point_candle_high := na
+            point_candle_low := na
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_breached := false
+            waiting_for_entry := false
+            if not na(sandwich_line)
+                line.delete(sandwich_line)
+                sandwich_line := na
+            if not na(entry_box)
+                box.delete(entry_box)
+                entry_box := na

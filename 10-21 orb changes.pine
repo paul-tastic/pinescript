@@ -1,0 +1,758 @@
+//@version=5
+strategy("ORB + Fib elevated 10-21", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+orb_minutes = input.int(30, "Opening Range Duration (minutes)", minval=5, maxval=60, step=5)
+show_debug = input.bool(true, "Show Debug Table")
+
+use_ny_session = input.bool(true, "Trade NY Session (9:30 AM ET)", group="Trading Sessions")
+use_asian_session = input.bool(false, "Trade Asian Session (6:00 PM ET)", group="Trading Sessions")
+use_london_session = input.bool(false, "Trade London Session (3:00 AM ET)", group="Trading Sessions")
+
+rsi_length = input.int(14, "RSI Length", group="Indicators")
+rsi_ob_level = input.int(65, "RSI Overbought", minval=50, maxval=90, group="Indicators")
+rsi_os_level = input.int(35, "RSI Oversold", minval=10, maxval=50, group="Indicators")
+
+stoch_k = input.int(14, "Stochastic K", group="Indicators")
+stoch_d = input.int(3, "Stochastic D", group="Indicators")
+stoch_ob_level = input.int(70, "Stoch Overbought", minval=50, maxval=100, group="Indicators")
+stoch_os_level = input.int(30, "Stoch Oversold", minval=0, maxval=50, group="Indicators")
+
+macd_fast = input.int(12, "MACD Fast", group="Indicators")
+macd_slow = input.int(26, "MACD Slow", group="Indicators")
+macd_signal = input.int(9, "MACD Signal", group="Indicators")
+macd_mode = input.string("Histogram Momentum Shift", "MACD Detection Mode", options=["Crossover", "Histogram Momentum Shift", "Zero Line + Histogram", "Slope Change", "Double Confirmation", "Extreme + Reversal"], group="Indicators")
+
+entry_mode = input.string("Price Action Only", "Entry Signal Mode", options=["RSI Only", "Stoch Only", "RSI or Stoch", "RSI and Stoch", "MACD", "Stoch and MACD", "Stoch or MACD", "Price Action Only"], group="Entry Rules")
+entry_zone_strategy = input.string("Retracement Zone (50-61.8%)", "Entry Zone Strategy", options=["Retracement Zone (50-61.8%)", "ORB Zone (Anywhere)", "Both"], group="Entry Rules")
+
+use_rsi_filter = input.bool(false, "Use RSI Filter (Strict)", group="Entry Rules")
+use_momentum_filter = input.bool(false, "Use Momentum Filter", group="Entry Rules")
+require_higher_low = input.bool(false, "Require Higher Low/Lower High", group="Entry Rules")
+atr_period = input.int(14, "ATR Period", group="Entry Rules")
+
+use_time_decay = input.bool(false, "Use Time Decay Filter (First 90 min only)", group="Advanced Filters")
+use_volume_confirmation = input.bool(false, "Use Volume Confirmation", group="Advanced Filters")
+use_tight_fib_zone = input.bool(false, "Use Tight Fib Zone (55-65%)", group="Advanced Filters")
+
+// MTF Trend Confirmation
+use_mtf_trend = input.bool(false, "Use Lower Timeframe Trend Confirmation", group="Advanced Filters", tooltip="Require trend alignment on lower timeframe before entry")
+mtf_timeframe = input.timeframe("1", "Lower Timeframe for Trend", group="Advanced Filters", tooltip="Select lower timeframe for trend analysis")
+mtf_ema_fast = input.int(9, "MTF Fast EMA", minval=1, group="Advanced Filters")
+mtf_ema_slow = input.int(21, "MTF Slow EMA", minval=1, group="Advanced Filters")
+
+// Enhanced Reversal Detection (for ORB-wide entries)
+reversal_strength = input.string("Standard", "Reversal Strength Required", options=["Standard", "Strong", "Very Strong", "Extreme"], group="Advanced Filters", tooltip="Higher strength = fewer but higher quality trades")
+use_multi_bar_confirmation = input.bool(false, "Require 2-Bar Reversal Confirmation", group="Advanced Filters", tooltip="Wait for 2nd confirming candle")
+use_volume_surge = input.bool(false, "Require Volume Surge on Reversal", group="Advanced Filters", tooltip="Volume must be above average")
+volume_surge_multiplier = input.float(1.3, "Volume Surge Multiplier", minval=1.0, maxval=3.0, step=0.1, group="Advanced Filters")
+use_price_structure = input.bool(false, "Require Price Structure (HL/LH)", group="Advanced Filters", tooltip="Look for higher lows (long) or lower highs (short)")
+structure_lookback = input.int(3, "Structure Lookback Bars", minval=2, maxval=10, group="Advanced Filters")
+
+risk_amount = input.float(500, "Risk Per Trade ($)", minval=1, step=50, group="Risk Management")
+use_position_sizing = input.bool(true, "Use Position Sizing", group="Risk Management")
+risk_reward_ratio = input.float(2.0, "Risk:Reward Ratio", minval=0.5, maxval=10, step=0.5, group="Risk Management")
+stop_type = input.string("Auto (Tightest)", "Stop Loss Type", options=["Auto (Tightest)", "Swing Hi/Lo", "Opposite ORB", "Opposite ORB + 2 Tick", "ATR Multiplier"], group="Risk Management")
+atr_stop_multiplier = input.float(1.5, "ATR Stop Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Risk Management")
+
+var float orb_high = na
+var float orb_low = na
+var bool orb_complete = false
+var box orb_box = na
+var string breakout_direction = na
+var bool in_trade = false
+var string setup_stage = "Waiting"
+var bool trade_completed = false
+var string current_session = na
+
+var float fib_0 = na
+var float fib_50 = na
+var float fib_618 = na
+var float fib_786 = na
+var float fib_100 = na
+
+var line fib_line_0 = na
+var line fib_line_50 = na
+var line fib_618_line = na
+var line fib_786_line = na
+var line fib_100_line = na
+var box entry_zone_box = na
+
+var line orb_high_line = na
+var line orb_low_line = na
+var line entry_line = na
+var line stop_line = na
+var line tp_line = na
+var label trade_label = na
+
+var float entry_price = na
+var float stop_loss = na
+var float take_profit = na
+var float position_size = na
+
+var int orb_start_time = na
+var bool in_orb = false
+var bool zone_visited = false
+
+get_et_hour() => hour(time, "America/New_York")
+get_et_minute() => minute(time, "America/New_York")
+
+is_session_start() =>
+    bool is_start = false
+    string session_name = na
+    ch = get_et_hour()
+    cm = get_et_minute()
+    ph = get_et_hour()[1]
+    pm = get_et_minute()[1]
+    
+    if use_ny_session
+        if ch == 9 and cm == 30 and not (ph == 9 and pm == 30)
+            is_start := true
+            session_name := "NY"
+    
+    if use_asian_session and not is_start
+        if ch == 18 and cm == 0 and not (ph == 18 and pm == 0)
+            is_start := true
+            session_name := "Asian"
+    
+    if use_london_session and not is_start
+        if ch == 3 and cm == 0 and not (ph == 3 and pm == 0)
+            is_start := true
+            session_name := "London"
+    
+    [is_start, session_name]
+
+[session_started, session_name] = is_session_start()
+
+if session_started
+    orb_start_time := time
+    in_orb := true
+    current_session := session_name
+
+is_in_orb_period() =>
+    bool result = false
+    if not na(orb_start_time) and in_orb
+        time_diff = (time - orb_start_time) / 60000
+        result := time_diff >= 0 and time_diff < orb_minutes
+    result
+
+if in_orb and not na(orb_start_time)
+    time_diff = (time - orb_start_time) / 60000
+    if time_diff >= orb_minutes
+        in_orb := false
+
+is_end_of_session() =>
+    ch = get_et_hour()
+    bool result = false
+    if current_session == "NY"
+        result := ch >= 16
+    else if current_session == "Asian"
+        result := ch >= 2 and ch < 3
+    else if current_session == "London"
+        result := ch >= 9 and ch < 10
+    result
+
+check_near_session_end() =>
+    ch = get_et_hour()
+    cm = get_et_minute()
+    bool result = false
+    
+    if current_session == "NY"
+        result := (ch == 15 and cm >= 45) or ch >= 16
+    else if current_session == "Asian"
+        result := (ch == 1 and cm >= 45) or (ch >= 2 and ch < 3)
+    else if current_session == "London"
+        result := (ch == 8 and cm >= 45) or (ch >= 9 and ch < 10)
+    
+    result
+
+in_active_session() =>
+    ch = get_et_hour()
+    cm = get_et_minute()
+    bool active = false
+    
+    if use_ny_session and current_session == "NY"
+        active := (ch == 9 and cm >= 30) or (ch > 9 and ch < 15) or (ch == 15 and cm < 45)
+    else if use_asian_session and current_session == "Asian"
+        active := (ch >= 18) or (ch < 1) or (ch == 1 and cm < 45)
+    else if use_london_session and current_session == "London"
+        active := (ch >= 3 and ch < 8) or (ch == 8 and cm < 45)
+    
+    active
+
+rsi = ta.rsi(close, rsi_length)
+stoch_k_value = ta.stoch(close, high, low, stoch_k)
+stoch_d_value = ta.sma(stoch_k_value, stoch_d)
+atr_value = ta.atr(atr_period)
+
+macd_line = ta.ema(close, macd_fast) - ta.ema(close, macd_slow)
+macd_signal_line = ta.ema(macd_line, macd_signal)
+macd_histogram = macd_line - macd_signal_line
+
+// MTF Trend Detection
+mtf_close = request.security(syminfo.tickerid, mtf_timeframe, close, lookahead=barmerge.lookahead_off)
+mtf_ema_fast_value = request.security(syminfo.tickerid, mtf_timeframe, ta.ema(close, mtf_ema_fast), lookahead=barmerge.lookahead_off)
+mtf_ema_slow_value = request.security(syminfo.tickerid, mtf_timeframe, ta.ema(close, mtf_ema_slow), lookahead=barmerge.lookahead_off)
+
+check_mtf_bullish_trend() =>
+    bool is_bullish = true
+    if use_mtf_trend
+        ema_aligned = mtf_ema_fast_value > mtf_ema_slow_value
+        price_above_emas = mtf_close > mtf_ema_fast_value and mtf_close > mtf_ema_slow_value
+        ema_rising = mtf_ema_fast_value > mtf_ema_fast_value[1]
+        is_bullish := ema_aligned and price_above_emas and ema_rising
+    is_bullish
+
+check_mtf_bearish_trend() =>
+    bool is_bearish = true
+    if use_mtf_trend
+        ema_aligned = mtf_ema_fast_value < mtf_ema_slow_value
+        price_below_emas = mtf_close < mtf_ema_fast_value and mtf_close < mtf_ema_slow_value
+        ema_falling = mtf_ema_fast_value < mtf_ema_fast_value[1]
+        is_bearish := ema_aligned and price_below_emas and ema_falling
+    is_bearish
+
+mtf_bullish_trend = check_mtf_bullish_trend()
+mtf_bearish_trend = check_mtf_bearish_trend()
+
+// Enhanced Reversal Strength Detection
+check_reversal_strength_bullish() =>
+    float strength_score = 0.0
+
+    // Candle strength (body vs wick ratio)
+    body_size = close - open
+    total_range = high - low
+    body_ratio = total_range > 0 ? body_size / total_range : 0
+    if body_ratio > 0.6
+        strength_score += 1
+    else if body_ratio > 0.4
+        strength_score += 0.5
+
+    // Lower wick rejection (buying pressure)
+    lower_wick = open - low
+    if lower_wick > body_size * 0.5
+        strength_score += 1
+
+    // Momentum vs previous candles
+    if body_size > math.abs(close[1] - open[1]) * 1.5
+        strength_score += 1
+
+    // Close near high
+    if close > low + (high - low) * 0.8
+        strength_score += 0.5
+
+    strength_score
+
+check_reversal_strength_bearish() =>
+    float strength_score = 0.0
+
+    // Candle strength (body vs wick ratio)
+    body_size = open - close
+    total_range = high - low
+    body_ratio = total_range > 0 ? body_size / total_range : 0
+    if body_ratio > 0.6
+        strength_score += 1
+    else if body_ratio > 0.4
+        strength_score += 0.5
+
+    // Upper wick rejection (selling pressure)
+    upper_wick = high - open
+    if upper_wick > body_size * 0.5
+        strength_score += 1
+
+    // Momentum vs previous candles
+    if body_size > math.abs(close[1] - open[1]) * 1.5
+        strength_score += 1
+
+    // Close near low
+    if close < high - (high - low) * 0.8
+        strength_score += 0.5
+
+    strength_score
+
+bullish_strength_score = check_reversal_strength_bullish()
+bearish_strength_score = check_reversal_strength_bearish()
+
+// Determine required strength threshold
+strength_threshold = reversal_strength == "Standard" ? 1.0 :
+                     reversal_strength == "Strong" ? 2.0 :
+                     reversal_strength == "Very Strong" ? 2.5 : 3.0
+
+has_strong_bullish_reversal = bullish_strength_score >= strength_threshold
+has_strong_bearish_reversal = bearish_strength_score >= strength_threshold
+
+// Multi-bar confirmation
+has_multi_bar_bullish = not use_multi_bar_confirmation or (close > open and close[1] > open[1] and close > close[1])
+has_multi_bar_bearish = not use_multi_bar_confirmation or (close < open and close[1] < open[1] and close < close[1])
+
+// Volume surge detection
+avg_volume_20 = ta.sma(volume, 20)
+has_volume_surge = not use_volume_surge or volume > avg_volume_20 * volume_surge_multiplier
+
+// Price structure detection (higher lows for bullish, lower highs for bearish)
+check_higher_lows() =>
+    bool has_structure = true
+    for i = 1 to structure_lookback
+        if low < low[i]
+            has_structure := false
+            break
+    has_structure
+
+check_lower_highs() =>
+    bool has_structure = true
+    for i = 1 to structure_lookback
+        if high > high[i]
+            has_structure := false
+            break
+    has_structure
+
+has_bullish_structure = not use_price_structure or check_higher_lows()
+has_bearish_structure = not use_price_structure or check_lower_highs()
+
+detect_bullish_reversal() =>
+    bool reversal = false
+    bool rsi_signal = rsi < rsi_os_level or (rsi > rsi[1] and rsi < 50)
+    bool stoch_signal = stoch_k_value < stoch_os_level or (stoch_k_value > stoch_d_value and stoch_k_value[1] <= stoch_d_value[1])
+    bool bullish_candle = close > open
+    
+    bool macd_signal = false
+    if macd_mode == "Crossover"
+        macd_signal := ta.crossover(macd_line, macd_signal_line) or (macd_line > macd_signal_line and macd_histogram > macd_histogram[1])
+    else if macd_mode == "Histogram Momentum Shift"
+        macd_signal := (macd_histogram > 0 and macd_histogram[1] <= 0) or (macd_histogram > macd_histogram[1] and macd_histogram[1] > macd_histogram[2])
+    else if macd_mode == "Zero Line + Histogram"
+        macd_signal := macd_line < 0 and macd_histogram > macd_histogram[1]
+    else if macd_mode == "Slope Change"
+        macd_signal := macd_line > macd_line[1] and macd_line[1] <= macd_line[2]
+    else if macd_mode == "Double Confirmation"
+        macd_signal := macd_histogram > macd_histogram[1] and macd_line > macd_line[1]
+    else if macd_mode == "Extreme + Reversal"
+        macd_signal := macd_line < -0.5 and macd_histogram > macd_histogram[1]
+    
+    if entry_mode == "RSI Only"
+        reversal := rsi_signal and bullish_candle
+    else if entry_mode == "Stoch Only"
+        reversal := stoch_signal and bullish_candle
+    else if entry_mode == "RSI or Stoch"
+        reversal := (rsi_signal or stoch_signal) and bullish_candle
+    else if entry_mode == "RSI and Stoch"
+        reversal := rsi_signal and stoch_signal and bullish_candle
+    else if entry_mode == "MACD"
+        reversal := macd_signal and bullish_candle
+    else if entry_mode == "Stoch and MACD"
+        reversal := stoch_signal and macd_signal and bullish_candle
+    else if entry_mode == "Stoch or MACD"
+        reversal := (stoch_signal or macd_signal) and bullish_candle
+    else
+        reversal := bullish_candle
+    reversal
+
+detect_bearish_reversal() =>
+    bool reversal = false
+    bool rsi_signal = rsi > rsi_ob_level or (rsi < rsi[1] and rsi > 50)
+    bool stoch_signal = stoch_k_value > stoch_ob_level or (stoch_k_value < stoch_d_value and stoch_k_value[1] >= stoch_d_value[1])
+    bool bearish_candle = close < open
+    
+    bool macd_signal = false
+    if macd_mode == "Crossover"
+        macd_signal := ta.crossunder(macd_line, macd_signal_line) or (macd_line < macd_signal_line and macd_histogram < macd_histogram[1])
+    else if macd_mode == "Histogram Momentum Shift"
+        macd_signal := (macd_histogram < 0 and macd_histogram[1] >= 0) or (macd_histogram < macd_histogram[1] and macd_histogram[1] < macd_histogram[2])
+    else if macd_mode == "Zero Line + Histogram"
+        macd_signal := macd_line > 0 and macd_histogram < macd_histogram[1]
+    else if macd_mode == "Slope Change"
+        macd_signal := macd_line < macd_line[1] and macd_line[1] >= macd_line[2]
+    else if macd_mode == "Double Confirmation"
+        macd_signal := macd_histogram < macd_histogram[1] and macd_line < macd_line[1]
+    else if macd_mode == "Extreme + Reversal"
+        macd_signal := macd_line > 0.5 and macd_histogram < macd_histogram[1]
+    
+    if entry_mode == "RSI Only"
+        reversal := rsi_signal and bearish_candle
+    else if entry_mode == "Stoch Only"
+        reversal := stoch_signal and bearish_candle
+    else if entry_mode == "RSI or Stoch"
+        reversal := (rsi_signal or stoch_signal) and bearish_candle
+    else if entry_mode == "RSI and Stoch"
+        reversal := rsi_signal and stoch_signal and bearish_candle
+    else if entry_mode == "MACD"
+        reversal := macd_signal and bearish_candle
+    else if entry_mode == "Stoch and MACD"
+        reversal := stoch_signal and macd_signal and bearish_candle
+    else if entry_mode == "Stoch or MACD"
+        reversal := (stoch_signal or macd_signal) and bearish_candle
+    else
+        reversal := bearish_candle
+    reversal
+
+bullish_reversal = detect_bullish_reversal()
+bearish_reversal = detect_bearish_reversal()
+
+if session_started
+    orb_high := na
+    orb_low := na
+    orb_complete := false
+    breakout_direction := na
+    in_trade := false
+    trade_completed := false
+    zone_visited := false
+    
+    if not na(orb_box)
+        box.delete(orb_box)
+    if not na(fib_line_0)
+        line.delete(fib_line_0)
+        line.delete(fib_line_50)
+        line.delete(fib_618_line)
+        line.delete(fib_786_line)
+        line.delete(fib_100_line)
+    if not na(entry_zone_box)
+        box.delete(entry_zone_box)
+    if not na(orb_high_line)
+        line.delete(orb_high_line)
+        line.delete(orb_low_line)
+    if not na(entry_line)
+        line.delete(entry_line)
+        line.delete(stop_line)
+        line.delete(tp_line)
+        label.delete(trade_label)
+
+if is_in_orb_period()
+    if na(orb_high) or high > orb_high
+        orb_high := high
+    if na(orb_low) or low < orb_low
+        orb_low := low
+    
+    if na(orb_box)
+        orb_box := box.new(orb_start_time, orb_high, time, orb_low, xloc=xloc.bar_time, border_color=color.blue, bgcolor=color.new(color.blue, 90), border_width=2)
+    else
+        box.set_top(orb_box, orb_high)
+        box.set_bottom(orb_box, orb_low)
+        box.set_right(orb_box, time)
+
+if not is_in_orb_period() and not orb_complete and not na(orb_high) and not na(orb_low) and not na(orb_start_time)
+    orb_complete := true
+    
+    if not na(orb_box)
+        box.set_bgcolor(orb_box, color.new(color.blue, 95))
+    
+    if na(orb_high_line)
+        orb_high_line := line.new(x1=time, y1=orb_high, x2=time, y2=orb_high, xloc=xloc.bar_time, extend=extend.right, color=color.blue, width=2)
+        line.set_style(orb_high_line, line.style_dashed)
+        orb_low_line := line.new(x1=time, y1=orb_low, x2=time, y2=orb_low, xloc=xloc.bar_time, extend=extend.right, color=color.blue, width=2)
+        line.set_style(orb_low_line, line.style_dashed)
+
+if not na(orb_high_line) and orb_complete
+    if is_end_of_session()
+        line.set_x2(orb_high_line, time)
+        line.set_y2(orb_high_line, orb_high)
+        line.set_x2(orb_low_line, time)
+        line.set_y2(orb_low_line, orb_low)
+        line.set_extend(orb_high_line, extend.none)
+        line.set_extend(orb_low_line, extend.none)
+
+if orb_complete and na(breakout_direction) and not in_trade
+    if close > orb_high
+        breakout_direction := "bullish"
+        zone_visited := false
+        
+        fib_0 := high
+        fib_100 := orb_low
+        float fib_range = fib_0 - fib_100
+        fib_50 := fib_0 - (fib_range * 0.50)
+        fib_618 := fib_0 - (fib_range * 0.618)
+        fib_786 := fib_0 - (fib_range * 0.786)
+        
+        fib_line_0 := line.new(x1=time, y1=fib_0, x2=time, y2=fib_0, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=1)
+        line.set_style(fib_line_0, line.style_dotted)
+        fib_line_50 := line.new(x1=time, y1=fib_50, x2=time, y2=fib_50, xloc=xloc.bar_time, extend=extend.right, color=color.yellow, width=2)
+        fib_618_line := line.new(x1=time, y1=fib_618, x2=time, y2=fib_618, xloc=xloc.bar_time, extend=extend.right, color=color.yellow, width=2)
+        fib_786_line := line.new(x1=time, y1=fib_786, x2=time, y2=fib_786, xloc=xloc.bar_time, extend=extend.right, color=color.purple, width=1)
+        line.set_style(fib_786_line, line.style_dotted)
+        fib_100_line := line.new(x1=time, y1=fib_100, x2=time, y2=fib_100, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=1)
+        line.set_style(fib_100_line, line.style_dotted)
+        
+        entry_zone_box := box.new(time, fib_50, time, fib_100, xloc=xloc.bar_time, extend=extend.right, border_color=color.yellow, bgcolor=color.new(color.yellow, 90), border_width=1)
+    
+    else if close < orb_low
+        breakout_direction := "bearish"
+        zone_visited := false
+        
+        fib_0 := low
+        fib_100 := orb_high
+        float fib_range = fib_100 - fib_0
+        fib_50 := fib_0 + (fib_range * 0.50)
+        fib_618 := fib_0 + (fib_range * 0.618)
+        fib_786 := fib_0 + (fib_range * 0.786)
+        
+        fib_line_0 := line.new(x1=time, y1=fib_0, x2=time, y2=fib_0, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=1)
+        line.set_style(fib_line_0, line.style_dotted)
+        fib_line_50 := line.new(x1=time, y1=fib_50, x2=time, y2=fib_50, xloc=xloc.bar_time, extend=extend.right, color=color.yellow, width=2)
+        fib_618_line := line.new(x1=time, y1=fib_618, x2=time, y2=fib_618, xloc=xloc.bar_time, extend=extend.right, color=color.yellow, width=2)
+        fib_786_line := line.new(x1=time, y1=fib_786, x2=time, y2=fib_786, xloc=xloc.bar_time, extend=extend.right, color=color.purple, width=1)
+        line.set_style(fib_786_line, line.style_dotted)
+        fib_100_line := line.new(x1=time, y1=fib_100, x2=time, y2=fib_100, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=1)
+        line.set_style(fib_100_line, line.style_dotted)
+        
+        entry_zone_box := box.new(time, fib_100, time, fib_50, xloc=xloc.bar_time, extend=extend.right, border_color=color.yellow, bgcolor=color.new(color.yellow, 90), border_width=1)
+
+in_entry_zone = false
+in_orb_zone = false
+
+if breakout_direction == "bullish" and not na(fib_50) and not na(fib_618) and not na(fib_100)
+    zone_top = use_tight_fib_zone ? (fib_0 - ((fib_0 - fib_100) * 0.55)) : fib_50
+    zone_bottom = use_tight_fib_zone ? (fib_0 - ((fib_0 - fib_100) * 0.65)) : fib_618
+    in_entry_zone := low <= zone_top and high >= zone_bottom
+    in_orb_zone := low <= orb_high and high >= orb_low
+    if in_entry_zone
+        zone_visited := true
+        
+else if breakout_direction == "bearish" and not na(fib_50) and not na(fib_618) and not na(fib_100)
+    zone_top = use_tight_fib_zone ? (fib_0 + ((fib_100 - fib_0) * 0.55)) : fib_50
+    zone_bottom = use_tight_fib_zone ? (fib_0 + ((fib_100 - fib_0) * 0.65)) : fib_618
+    in_entry_zone := high >= zone_top and low <= zone_bottom
+    in_orb_zone := high >= orb_low and low <= orb_high
+    if in_entry_zone
+        zone_visited := true
+
+calculate_stop_loss(direction) =>
+    float stop = na
+    swing_lookback = 10
+    tick_size = syminfo.mintick
+    two_tick_buffer = tick_size * 2
+    
+    if direction == "bullish"
+        swing_low = ta.lowest(low, swing_lookback)
+        if stop_type == "Swing Hi/Lo"
+            stop := swing_low
+        else if stop_type == "Opposite ORB"
+            stop := orb_low
+        else if stop_type == "Opposite ORB + 2 Tick"
+            stop := orb_low - two_tick_buffer
+        else if stop_type == "ATR Multiplier"
+            stop := close - (atr_value * atr_stop_multiplier)
+        else
+            atr_stop = close - (atr_value * atr_stop_multiplier)
+            stop := math.max(math.max(math.max(swing_low, orb_low), orb_low - two_tick_buffer), atr_stop)
+    else
+        swing_high = ta.highest(high, swing_lookback)
+        if stop_type == "Swing Hi/Lo"
+            stop := swing_high
+        else if stop_type == "Opposite ORB"
+            stop := orb_high
+        else if stop_type == "Opposite ORB + 2 Tick"
+            stop := orb_high + two_tick_buffer
+        else if stop_type == "ATR Multiplier"
+            stop := close + (atr_value * atr_stop_multiplier)
+        else
+            atr_stop = close + (atr_value * atr_stop_multiplier)
+            stop := math.min(math.min(math.min(swing_high, orb_high), orb_high + two_tick_buffer), atr_stop)
+    stop
+
+calculate_position_size(entry, stop) =>
+    float qty = 1.0
+    if use_position_sizing
+        risk_per_point = math.abs(entry - stop)
+        if risk_per_point > 0
+            qty := risk_amount / (risk_per_point * syminfo.pointvalue)
+            qty := math.max(1, math.round(qty))
+    qty
+
+passes_rsi_filter = not use_rsi_filter or rsi > rsi_ob_level or rsi < rsi_os_level
+passes_momentum_filter = not use_momentum_filter or (math.abs(close - open) > (atr_value * 0.3))
+check_higher_low = not require_higher_low or (breakout_direction == "bullish" and low > low[1]) or (breakout_direction == "bearish" and high < high[1])
+
+// MTF Trend Filter
+passes_mtf_filter_long = not use_mtf_trend or mtf_bullish_trend
+passes_mtf_filter_short = not use_mtf_trend or mtf_bearish_trend
+
+minutes_since_breakout = na(breakout_direction) ? 0 : math.round((time - time[bar_index - bar_index]) / 60000)
+passes_time_decay = not use_time_decay or minutes_since_breakout <= 90
+
+avg_volume = ta.sma(volume, 20)
+passes_volume_filter = not use_volume_confirmation or volume > avg_volume
+
+still_in_zone = false
+still_in_orb_zone = false
+inside_orb_range = false
+
+if not na(orb_high) and not na(orb_low)
+    inside_orb_range := close <= orb_high and close >= orb_low
+
+if breakout_direction == "bullish" and not na(fib_50) and not na(fib_618) and not na(fib_100)
+    zone_top = use_tight_fib_zone ? (fib_0 - ((fib_0 - fib_100) * 0.55)) : fib_50
+    zone_bottom = use_tight_fib_zone ? (fib_0 - ((fib_0 - fib_100) * 0.65)) : fib_618
+    still_in_zone := close <= zone_top and close >= zone_bottom
+    still_in_orb_zone := close <= orb_high and close >= orb_low
+else if breakout_direction == "bearish" and not na(fib_50) and not na(fib_618) and not na(fib_100)
+    zone_top = use_tight_fib_zone ? (fib_0 + ((fib_100 - fib_0) * 0.55)) : fib_50
+    zone_bottom = use_tight_fib_zone ? (fib_0 + ((fib_100 - fib_0) * 0.65)) : fib_618
+    still_in_zone := close >= zone_top and close <= zone_bottom
+    still_in_orb_zone := close >= orb_low and close <= orb_high
+
+use_retracement = entry_zone_strategy == "Retracement Zone (50-61.8%)" or entry_zone_strategy == "Both"
+use_orb = entry_zone_strategy == "ORB Zone (Anywhere)" or entry_zone_strategy == "Both"
+
+zone_check_retracement = not use_retracement or (in_entry_zone and zone_visited and still_in_zone and inside_orb_range)
+zone_check_orb = not use_orb or (in_orb_zone and still_in_orb_zone and inside_orb_range)
+
+zone_check_pass = false
+if entry_zone_strategy == "Retracement Zone (50-61.8%)"
+    zone_check_pass := zone_check_retracement
+else if entry_zone_strategy == "ORB Zone (Anywhere)"
+    zone_check_pass := zone_check_orb
+else
+    zone_check_pass := zone_check_retracement or zone_check_orb
+
+in_session = in_active_session()
+near_session_end = check_near_session_end()
+allow_new_entries = in_session and not near_session_end and orb_complete
+
+if zone_check_pass and not in_trade and allow_new_entries
+    if breakout_direction == "bullish" and bullish_reversal and passes_rsi_filter and passes_momentum_filter and check_higher_low and passes_time_decay and passes_volume_filter and passes_mtf_filter_long and has_strong_bullish_reversal and has_multi_bar_bullish and has_volume_surge and has_bullish_structure
+        entry_price := close
+        stop_loss := calculate_stop_loss("bullish")
+        take_profit := entry_price + ((entry_price - stop_loss) * risk_reward_ratio)
+        position_size := calculate_position_size(entry_price, stop_loss)
+        
+        strategy.entry("Long", strategy.long, qty=position_size)
+        in_trade := true
+        
+        entry_line := line.new(x1=time, y1=entry_price, x2=time, y2=entry_price, xloc=xloc.bar_time, extend=extend.right, color=color.white, width=2)
+        line.set_style(entry_line, line.style_dashed)
+        stop_line := line.new(x1=time, y1=stop_loss, x2=time, y2=stop_loss, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=2)
+        tp_line := line.new(x1=time, y1=take_profit, x2=time, y2=take_profit, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=2)
+        
+        trade_info = "LONG\nQty: " + str.tostring(position_size, "#") + "\nEntry: " + str.tostring(entry_price, "#.##") + "\nStop: " + str.tostring(stop_loss, "#.##") + "\nTarget: " + str.tostring(take_profit, "#.##") + "\nRisk: $" + str.tostring(risk_amount, "#") + "\nR:R = 1:" + str.tostring(risk_reward_ratio, "#.##")
+        
+        trade_label := label.new(x=time, y=low - (atr_value * 3), text=trade_info, xloc=xloc.bar_time, style=label.style_label_center, color=color.new(color.green, 20), textcolor=color.white, size=size.small)
+    
+    else if breakout_direction == "bearish" and bearish_reversal and passes_rsi_filter and passes_momentum_filter and check_higher_low and passes_time_decay and passes_volume_filter and passes_mtf_filter_short and has_strong_bearish_reversal and has_multi_bar_bearish and has_volume_surge and has_bearish_structure
+        entry_price := close
+        stop_loss := calculate_stop_loss("bearish")
+        take_profit := entry_price - ((stop_loss - entry_price) * risk_reward_ratio)
+        position_size := calculate_position_size(entry_price, stop_loss)
+        
+        strategy.entry("Short", strategy.short, qty=position_size)
+        in_trade := true
+        
+        entry_line := line.new(x1=time, y1=entry_price, x2=time, y2=entry_price, xloc=xloc.bar_time, extend=extend.right, color=color.white, width=2)
+        line.set_style(entry_line, line.style_dashed)
+        stop_line := line.new(x1=time, y1=stop_loss, x2=time, y2=stop_loss, xloc=xloc.bar_time, extend=extend.right, color=color.red, width=2)
+        tp_line := line.new(x1=time, y1=take_profit, x2=time, y2=take_profit, xloc=xloc.bar_time, extend=extend.right, color=color.green, width=2)
+        
+        trade_info = "SHORT\nQty: " + str.tostring(position_size, "#") + "\nEntry: " + str.tostring(entry_price, "#.##") + "\nStop: " + str.tostring(stop_loss, "#.##") + "\nTarget: " + str.tostring(take_profit, "#.##") + "\nRisk: $" + str.tostring(risk_amount, "#") + "\nR:R = 1:" + str.tostring(risk_reward_ratio, "#.##")
+        
+        trade_label := label.new(x=time, y=high + (atr_value * 3), text=trade_info, xloc=xloc.bar_time, style=label.style_label_center, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+
+if in_trade and not na(stop_loss) and not na(take_profit)
+    near_end_check = check_near_session_end()
+    session_ended = is_end_of_session()
+    
+    if (near_end_check or session_ended) and not trade_completed
+        if breakout_direction == "bullish"
+            strategy.close("Long", comment="Session End")
+            in_trade := false
+            trade_completed := true
+            if not na(entry_line)
+                line.set_extend(entry_line, extend.none)
+                line.set_extend(stop_line, extend.none)
+                line.set_extend(tp_line, extend.none)
+            session_end_label = label.new(x=time, y=close, text="CLOSED\nSession End", xloc=xloc.bar_time, style=label.style_label_down, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
+        else if breakout_direction == "bearish"
+            strategy.close("Short", comment="Session End")
+            in_trade := false
+            trade_completed := true
+            if not na(entry_line)
+                line.set_extend(entry_line, extend.none)
+                line.set_extend(stop_line, extend.none)
+                line.set_extend(tp_line, extend.none)
+            session_end_label = label.new(x=time, y=close, text="CLOSED\nSession End", xloc=xloc.bar_time, style=label.style_label_up, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
+    
+    if not trade_completed
+        if breakout_direction == "bullish"
+            strategy.exit("Exit Long", "Long", stop=stop_loss, limit=take_profit)
+            if strategy.position_size == 0 and strategy.position_size[1] > 0
+                trade_completed := true
+                if not na(entry_line)
+                    line.set_extend(entry_line, extend.none)
+                    line.set_extend(stop_line, extend.none)
+                    line.set_extend(tp_line, extend.none)
+        else if breakout_direction == "bearish"
+            strategy.exit("Exit Short", "Short", stop=stop_loss, limit=take_profit)
+            if strategy.position_size == 0 and strategy.position_size[1] < 0
+                trade_completed := true
+                if not na(entry_line)
+                    line.set_extend(entry_line, extend.none)
+                    line.set_extend(stop_line, extend.none)
+                    line.set_extend(tp_line, extend.none)
+
+if show_debug
+    var table debug_table = table.new(position.top_right, 2, 17, border_width=1, bgcolor=color.new(color.black, 20), frame_color=color.new(color.gray, 50), frame_width=2)
+    
+    table.cell(debug_table, 0, 0, "Parameter", bgcolor=color.new(color.black, 30), text_color=color.white, text_size=size.small)
+    table.cell(debug_table, 1, 0, "Value", bgcolor=color.new(color.black, 30), text_color=color.white, text_size=size.small)
+    
+    table.cell(debug_table, 0, 1, "Session", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 1, na(current_session) ? "N/A" : current_session, text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 2, "ORB High", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 2, na(orb_high) ? "N/A" : str.tostring(orb_high, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 3, "ORB Low", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 3, na(orb_low) ? "N/A" : str.tostring(orb_low, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 4, "Breakout", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 4, na(breakout_direction) ? "N/A" : breakout_direction, text_size=size.small, text_color=color.white, bgcolor=breakout_direction == "bullish" ? color.new(color.green, 60) : breakout_direction == "bearish" ? color.new(color.red, 60) : color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 5, "In Zone", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 5, in_entry_zone ? "YES" : "NO", text_size=size.small, text_color=color.white, bgcolor=in_entry_zone ? color.new(color.yellow, 60) : color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 6, "RSI", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 6, str.tostring(rsi, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 7, "Stoch K", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 7, str.tostring(stoch_k_value, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    
+    table.cell(debug_table, 0, 8, "Reversal", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    reversal_text = bullish_reversal ? "Bull" : bearish_reversal ? "Bear" : "None"
+    table.cell(debug_table, 1, 8, reversal_text, text_size=size.small, text_color=color.white, bgcolor=bullish_reversal ? color.new(color.green, 60) : bearish_reversal ? color.new(color.red, 60) : color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 9, "MTF TF", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 9, use_mtf_trend ? mtf_timeframe : "Off", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 10, "MTF Trend", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    mtf_trend_text = use_mtf_trend ? (mtf_bullish_trend ? "Bull" : mtf_bearish_trend ? "Bear" : "Neutral") : "N/A"
+    table.cell(debug_table, 1, 10, mtf_trend_text, text_size=size.small, text_color=color.white, bgcolor=use_mtf_trend ? (mtf_bullish_trend ? color.new(color.green, 60) : mtf_bearish_trend ? color.new(color.red, 60) : color.new(color.orange, 60)) : color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 11, "Rev Strength", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    current_strength = bullish_reversal ? bullish_strength_score : bearish_reversal ? bearish_strength_score : 0
+    strength_color = current_strength >= 3.0 ? color.new(color.green, 60) : current_strength >= 2.0 ? color.new(color.yellow, 60) : color.new(color.black, 40)
+    table.cell(debug_table, 1, 11, str.tostring(current_strength, "#.#") + " / " + str.tostring(strength_threshold, "#.#"), text_size=size.small, text_color=color.white, bgcolor=strength_color)
+
+    table.cell(debug_table, 0, 12, "Vol Surge", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    vol_ratio = avg_volume_20 > 0 ? volume / avg_volume_20 : 0
+    table.cell(debug_table, 1, 12, str.tostring(vol_ratio, "#.##") + "x", text_size=size.small, text_color=color.white, bgcolor=has_volume_surge ? color.new(color.green, 60) : color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 13, "Structure", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    structure_status = breakout_direction == "bullish" ? (has_bullish_structure ? "HL ✓" : "HL ✗") : breakout_direction == "bearish" ? (has_bearish_structure ? "LH ✓" : "LH ✗") : "N/A"
+    table.cell(debug_table, 1, 13, structure_status, text_size=size.small, text_color=color.white, bgcolor=(has_bullish_structure or has_bearish_structure) ? color.new(color.green, 60) : color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 14, "Entry", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 14, na(entry_price) ? "N/A" : str.tostring(entry_price, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 15, "Stop", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 15, na(stop_loss) ? "N/A" : str.tostring(stop_loss, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+
+    table.cell(debug_table, 0, 16, "Target", text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(debug_table, 1, 16, na(take_profit) ? "N/A" : str.tostring(take_profit, "#.##"), text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 40))
+
+plot(rsi, "RSI", color=color.blue)
+hline(rsi_ob_level, "OB", color=color.red, linestyle=hline.style_dashed)
+hline(rsi_os_level, "OS", color=color.green, linestyle=hline.style_dashed)
+hline(50, "Mid", color=color.gray, linestyle=hline.style_dotted)
+
+plot(stoch_k_value, "K", color=color.orange)
+plot(stoch_d_value, "D", color=color.purple)
+
+plot(macd_line, "MACD", color=color.blue)
+plot(macd_signal_line, "Signal", color=color.red)
+plot(macd_histogram, "Hist", color=macd_histogram > 0 ? color.green : color.red, style=plot.style_histogram)

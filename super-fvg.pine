@@ -1,0 +1,427 @@
+//mach2fx
+//@version=5
+strategy("Super FVG Strategy", overlay=true, max_boxes_count=500, max_lines_count=500, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=10000, currency=currency.USD)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Daily Range Settings
+show_daily_range = input.bool(true, "Show Daily Range Lines", group="Daily Range")
+daily_range_time = input.session("0900-0900", "Daily Range Time (NY)", group="Daily Range", tooltip="Time to capture daily high/low - Default: 9:00 AM NY")
+show_daily_high = input.bool(true, "Show Daily High Line", group="Daily Range")
+show_daily_low = input.bool(true, "Show Daily Low Line", group="Daily Range")
+
+// HTF FVG Settings (1H and Daily)
+show_htf_fvg = input.bool(true, "Show HTF FVGs", group="HTF FVG Settings")
+show_1h_fvg = input.bool(true, "Show 1H FVGs", group="HTF FVG Settings")
+show_daily_fvg = input.bool(true, "Show Daily FVGs", group="HTF FVG Settings")
+only_adjacent_fvg = input.bool(true, "Only Show FVGs Adjacent to Daily Range", group="HTF FVG Settings", tooltip="Only display FVGs that are next to the daily range lines")
+
+// LTF FVG Settings (Current Timeframe)
+show_ltf_fvg = input.bool(false, "Show LTF FVGs", group="LTF FVG Settings")
+max_ltf_fvg_boxes = input.int(20, "Max LTF FVG Boxes", minval=1, maxval=100, group="LTF FVG Settings")
+
+// Fractal Settings
+show_fractals = input.bool(true, "Show Williams Fractals", group="Fractal Settings")
+show_up_fractals = input.bool(true, "Show Up Fractals", group="Fractal Settings")
+show_down_fractals = input.bool(true, "Show Down Fractals", group="Fractal Settings")
+
+// Visual Settings
+htf_bullish_fvg_color = input.color(color.new(color.green, 75), "HTF Bullish FVG Color", group="Visual")
+htf_bearish_fvg_color = input.color(color.new(color.red, 75), "HTF Bearish FVG Color", group="Visual")
+ltf_bullish_fvg_color = input.color(color.new(color.lime, 85), "LTF Bullish FVG Color", group="Visual")
+ltf_bearish_fvg_color = input.color(color.new(color.maroon, 85), "LTF Bearish FVG Color", group="Visual")
+daily_high_color = input.color(color.new(color.red, 0), "Daily High Line Color", group="Visual")
+daily_low_color = input.color(color.new(color.green, 0), "Daily Low Line Color", group="Visual")
+show_labels = input.bool(true, "Show FVG Labels", group="Visual")
+up_fractal_color = input.color(color.new(color.blue, 0), "Up Fractal Color", group="Visual")
+down_fractal_color = input.color(color.new(color.orange, 0), "Down Fractal Color", group="Visual")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+// HTF FVG Arrays (1H and Daily FVGs)
+var box[] htf_bullish_fvg_boxes = array.new_box()
+var box[] htf_bearish_fvg_boxes = array.new_box()
+
+// LTF FVG Arrays (Current timeframe FVGs)
+var box[] ltf_bullish_fvg_boxes = array.new_box()
+var box[] ltf_bearish_fvg_boxes = array.new_box()
+
+// Daily Range Variables
+var line daily_high_line = na
+var line daily_low_line = na
+var float daily_high = na
+var float daily_low = na
+var int daily_high_time = na
+var int daily_low_time = na
+var bool daily_high_breached = false
+var bool daily_low_breached = false
+
+// ============================================================================
+// DAILY RANGE DETECTION (9AM NY TIME)
+// ============================================================================
+
+// Check if we're at 9am NY time
+bool is_daily_range_time = not na(time(timeframe.period, daily_range_time, "America/New_York"))
+
+// Capture daily high and low at 9am
+if is_daily_range_time and not is_daily_range_time[1]
+    // New 9am session - capture the current high/low
+    daily_high := high
+    daily_low := low
+    daily_high_time := time
+    daily_low_time := time
+    daily_high_breached := false
+    daily_low_breached := false
+
+    // Delete old lines
+    if not na(daily_high_line)
+        line.delete(daily_high_line)
+    if not na(daily_low_line)
+        line.delete(daily_low_line)
+
+    // Create new daily range lines
+    if show_daily_range and show_daily_high
+        daily_high_line := line.new(time, daily_high, time, daily_high,
+                                     xloc=xloc.bar_time, extend=extend.right,
+                                     color=daily_high_color, width=2, style=line.style_solid)
+
+    if show_daily_range and show_daily_low
+        daily_low_line := line.new(time, daily_low, time, daily_low,
+                                   xloc=xloc.bar_time, extend=extend.right,
+                                   color=daily_low_color, width=2, style=line.style_solid)
+
+// Update daily high/low if new extremes occur before breach
+if not na(daily_high) and not daily_high_breached
+    if high > daily_high
+        daily_high := high
+        if not na(daily_high_line)
+            line.set_y1(daily_high_line, daily_high)
+            line.set_y2(daily_high_line, daily_high)
+
+if not na(daily_low) and not daily_low_breached
+    if low < daily_low
+        daily_low := low
+        if not na(daily_low_line)
+            line.set_y1(daily_low_line, daily_low)
+            line.set_y2(daily_low_line, daily_low)
+
+// Check for breach (close on opposite side)
+if not na(daily_high) and not daily_high_breached
+    if close < daily_high
+        daily_high_breached := true
+
+if not na(daily_low) and not daily_low_breached
+    if close > daily_low
+        daily_low_breached := true
+
+// Stop extending lines after breach
+if not na(daily_high_line) and not daily_high_breached
+    line.set_x2(daily_high_line, time)
+
+if not na(daily_low_line) and not daily_low_breached
+    line.set_x2(daily_low_line, time)
+
+// ============================================================================
+// HTF FVG DETECTION (1H and Daily)
+// ============================================================================
+
+// Request 1H FVG data
+float h1_high_2 = request.security(syminfo.tickerid, "60", high[2], barmerge.gaps_off, barmerge.lookahead_off)
+float h1_high_0 = request.security(syminfo.tickerid, "60", high, barmerge.gaps_off, barmerge.lookahead_off)
+float h1_low_2 = request.security(syminfo.tickerid, "60", low[2], barmerge.gaps_off, barmerge.lookahead_off)
+float h1_low_0 = request.security(syminfo.tickerid, "60", low, barmerge.gaps_off, barmerge.lookahead_off)
+int h1_time = request.security(syminfo.tickerid, "60", time, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Request Daily FVG data
+float d_high_2 = request.security(syminfo.tickerid, "D", high[2], barmerge.gaps_off, barmerge.lookahead_off)
+float d_high_0 = request.security(syminfo.tickerid, "D", high, barmerge.gaps_off, barmerge.lookahead_off)
+float d_low_2 = request.security(syminfo.tickerid, "D", low[2], barmerge.gaps_off, barmerge.lookahead_off)
+float d_low_0 = request.security(syminfo.tickerid, "D", low, barmerge.gaps_off, barmerge.lookahead_off)
+int d_time = request.security(syminfo.tickerid, "D", time, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Track previous HTF times to detect new candles
+var int prev_h1_time = na
+var int prev_d_time = na
+
+// Detect 1H Bullish FVG
+bool h1_bullish_fvg = false
+bool is_new_h1_candle = na(prev_h1_time) or h1_time != prev_h1_time
+if is_new_h1_candle and not na(h1_low_0) and not na(h1_high_2)
+    h1_bullish_fvg := h1_low_0 > h1_high_2
+    prev_h1_time := h1_time
+
+// Detect 1H Bearish FVG
+bool h1_bearish_fvg = false
+if is_new_h1_candle and not na(h1_high_0) and not na(h1_low_2)
+    h1_bearish_fvg := h1_high_0 < h1_low_2
+
+// Detect Daily Bullish FVG
+bool d_bullish_fvg = false
+bool is_new_d_candle = na(prev_d_time) or d_time != prev_d_time
+if is_new_d_candle and not na(d_low_0) and not na(d_high_2)
+    d_bullish_fvg := d_low_0 > d_high_2
+    prev_d_time := d_time
+
+// Detect Daily Bearish FVG
+bool d_bearish_fvg = false
+if is_new_d_candle and not na(d_high_0) and not na(d_low_2)
+    d_bearish_fvg := d_high_0 < d_low_2
+
+// ============================================================================
+// LTF FVG DETECTION (Current Timeframe)
+// ============================================================================
+
+// LTF Bullish FVG: Gap between high[2] and low[0]
+bool ltf_bullish_fvg = low > high[2]
+
+// LTF Bearish FVG: Gap between low[2] and high[0]
+bool ltf_bearish_fvg = high < low[2]
+
+// ============================================================================
+// HELPER FUNCTION: CHECK IF FVG IS ADJACENT TO DAILY RANGE
+// ============================================================================
+
+// Check if FVG is adjacent to daily range (within a small tolerance)
+is_adjacent_to_range(float fvg_top, float fvg_bottom) =>
+    bool result = false
+    if not na(daily_high) and not na(daily_low)
+        float tolerance = (daily_high - daily_low) * 0.02  // 2% tolerance
+
+        // Check if FVG is adjacent to daily high (either touching or slightly overlapping)
+        bool adjacent_to_high = (fvg_bottom <= daily_high + tolerance) and (fvg_bottom >= daily_high - tolerance) or
+                                 (fvg_top <= daily_high + tolerance) and (fvg_top >= daily_high - tolerance)
+
+        // Check if FVG is adjacent to daily low (either touching or slightly overlapping)
+        bool adjacent_to_low = (fvg_top >= daily_low - tolerance) and (fvg_top <= daily_low + tolerance) or
+                                 (fvg_bottom >= daily_low - tolerance) and (fvg_bottom <= daily_low + tolerance)
+
+        result := adjacent_to_high or adjacent_to_low
+    result
+
+// ============================================================================
+// CREATE HTF FVG BOXES (1H and Daily)
+// ============================================================================
+
+// Create 1H Bullish FVG
+if h1_bullish_fvg and show_htf_fvg and show_1h_fvg
+    fvg_top = h1_low_0
+    fvg_bottom = h1_high_2
+
+    // Check adjacency if filter is enabled
+    bool show_fvg = not only_adjacent_fvg or is_adjacent_to_range(fvg_top, fvg_bottom)
+
+    if show_fvg
+        fvg_box = box.new(bar_index, fvg_top, bar_index, fvg_bottom,
+                          xloc=xloc.bar_index, extend=extend.right,
+                          border_color=htf_bullish_fvg_color, bgcolor=htf_bullish_fvg_color,
+                          border_width=2, border_style=line.style_solid)
+        array.push(htf_bullish_fvg_boxes, fvg_box)
+
+        if show_labels
+            label.new(bar_index, fvg_bottom, "1H Bull FVG",
+                     style=label.style_label_up,
+                     color=color.new(htf_bullish_fvg_color, 0),
+                     textcolor=color.white,
+                     size=size.small)
+
+// Create 1H Bearish FVG
+if h1_bearish_fvg and show_htf_fvg and show_1h_fvg
+    fvg_top = h1_low_2
+    fvg_bottom = h1_high_0
+
+    // Check adjacency if filter is enabled
+    bool show_fvg = not only_adjacent_fvg or is_adjacent_to_range(fvg_top, fvg_bottom)
+
+    if show_fvg
+        fvg_box = box.new(bar_index, fvg_top, bar_index, fvg_bottom,
+                          xloc=xloc.bar_index, extend=extend.right,
+                          border_color=htf_bearish_fvg_color, bgcolor=htf_bearish_fvg_color,
+                          border_width=2, border_style=line.style_solid)
+        array.push(htf_bearish_fvg_boxes, fvg_box)
+
+        if show_labels
+            label.new(bar_index, fvg_top, "1H Bear FVG",
+                     style=label.style_label_down,
+                     color=color.new(htf_bearish_fvg_color, 0),
+                     textcolor=color.white,
+                     size=size.small)
+
+// Create Daily Bullish FVG
+if d_bullish_fvg and show_htf_fvg and show_daily_fvg
+    fvg_top = d_low_0
+    fvg_bottom = d_high_2
+
+    // Check adjacency if filter is enabled
+    bool show_fvg = not only_adjacent_fvg or is_adjacent_to_range(fvg_top, fvg_bottom)
+
+    if show_fvg
+        fvg_box = box.new(bar_index, fvg_top, bar_index, fvg_bottom,
+                          xloc=xloc.bar_index, extend=extend.right,
+                          border_color=htf_bullish_fvg_color, bgcolor=htf_bullish_fvg_color,
+                          border_width=3, border_style=line.style_solid)
+        array.push(htf_bullish_fvg_boxes, fvg_box)
+
+        if show_labels
+            label.new(bar_index, fvg_bottom, "Daily Bull FVG",
+                     style=label.style_label_up,
+                     color=color.new(htf_bullish_fvg_color, 0),
+                     textcolor=color.white,
+                     size=size.normal)
+
+// Create Daily Bearish FVG
+if d_bearish_fvg and show_htf_fvg and show_daily_fvg
+    fvg_top = d_low_2
+    fvg_bottom = d_high_0
+
+    // Check adjacency if filter is enabled
+    bool show_fvg = not only_adjacent_fvg or is_adjacent_to_range(fvg_top, fvg_bottom)
+
+    if show_fvg
+        fvg_box = box.new(bar_index, fvg_top, bar_index, fvg_bottom,
+                          xloc=xloc.bar_index, extend=extend.right,
+                          border_color=htf_bearish_fvg_color, bgcolor=htf_bearish_fvg_color,
+                          border_width=3, border_style=line.style_solid)
+        array.push(htf_bearish_fvg_boxes, fvg_box)
+
+        if show_labels
+            label.new(bar_index, fvg_top, "Daily Bear FVG",
+                     style=label.style_label_down,
+                     color=color.new(htf_bearish_fvg_color, 0),
+                     textcolor=color.white,
+                     size=size.normal)
+
+// ============================================================================
+// CREATE LTF FVG BOXES (Current Timeframe)
+// ============================================================================
+
+// Create LTF Bullish FVG
+if ltf_bullish_fvg and show_ltf_fvg
+    fvg_top = low
+    fvg_bottom = high[2]
+
+    // Remove oldest box if max count reached
+    if array.size(ltf_bullish_fvg_boxes) >= max_ltf_fvg_boxes
+        old_box = array.shift(ltf_bullish_fvg_boxes)
+        box.delete(old_box)
+
+    fvg_box = box.new(bar_index - 2, fvg_top, bar_index, fvg_bottom,
+                      xloc=xloc.bar_index, extend=extend.right,
+                      border_color=ltf_bullish_fvg_color, bgcolor=ltf_bullish_fvg_color,
+                      border_width=1, border_style=line.style_dashed)
+    array.push(ltf_bullish_fvg_boxes, fvg_box)
+
+    if show_labels
+        label.new(bar_index - 1, fvg_bottom, "Bull FVG",
+                 style=label.style_label_up,
+                 color=color.new(ltf_bullish_fvg_color, 0),
+                 textcolor=color.white,
+                 size=size.tiny)
+
+// Create LTF Bearish FVG
+if ltf_bearish_fvg and show_ltf_fvg
+    fvg_top = low[2]
+    fvg_bottom = high
+
+    // Remove oldest box if max count reached
+    if array.size(ltf_bearish_fvg_boxes) >= max_ltf_fvg_boxes
+        old_box = array.shift(ltf_bearish_fvg_boxes)
+        box.delete(old_box)
+
+    fvg_box = box.new(bar_index - 2, fvg_top, bar_index, fvg_bottom,
+                      xloc=xloc.bar_index, extend=extend.right,
+                      border_color=ltf_bearish_fvg_color, bgcolor=ltf_bearish_fvg_color,
+                      border_width=1, border_style=line.style_dashed)
+    array.push(ltf_bearish_fvg_boxes, fvg_box)
+
+    if show_labels
+        label.new(bar_index - 1, fvg_top, "Bear FVG",
+                 style=label.style_label_down,
+                 color=color.new(ltf_bearish_fvg_color, 0),
+                 textcolor=color.white,
+                 size=size.tiny)
+
+// ============================================================================
+// FVG MITIGATION (Remove FVG when price fills the gap)
+// ============================================================================
+
+// Check HTF bullish FVGs for mitigation
+if array.size(htf_bullish_fvg_boxes) > 0
+    for i = array.size(htf_bullish_fvg_boxes) - 1 to 0
+        fvg_box = array.get(htf_bullish_fvg_boxes, i)
+        fvg_bottom = box.get_bottom(fvg_box)
+
+        if close < fvg_bottom
+            box.delete(fvg_box)
+            array.remove(htf_bullish_fvg_boxes, i)
+
+// Check HTF bearish FVGs for mitigation
+if array.size(htf_bearish_fvg_boxes) > 0
+    for i = array.size(htf_bearish_fvg_boxes) - 1 to 0
+        fvg_box = array.get(htf_bearish_fvg_boxes, i)
+        fvg_top = box.get_top(fvg_box)
+
+        if close > fvg_top
+            box.delete(fvg_box)
+            array.remove(htf_bearish_fvg_boxes, i)
+
+// Check LTF bullish FVGs for mitigation
+if array.size(ltf_bullish_fvg_boxes) > 0
+    for i = array.size(ltf_bullish_fvg_boxes) - 1 to 0
+        fvg_box = array.get(ltf_bullish_fvg_boxes, i)
+        fvg_bottom = box.get_bottom(fvg_box)
+
+        if close < fvg_bottom
+            box.delete(fvg_box)
+            array.remove(ltf_bullish_fvg_boxes, i)
+
+// Check LTF bearish FVGs for mitigation
+if array.size(ltf_bearish_fvg_boxes) > 0
+    for i = array.size(ltf_bearish_fvg_boxes) - 1 to 0
+        fvg_box = array.get(ltf_bearish_fvg_boxes, i)
+        fvg_top = box.get_top(fvg_box)
+
+        if close > fvg_top
+            box.delete(fvg_box)
+            array.remove(ltf_bearish_fvg_boxes, i)
+
+// ============================================================================
+// WILLIAMS FRACTALS DETECTION
+// ============================================================================
+
+// Up Fractal (Bearish): Middle candle has the highest high among 5 candles
+// Pattern: high[2] > high[4] AND high[2] > high[3] AND high[2] > high[1] AND high[2] > high[0]
+bool up_fractal = false
+if bar_index >= 4
+    up_fractal := high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
+
+// Down Fractal (Bullish): Middle candle has the lowest low among 5 candles
+// Pattern: low[2] < low[4] AND low[2] < low[3] AND low[2] < low[1] AND low[2] < low[0]
+bool down_fractal = false
+if bar_index >= 4
+    down_fractal := low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low[0]
+
+// ============================================================================
+// PLOT FRACTALS
+// ============================================================================
+
+// Plot up fractals (resistance points)
+plotshape(show_fractals and show_up_fractals and up_fractal,
+         title="Up Fractal",
+         style=shape.triangledown,
+         location=location.abovebar,
+         color=up_fractal_color,
+         size=size.small,
+         offset=-2)
+
+// Plot down fractals (support points)
+plotshape(show_fractals and show_down_fractals and down_fractal,
+         title="Down Fractal",
+         style=shape.triangleup,
+         location=location.belowbar,
+         color=down_fractal_color,
+         size=size.small,
+         offset=-2)

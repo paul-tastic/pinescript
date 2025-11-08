@@ -429,12 +429,26 @@ if use_manual_zones and show_manual_zones and demand_zone_configured
         // Delete old box if exists
         if not na(manual_demand_box)
             box.delete(manual_demand_box)
-        // Create new box starting from current bar
-        manual_demand_box := box.new(time, manual_demand_bottom, time, manual_demand_top, border_color=color.new(manual_demand_color, 50), bgcolor=manual_demand_color, border_width=2, xloc=xloc.bar_time)
+
+        // Look back to find first candle that intersects the zone
+        int lookback_bars = 500  // Max lookback
+        int start_bar = bar_index
+        for i = 0 to math.min(lookback_bars, bar_index)
+            // Check if bar intersects zone (not completely above or below)
+            bool bar_intersects = not (low[i] > manual_demand_top or high[i] < manual_demand_bottom)
+            if bar_intersects
+                start_bar := bar_index - i
+
+        // Calculate end time: current time + 10 bars, but cap at NY session end
+        int end_time = time + (10 * (time - time[1]))  // Approximate 10 bars forward
+
+        // Create new box starting from first intersection
+        manual_demand_box := box.new(time[bar_index - start_bar], manual_demand_bottom, end_time, manual_demand_top, border_color=color.new(manual_demand_color, 50), bgcolor=manual_demand_color, border_width=2, xloc=xloc.bar_time)
         manual_demand_active := true
     else
-        // Extend existing box to current bar
-        box.set_right(manual_demand_box, time)
+        // Update box right edge: current time + 10 bars
+        int end_time = time + (10 * (time - time[1]))
+        box.set_right(manual_demand_box, end_time)
 else
     // No demand zone configured, ensure it's deleted
     if not na(manual_demand_box)
@@ -448,12 +462,26 @@ if use_manual_zones and show_manual_zones and supply_zone_configured
         // Delete old box if exists
         if not na(manual_supply_box)
             box.delete(manual_supply_box)
-        // Create new box starting from current bar
-        manual_supply_box := box.new(time, manual_supply_bottom, time, manual_supply_top, border_color=color.new(manual_supply_color, 50), bgcolor=manual_supply_color, border_width=2, xloc=xloc.bar_time)
+
+        // Look back to find first candle that intersects the zone
+        int lookback_bars = 500  // Max lookback
+        int start_bar = bar_index
+        for i = 0 to math.min(lookback_bars, bar_index)
+            // Check if bar intersects zone (not completely above or below)
+            bool bar_intersects = not (low[i] > manual_supply_top or high[i] < manual_supply_bottom)
+            if bar_intersects
+                start_bar := bar_index - i
+
+        // Calculate end time: current time + 10 bars, but cap at NY session end
+        int end_time = time + (10 * (time - time[1]))  // Approximate 10 bars forward
+
+        // Create new box starting from first intersection
+        manual_supply_box := box.new(time[bar_index - start_bar], manual_supply_bottom, end_time, manual_supply_top, border_color=color.new(manual_supply_color, 50), bgcolor=manual_supply_color, border_width=2, xloc=xloc.bar_time)
         manual_supply_active := true
     else
-        // Extend existing box to current bar
-        box.set_right(manual_supply_box, time)
+        // Update box right edge: current time + 10 bars
+        int end_time = time + (10 * (time - time[1]))
+        box.set_right(manual_supply_box, end_time)
 else
     // No supply zone configured, ensure it's deleted
     if not na(manual_supply_box)

@@ -1,0 +1,1662 @@
+//mach2fx
+//@version=5
+indicator("Superheros S&D Zones", overlay=true, max_boxes_count=500)
+
+// todo:
+// 1. add trade time inputs
+// 2. add user checkboxes for days to trade
+// 3. add user option for only trading in direction of HTF+1 trend?
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// HTF Zone Settings
+htf = input.timeframe("60", "Higher Timeframe for S/D Zones", tooltip="Select higher timeframe for supply/demand zones")
+zone_strength = input.int(3, "Zone Strength (Pivot Bars)", minval=1, maxval=10, group="Zone Settings")
+max_zones = input.int(5, "Max Zones to Display", minval=1, maxval=20, group="Zone Settings")
+rbd_lookback = input.int(5, "RBD/DBR Lookback Bars", minval=2, maxval=20, group="Zone Settings", tooltip="How many bars to check for rally/drop before base")
+
+// Visual Settings
+supply_color = input.color(color.new(color.red, 85), "Supply Zone Color", group="Visual")
+demand_color = input.color(color.new(color.green, 85), "Demand Zone Color", group="Visual")
+
+// Superman Trade Setup
+enable_superman = input.bool(true, "Enable Superman Trade Setup", group="Superman Setup", tooltip="Track and visualize the multi-hurdle trade setup")
+show_hurdles = input.bool(true, "Show Hurdle Markers", group="Superman Setup")
+entry_zone_color = input.color(color.new(#FFFF00, 80), "Entry Zone Color (Light Yellow)", group="Superman Setup")
+show_debug_table = input.bool(true, "Show Debug Table", group="Superman Setup")
+sandwich_line_color = input.color(color.blue, "Sandwich Line Color", group="Superman Setup")
+stop_loss_ticks = input.int(3, "Stop Loss Ticks", minval=1, group="Superman Setup")
+risk_reward_ratio = input.float(2.0, "Risk:Reward Ratio", minval=0.5, step=0.5, group="Superman Setup")
+atr_invalidation_multiplier = input.float(2.0, "ATR Invalidation Multiplier", minval=0.5, step=0.5, group="Superman Setup", tooltip="How many ATRs away from sandwich line before setup becomes invalid")
+large_candle_multiplier = input.float(2.0, "Large Candle Threshold", minval=1.0, step=0.1, group="Superman Setup", tooltip="If point candle is X times larger than average, use 50% entry zone")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+var box[] supply_zones = array.new_box()
+var box[] demand_zones = array.new_box()
+
+// Track the last pivot values to detect new pivots (prevent duplicate zones on LTF)
+var float last_swing_high = na
+var float last_swing_low = na
+
+// Superman Trade Setup Variables
+var bool in_supply_zone = false
+var bool in_demand_zone = false
+var int active_zone_idx = -1
+var int last_zone_exit_bar = na  // Track when price last exited the zone
+
+// Point candle tracking (deepest candle in the zone)
+var float point_candle_open = na
+var float point_candle_close = na
+var float point_candle_high = na
+var float point_candle_low = na
+var int point_candle_bar = na
+var label point_candle_label = na
+// Track previous point to require deeper entry after trade/invalidation
+// IMPORTANT: These are per-zone, so we also track which zone they belong to
+var float prev_point_low = na  // For demand zones
+var float prev_point_high = na  // For supply zones
+var int prev_demand_zone_idx = -1  // Which demand zone the prev_point_low belongs to
+var int prev_supply_zone_idx = -1  // Which supply zone the prev_point_high belongs to
+
+// Sandwich pattern tracking (closest stick sandwich after point candle)
+var float sandwich_high = na
+var float sandwich_low = na
+var int sandwich_bar = na
+var line sandwich_line = na
+var bool sandwich_breached = false
+var line atr_invalidation_line = na
+
+// Entry zone (point candle body box after sandwich breach)
+var box entry_box = na
+var bool waiting_for_entry = false
+var float entry_zone_high = na  // Top of entry zone (may be reduced from point candle high)
+var float entry_zone_low = na   // Bottom of entry zone (may be reduced from point candle low)
+var float point_candle_size = na  // Size of the point candle (for debug)
+var float avg_candle_size = na    // Average candle size (for debug)
+
+// Trade levels
+var float entry_price = na
+var float stop_loss = na
+var float take_profit = na
+
+// Trade signals
+var bool buy_signal = false
+var bool sell_signal = false
+var label signal_label = na
+
+// Trade exit tracking
+var bool trade_active = false
+var string last_trade_result = ""
+var float last_trade_entry = na
+var float last_trade_sl = na
+var float last_trade_tp = na
+var float last_trade_rr = na
+var int status_clear_bar = na  // Bar index when to clear the status message
+var float last_point_candle_high = na  // Store point candle range for exit label positioning
+var float last_point_candle_low = na
+var box trade_profit_box = na  // Box showing profit zone (entry to TP)
+var box trade_loss_box = na  // Box showing loss zone (entry to SL)
+var int trade_start_time = na  // Track when trade started
+var label last_signal_label = na  // Store reference to BUY/SELL label to update with result
+
+// Arrays to track lines and boxes for cleanup (keep last 100)
+var array<box> all_entry_boxes = array.new<box>()
+var array<label> all_labels = array.new<label>()
+var array<box> all_trade_boxes = array.new<box>()
+var array<label> all_point_labels = array.new<label>()
+var array<line> all_sandwich_lines = array.new<line>()
+var array<line> all_atr_invalidation_lines = array.new<line>()
+
+// Current zone detection (for debug)
+var bool current_in_supply = false
+var bool current_in_demand = false
+var int current_supply_idx = -1
+var int current_demand_idx = -1
+
+// Hurdle status tracking
+var bool hurdle1_valid = false
+var bool hurdle2_valid = false
+var bool hurdle3_valid = false
+var bool hurdle4_valid = false  // Entry zone established
+var bool trade_entered = false
+var bool trade_voided = false
+var string invalidation_reason = ""
+
+// Debug tracking
+var bool debug_point_check = false
+var bool debug_is_same_zone = false
+var bool debug_must_go_deeper = false
+var bool debug_went_deeper = false
+
+// ============================================================================
+// HTF SUPPLY/DEMAND ZONE DETECTION
+// ============================================================================
+
+// Request HTF pivot data
+htf_swing_high = request.security(syminfo.tickerid, htf, ta.pivothigh(high, zone_strength, zone_strength), barmerge.gaps_off, barmerge.lookahead_off)
+htf_swing_low = request.security(syminfo.tickerid, htf, ta.pivotlow(low, zone_strength, zone_strength), barmerge.gaps_off, barmerge.lookahead_off)
+htf_pivot_high_price = request.security(syminfo.tickerid, htf, high[zone_strength], barmerge.gaps_off, barmerge.lookahead_off)
+htf_pivot_low_price = request.security(syminfo.tickerid, htf, low[zone_strength], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Get HTF data for Rally-Base-Drop / Drop-Base-Rally pattern detection
+// CRITICAL: Pivots are confirmed zone_strength bars AGO, so ALL pattern validation must use
+// historical data from THAT time period, NOT current data or recent LTF movements
+// For SUPPLY: Check for rally BEFORE the pivot (base), then drop AFTER
+// BEFORE: Look at bars BEFORE the pivot (zone_strength bars back + rbd_lookback period)
+htf_low_before_pivot = request.security(syminfo.tickerid, htf, ta.lowest(low, rbd_lookback)[zone_strength + rbd_lookback], barmerge.gaps_off, barmerge.lookahead_off)
+
+// AFTER: The "after" data should be from when the pivot was being CONFIRMED (zone_strength bars ago)
+// We look at the zone_strength period itself to see if there was a drop
+// This is the rbd_lookback bars starting FROM the pivot bar (zone_strength bars ago)
+htf_low_after_pivot = request.security(syminfo.tickerid, htf, ta.lowest(low, rbd_lookback)[zone_strength], barmerge.gaps_off, barmerge.lookahead_off)
+
+// For DEMAND: Check for drop BEFORE the pivot (base), then rally AFTER
+// BEFORE: Look at bars BEFORE the pivot
+htf_high_before_pivot = request.security(syminfo.tickerid, htf, ta.highest(high, rbd_lookback)[zone_strength + rbd_lookback], barmerge.gaps_off, barmerge.lookahead_off)
+
+// AFTER: The "after" data should be from when the pivot was being CONFIRMED
+htf_high_after_pivot = request.security(syminfo.tickerid, htf, ta.highest(high, rbd_lookback)[zone_strength], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Get HTF current close for zone confirmation (must be outside conditional blocks)
+htf_current_close = request.security(syminfo.tickerid, htf, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Get HTF close from when pivot was confirmed - use current HTF close since pivots appear zone_strength bars after formation
+// When a pivot is detected, we're already zone_strength bars past it, so current HTF close is what we need
+htf_close_at_pivot = htf_current_close
+
+// Get HTF time to track when we're on a new HTF bar
+htf_time = request.security(syminfo.tickerid, htf, time, barmerge.gaps_off, barmerge.lookahead_off)
+var float last_htf_time = na
+bool is_new_htf_bar = na(last_htf_time) or htf_time != last_htf_time
+if is_new_htf_bar
+    last_htf_time := htf_time
+
+// Calculate ATR for invalidation logic (14 period ATR on current timeframe)
+current_atr = ta.atr(14)
+
+// ============================================================================
+// CREATE SUPPLY ZONES (RALLY-BASE-DROP PATTERN)
+// ============================================================================
+
+// Create SUPPLY zone when HTF swing high is detected (price rejected from above - sellers present)
+// RALLY-BASE-DROP PATTERN:
+//   1. RALLY: Price rallied up into the pivot (from lower prices)
+//   2. BASE: The pivot represents consolidation (the base)
+//   3. DROP: Price dropped sharply after the pivot (sellers overwhelm buyers)
+//   4. HTF CLOSE CONFIRMATION: Current HTF close must be below the zone to confirm rejection
+// NOTE: Zone creation is controlled ONLY by HTF pivots, never by LTF setup state
+// CRITICAL: Only check for new pivots when we're on a NEW HTF bar to prevent duplicate zones
+is_new_swing_high = is_new_htf_bar and not na(htf_swing_high) and (na(last_swing_high) or htf_pivot_high_price != last_swing_high)
+if is_new_swing_high
+    last_swing_high := htf_pivot_high_price
+
+    // Zone is the range of the pivot candle where the move originated from (the BASE)
+    zone_top = htf_pivot_high_price
+    zone_bottom = htf_pivot_low_price
+
+    // RALLY-BASE-DROP VALIDATION:
+    // 1. RALLY: Price rallied INTO the base (low before pivot came from below the base)
+    // Check that price came from OUTSIDE the base (below zone_bottom), not from within consolidation
+    has_rally = not na(htf_low_before_pivot) and htf_low_before_pivot < zone_bottom
+
+    // 2. BASE: The pivot itself is the base (consolidation area)
+
+    // 3. DROP: Price dropped sharply AFTER the base (low after pivot went below the base)
+    // Check that price moved OUTSIDE the base (below zone_bottom), confirming sellers took control
+    has_drop = not na(htf_low_after_pivot) and htf_low_after_pivot < zone_bottom
+
+    // 4. CONFIRMATION: HTF must have closed through a SIGNIFICANT level
+    // CRITICAL: Use HTF close from when pivot was confirmed (zone_strength bars ago), NOT current close
+    // This prevents LTF price action from creating zones (htf_close_at_pivot is requested at top of script)
+    // IMPORTANT: Zone is ONLY created when HTF closes through a previous swing OR opposite zone
+    // This measures "significant price change" - NOT by the base itself
+    has_confirmation = false
+    string confirmation_type = ""
+
+    if not na(htf_close_at_pivot)
+        // Option 1: Check if HTF closed below a previous swing low (different from current base)
+        if not na(last_swing_low) and last_swing_low != htf_pivot_low_price
+            if htf_close_at_pivot < last_swing_low
+                has_confirmation := true
+                confirmation_type := "Swing"
+
+        // Option 2: Check if HTF closed below any existing demand zone
+        if not has_confirmation and array.size(demand_zones) > 0
+            for i = 0 to array.size(demand_zones) - 1
+                demand_zone = array.get(demand_zones, i)
+                demand_bottom = box.get_bottom(demand_zone)
+                if htf_close_at_pivot < demand_bottom
+                    has_confirmation := true
+                    confirmation_type := "Zone"
+                    break
+
+        // NO Option 3 fallback - zones ONLY created when HTF closes through significant levels
+        // The base consolidation area means nothing unless HTF closes through a previous swing or zone
+
+    // Valid supply zone requires Rally-Base-Drop pattern AND HTF close below significant level
+    // CRITICAL: All three components (rally, drop, confirmation) must be true
+    valid_supply_zone = has_rally and has_drop and has_confirmation
+
+    // Only create zone if it follows Rally-Base-Drop pattern
+    if valid_supply_zone
+        // Check if zone overlaps with existing zones
+        is_duplicate = false
+        if array.size(supply_zones) > 0
+            for i = 0 to array.size(supply_zones) - 1
+                existing_zone = array.get(supply_zones, i)
+                existing_top = box.get_top(existing_zone)
+                existing_bottom = box.get_bottom(existing_zone)
+
+                // Check for overlap
+                if not (zone_bottom > existing_top or zone_top < existing_bottom)
+                    is_duplicate := true
+                    break
+
+        if not is_duplicate
+            // Remove oldest zone if at max capacity
+            if array.size(supply_zones) >= max_zones
+                old_box = array.shift(supply_zones)
+                box.delete(old_box)
+
+            // Create new supply zone
+            zone_box = box.new(time, zone_top, time, zone_bottom,
+                              xloc=xloc.bar_time, extend=extend.right,
+                              border_color=supply_color, bgcolor=supply_color,
+                              border_width=2)
+            array.push(supply_zones, zone_box)
+
+            // Add label showing confirmation type at top-left of zone
+            label zone_label = label.new(time, zone_top, confirmation_type,
+                                         xloc=xloc.bar_time,
+                                         yloc=yloc.price,
+                                         style=label.style_label_down,
+                                         color=color.new(supply_color, 0),
+                                         textcolor=color.white,
+                                         size=size.tiny)
+
+// ============================================================================
+// CREATE DEMAND ZONES (DROP-BASE-RALLY PATTERN)
+// ============================================================================
+
+// Create DEMAND zone when HTF swing low is detected (price rejected from below - buyers present)
+// DROP-BASE-RALLY PATTERN:
+//   1. DROP: Price dropped down into the pivot (from higher prices)
+//   2. BASE: The pivot represents consolidation (the base)
+//   3. RALLY: Price rallied sharply after the pivot (buyers overwhelm sellers)
+//   4. HTF CLOSE CONFIRMATION: Current HTF close must be above the zone to confirm rejection
+// NOTE: Zone creation is controlled ONLY by HTF pivots, never by LTF setup state
+// CRITICAL: Only check for new pivots when we're on a NEW HTF bar to prevent duplicate zones
+is_new_swing_low = is_new_htf_bar and not na(htf_swing_low) and (na(last_swing_low) or htf_pivot_low_price != last_swing_low)
+if is_new_swing_low
+    last_swing_low := htf_pivot_low_price
+
+    // Zone is the range of the pivot candle where the move originated from (the BASE)
+    zone_top = htf_pivot_high_price
+    zone_bottom = htf_pivot_low_price
+
+    // DROP-BASE-RALLY VALIDATION:
+    // 1. DROP: Price dropped INTO the base (high before pivot came from above the base)
+    // Check that price came from OUTSIDE the base (above zone_top), not from within consolidation
+    has_drop = not na(htf_high_before_pivot) and htf_high_before_pivot > zone_top
+
+    // 2. BASE: The pivot itself is the base (consolidation area)
+
+    // 3. RALLY: Price rallied sharply AFTER the base (high after pivot went above the base)
+    // Check that price moved OUTSIDE the base (above zone_top), confirming buyers took control
+    has_rally = not na(htf_high_after_pivot) and htf_high_after_pivot > zone_top
+
+    // 4. CONFIRMATION: HTF must have closed through a SIGNIFICANT level
+    // CRITICAL: Use HTF close from when pivot was confirmed (zone_strength bars ago), NOT current close
+    // This prevents LTF price action from creating zones (htf_close_at_pivot is requested at top of script)
+    // IMPORTANT: Zone is ONLY created when HTF closes through a previous swing OR opposite zone
+    // This measures "significant price change" - NOT by the base itself
+    has_confirmation = false
+    string confirmation_type = ""
+
+    if not na(htf_close_at_pivot)
+        // Option 1: Check if HTF closed above a previous swing high (different from current base)
+        if not na(last_swing_high) and last_swing_high != htf_pivot_high_price
+            if htf_close_at_pivot > last_swing_high
+                has_confirmation := true
+                confirmation_type := "Swing"
+
+        // Option 2: Check if HTF closed above any existing supply zone
+        if not has_confirmation and array.size(supply_zones) > 0
+            for i = 0 to array.size(supply_zones) - 1
+                supply_zone = array.get(supply_zones, i)
+                supply_top = box.get_top(supply_zone)
+                if htf_close_at_pivot > supply_top
+                    has_confirmation := true
+                    confirmation_type := "Zone"
+                    break
+
+        // NO Option 3 fallback - zones ONLY created when HTF closes through significant levels
+        // The base consolidation area means nothing unless HTF closes through a previous swing or zone
+
+    // Valid demand zone requires Drop-Base-Rally pattern AND HTF close above significant level
+    // CRITICAL: All three components (drop, rally, confirmation) must be true
+    valid_demand_zone = has_drop and has_rally and has_confirmation
+
+    // Only create zone if it follows Drop-Base-Rally pattern
+    if valid_demand_zone
+        // Check if zone overlaps with existing zones
+        is_duplicate = false
+        if array.size(demand_zones) > 0
+            for i = 0 to array.size(demand_zones) - 1
+                existing_zone = array.get(demand_zones, i)
+                existing_top = box.get_top(existing_zone)
+                existing_bottom = box.get_bottom(existing_zone)
+
+                // Check for overlap
+                if not (zone_bottom > existing_top or zone_top < existing_bottom)
+                    is_duplicate := true
+                    break
+
+        if not is_duplicate
+            // Remove oldest zone if at max capacity
+            if array.size(demand_zones) >= max_zones
+                old_box = array.shift(demand_zones)
+                box.delete(old_box)
+
+            // Create new demand zone
+            zone_box = box.new(time, zone_top, time, zone_bottom,
+                              xloc=xloc.bar_time, extend=extend.right,
+                              border_color=demand_color, bgcolor=demand_color,
+                              border_width=2)
+            array.push(demand_zones, zone_box)
+
+            // Add label showing confirmation type at top-left of zone
+            label zone_label = label.new(time, zone_top, confirmation_type,
+                                         xloc=xloc.bar_time,
+                                         yloc=yloc.price,
+                                         style=label.style_label_down,
+                                         color=color.new(demand_color, 0),
+                                         textcolor=color.white,
+                                         size=size.tiny)
+
+// ============================================================================
+// SUPERMAN TRADE SETUP LOGIC
+// ============================================================================
+
+// Check if price is in any zone (always run this, not just when superman enabled)
+// Price just needs to ENTER the zone (wick into it), doesn't need to close inside
+current_in_supply := false
+current_supply_idx := -1
+if array.size(supply_zones) > 0
+    for i = 0 to array.size(supply_zones) - 1
+        supply_zone_box = array.get(supply_zones, i)
+        supply_zone_top = box.get_top(supply_zone_box)
+        supply_zone_bottom = box.get_bottom(supply_zone_box)
+        // Check if price touched the zone (high/low entered it)
+        if low <= supply_zone_top and high >= supply_zone_bottom
+            current_in_supply := true
+            current_supply_idx := i
+            break
+
+current_in_demand := false
+current_demand_idx := -1
+if array.size(demand_zones) > 0
+    for i = 0 to array.size(demand_zones) - 1
+        demand_zone_box = array.get(demand_zones, i)
+        demand_zone_top = box.get_top(demand_zone_box)
+        demand_zone_bottom = box.get_bottom(demand_zone_box)
+        // Check if price touched the zone (high/low entered it)
+        if low <= demand_zone_top and high >= demand_zone_bottom
+            current_in_demand := true
+            current_demand_idx := i
+            break
+
+// Track when price exits the zone (for debugging)
+// This helps monitor the "bars out of zone" counter
+if not trade_active
+    // Check if we have an active setup but are currently NOT in the zone
+    bool have_demand_setup = not na(point_candle_low) or hurdle1_valid or hurdle2_valid or hurdle3_valid or hurdle4_valid
+    bool have_supply_setup = not na(point_candle_high) or hurdle1_valid or hurdle2_valid or hurdle3_valid or hurdle4_valid
+
+    // If we have a demand setup but not currently in demand zone, track exit
+    if have_demand_setup and not current_in_demand
+        // If this is the first bar out of zone, record it
+        if na(last_zone_exit_bar)
+            last_zone_exit_bar := bar_index
+
+    // If we have a supply setup but not currently in supply zone, track exit
+    if have_supply_setup and not current_in_supply
+        // If this is the first bar out of zone, record it
+        if na(last_zone_exit_bar)
+            last_zone_exit_bar := bar_index
+
+    // If we re-enter the zone, reset the exit tracking
+    if (have_demand_setup and current_in_demand) or (have_supply_setup and current_in_supply)
+        last_zone_exit_bar := na
+
+if enable_superman
+    // Reset signals each bar
+    buy_signal := false
+    sell_signal := false
+    debug_point_check := false  // Reset debug flag each bar
+    debug_is_same_zone := false
+    debug_must_go_deeper := false
+    debug_went_deeper := false
+
+    // Clear status message and reset debug table values after next bar closes
+    // IMPORTANT: Only reset when trade is NOT active - keep hurdles displayed during active trade
+    if not na(status_clear_bar) and bar_index >= status_clear_bar and not trade_active
+        last_trade_result := ""
+        status_clear_bar := na
+        // Reset all hurdle tracking for clean debug table
+        hurdle1_valid := false
+        hurdle2_valid := false
+        hurdle3_valid := false
+        hurdle4_valid := false
+        trade_entered := false
+        trade_voided := false
+        invalidation_reason := ""
+        // Save previous point levels to require deeper entry next time
+        // Also save which zone this point belongs to (per-zone depth requirement)
+        if not na(point_candle_low)
+            prev_point_low := point_candle_low
+            prev_demand_zone_idx := active_zone_idx
+        if not na(point_candle_high)
+            prev_point_high := point_candle_high
+            prev_supply_zone_idx := active_zone_idx
+        // Reset all setup tracking variables
+        // IMPORTANT: Do NOT reset in_demand_zone or in_supply_zone here
+        // This prevents immediately re-entering a setup if price is still in a zone
+        // Only reset point/sandwich/entry tracking
+        point_candle_bar := na
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        entry_price := na
+        stop_loss := na
+        take_profit := na
+        // Reset zone flags to prevent immediate re-entry
+        in_demand_zone := false
+        in_supply_zone := false
+        // Reset zone exit tracking
+        last_zone_exit_bar := na
+
+    // ========================================================================
+    // INVALIDATION CONDITIONS - Reset old setups
+    // ========================================================================
+
+    // Check if setup is voided due to price moving 2xATR away from sandwich after breach
+    // IMPORTANT: Only invalidate BEFORE trade entry (waiting_for_entry), not after trade is taken
+    // ALSO: Do not show invalidation labels during an active trade
+    if sandwich_breached and waiting_for_entry and not trade_active
+        // For demand zone (bullish): check if price moved 2xATR ABOVE sandwich high
+        if in_demand_zone and not na(sandwich_high) and close > (sandwich_high + (current_atr * atr_invalidation_multiplier))
+            trade_voided := true
+            invalidation_reason := "Price moved 2xATR above sandwich"
+            last_trade_result := "Invalid: " + invalidation_reason  // Show in status
+            // Save previous point levels to require deeper entry next time
+            // Also save which zone this point belongs to (per-zone depth requirement)
+            if not na(point_candle_low)
+                prev_point_low := point_candle_low
+                prev_demand_zone_idx := active_zone_idx
+            // Invalidate the setup
+            in_demand_zone := false
+            hurdle1_valid := false
+            hurdle2_valid := false
+            hurdle3_valid := false
+            hurdle4_valid := false
+            point_candle_bar := na
+            point_candle_open := na
+            point_candle_close := na
+            point_candle_high := na
+            point_candle_low := na
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_bar := na
+            sandwich_breached := false
+            waiting_for_entry := false
+            // Don't delete entry_box - keep it visible on chart (managed by array)
+            entry_box := na
+            // Create invalidation label
+            label inv_label = label.new(bar_index, high, "Invalid: " + invalidation_reason,
+                                         style=label.style_label_down,
+                                         color=color.new(color.orange, 0),
+                                         textcolor=color.white, size=size.small)
+            array.push(all_labels, inv_label)
+            if array.size(all_labels) > 100
+                old_label = array.shift(all_labels)
+                label.delete(old_label)
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+
+        // For supply zone (bearish): check if price moved 2xATR BELOW sandwich low
+        if in_supply_zone and not na(sandwich_low) and close < (sandwich_low - (current_atr * atr_invalidation_multiplier))
+            trade_voided := true
+            invalidation_reason := "Price moved 2xATR below sandwich"
+            last_trade_result := "Invalid: " + invalidation_reason  // Show in status
+            // Save previous point levels to require deeper entry next time
+            // Also save which zone this point belongs to (per-zone depth requirement)
+            if not na(point_candle_high)
+                prev_point_high := point_candle_high
+                prev_supply_zone_idx := active_zone_idx
+            // Invalidate the setup
+            in_supply_zone := false
+            hurdle1_valid := false
+            hurdle2_valid := false
+            hurdle3_valid := false
+            hurdle4_valid := false
+            point_candle_bar := na
+            point_candle_open := na
+            point_candle_close := na
+            point_candle_high := na
+            point_candle_low := na
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_bar := na
+            sandwich_breached := false
+            waiting_for_entry := false
+            // Don't delete entry_box - keep it visible on chart (managed by array)
+            entry_box := na
+            // Create invalidation label
+            label inv_label = label.new(bar_index, low, "Invalid: " + invalidation_reason,
+                                         style=label.style_label_up,
+                                         color=color.new(color.orange, 0),
+                                         textcolor=color.white, size=size.small)
+            array.push(all_labels, inv_label)
+            if array.size(all_labels) > 100
+                old_label = array.shift(all_labels)
+                label.delete(old_label)
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+
+    // Condition 1: Price touches opposite color zone - invalidate immediately
+    // IMPORTANT: Do not invalidate or show labels during an active trade
+    if current_in_supply and in_demand_zone and not trade_active
+        // Was tracking demand setup, now in supply zone - invalidate demand setup
+        invalidation_reason := "Entered opposite (supply) zone"
+        last_trade_result := "Invalid: " + invalidation_reason  // Show in status
+        // Save previous point levels to require deeper entry next time
+        // Also save which zone this point belongs to (per-zone depth requirement)
+        if not na(point_candle_low)
+            prev_point_low := point_candle_low
+            prev_demand_zone_idx := active_zone_idx
+        in_demand_zone := false
+        hurdle1_valid := false
+        hurdle2_valid := false
+        hurdle3_valid := false
+        hurdle4_valid := false
+        trade_entered := false
+        trade_voided := true
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        point_candle_size := na
+        avg_candle_size := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        // Don't delete point_candle_label, sandwich_line, or entry_box - arrays will manage them
+        point_candle_label := na
+        sandwich_line := na
+        entry_box := na
+        // Create invalidation label
+        label inv_label = label.new(bar_index, low, "Invalid: " + invalidation_reason,
+                                     style=label.style_label_up,
+                                     color=color.new(color.orange, 0),
+                                     textcolor=color.white, size=size.small)
+        array.push(all_labels, inv_label)
+        if array.size(all_labels) > 100
+            old_label = array.shift(all_labels)
+            label.delete(old_label)
+        // Set status clear for next bar
+        status_clear_bar := bar_index + 1
+
+    if current_in_demand and in_supply_zone and not trade_active
+        // Was tracking supply setup, now in demand zone - invalidate supply setup
+        invalidation_reason := "Entered opposite (demand) zone"
+        last_trade_result := "Invalid: " + invalidation_reason  // Show in status
+        // Save previous point levels to require deeper entry next time
+        // Also save which zone this point belongs to (per-zone depth requirement)
+        if not na(point_candle_high)
+            prev_point_high := point_candle_high
+            prev_supply_zone_idx := active_zone_idx
+        in_supply_zone := false
+        hurdle1_valid := false
+        hurdle2_valid := false
+        hurdle3_valid := false
+        hurdle4_valid := false
+        trade_entered := false
+        trade_voided := true
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        point_candle_size := na
+        avg_candle_size := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        // Don't delete point_candle_label, sandwich_line, or entry_box - arrays will manage them
+        point_candle_label := na
+        sandwich_line := na
+        entry_box := na
+        // Create invalidation label
+        label inv_label = label.new(bar_index, high, "Invalid: " + invalidation_reason,
+                                     style=label.style_label_down,
+                                     color=color.new(color.orange, 0),
+                                     textcolor=color.white, size=size.small)
+        array.push(all_labels, inv_label)
+        if array.size(all_labels) > 100
+            old_label = array.shift(all_labels)
+            label.delete(old_label)
+        // Set status clear for next bar
+        status_clear_bar := bar_index + 1
+
+    // Invalidate if we have an old setup that's too far away or new same-zone entry
+    // IMPORTANT: Do not invalidate or show labels during an active trade
+    if not na(point_candle_bar) and not trade_active
+
+        // Condition 2 & 3: New setup starting (entering same zone type again) OR too far away (25 bars)
+        bars_since_point = bar_index - point_candle_bar
+        if (current_in_demand and not in_demand_zone and not na(point_candle_low)) or (current_in_supply and not in_supply_zone and not na(point_candle_high)) or bars_since_point > 25
+            // Reset all variables
+            if bars_since_point > 25
+                invalidation_reason := "Setup too old (>25 bars)"
+            else
+                invalidation_reason := "Re-entered same zone type"
+            last_trade_result := "Invalid: " + invalidation_reason  // Show in status
+            // Save previous point levels to require deeper entry next time
+            // Also save which zone this point belongs to (per-zone depth requirement)
+            if not na(point_candle_low)
+                prev_point_low := point_candle_low
+                prev_demand_zone_idx := active_zone_idx
+            if not na(point_candle_high)
+                prev_point_high := point_candle_high
+                prev_supply_zone_idx := active_zone_idx
+            in_demand_zone := false
+            in_supply_zone := false
+            hurdle1_valid := false
+            hurdle2_valid := false
+            hurdle3_valid := false
+            hurdle4_valid := false
+            trade_entered := false
+            trade_voided := true
+            point_candle_open := na
+            point_candle_close := na
+            point_candle_high := na
+            point_candle_low := na
+            point_candle_bar := na
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_bar := na
+            sandwich_breached := false
+            waiting_for_entry := false
+            if not na(point_candle_label)
+                label.delete(point_candle_label)
+                point_candle_label := na
+            if not na(sandwich_line)
+                line.delete(sandwich_line)
+                sandwich_line := na
+            // Don't delete entry_box - keep it visible on chart (managed by array)
+            entry_box := na
+            // Create invalidation label
+            label inv_label = label.new(bar_index, in_demand_zone ? low : high, "Invalid: " + invalidation_reason,
+                                         style=in_demand_zone ? label.style_label_up : label.style_label_down,
+                                         color=color.new(color.orange, 0),
+                                         textcolor=color.white, size=size.small)
+            array.push(all_labels, inv_label)
+            if array.size(all_labels) > 100
+                old_label = array.shift(all_labels)
+                label.delete(old_label)
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+
+    // ========================================================================
+    // DEMAND ZONE SETUP (LONG) - Buy Setup
+    // ========================================================================
+
+    // STEP 1: Enter demand zone (Hurdle #1)
+    // IMPORTANT: Cannot start new setup during active trade
+    if current_in_demand and not in_demand_zone and not trade_active
+        in_demand_zone := true
+        active_zone_idx := current_demand_idx
+        hurdle1_valid := true
+        hurdle2_valid := false
+        hurdle3_valid := false
+        hurdle4_valid := false
+        trade_entered := false
+        trade_voided := false
+        invalidation_reason := ""  // Clear any previous invalidation reason
+        // Reset all setup variables
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        point_candle_size := na
+        avg_candle_size := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        // CRITICAL FIX: Always clear previous point requirement when entering ANY zone fresh
+        // This ensures we can create a point immediately on zone entry
+        prev_point_low := na
+        prev_demand_zone_idx := -1
+        // Don't delete point_candle_label, sandwich_line, or entry_box - arrays will manage them
+        point_candle_label := na
+        sandwich_line := na
+        entry_box := na
+
+    // STEP 2: Track point candle (deepest candle in zone - lowest low)
+    // IMPORTANT: Only track point candles BEFORE sandwich is breached AND not during an active trade
+    // NOTE: Point candle is established as soon as zone is entered, then updated if price goes deeper
+    // DEEPER REQUIREMENT: After trade/invalidation, price must go deeper than previous point
+    // CRITICAL: Must be currently IN the zone to update the point (current_in_demand)
+    if in_demand_zone and current_in_demand and not sandwich_breached and not trade_active and active_zone_idx >= 0 and active_zone_idx < array.size(demand_zones)
+        // Check if we need to go deeper than previous point (after trade/invalidation)
+        // IMPORTANT: Only apply depth requirement if re-entering the SAME zone
+        bool is_same_zone = active_zone_idx == prev_demand_zone_idx
+        bool must_go_deeper = is_same_zone and not na(prev_point_low)
+        bool went_deeper = true
+        if must_go_deeper
+            went_deeper := low < prev_point_low
+
+        // DEBUG: Set debug flags for plotting
+        debug_is_same_zone := is_same_zone
+        debug_must_go_deeper := must_go_deeper
+        debug_went_deeper := went_deeper
+
+        // DEBUG: Log when we're about to check point creation
+        bool ready_for_point_creation = went_deeper and (na(point_candle_low) or low < point_candle_low)
+        debug_point_check := ready_for_point_creation
+
+        // Update point candle if:
+        // 1. First entry into zone (no point exists yet) - must go deeper than prev point (if same zone)
+        // 2. Going deeper than current point - must also go deeper than prev point (if same zone)
+        // In both cases, must satisfy the went_deeper requirement
+        if ready_for_point_creation
+            // This is a NEW point (deeper in zone) - delete old sandwich line and point label
+            if not na(point_candle_label)
+                label.delete(point_candle_label)
+            if not na(sandwich_line)
+                line.delete(sandwich_line)
+
+            point_candle_open := open
+            point_candle_close := close
+            point_candle_high := high
+            point_candle_low := low
+            point_candle_bar := bar_index
+
+            // Clear the previous point requirement once we've established a new point
+            prev_point_low := na
+            prev_demand_zone_idx := -1
+
+            // Reset sandwich tracking for new point
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_bar := na
+            sandwich_line := na
+
+            // Hurdle 2 is now valid (point established)
+            hurdle2_valid := true
+
+            // Draw arrow below the point candle (with some space)
+            if show_hurdles
+                arrow_y = low - (high - low) * 0.5  // Place arrow with 50% of candle range below
+                point_candle_label := label.new(bar_index, arrow_y, "POINT",
+                                       style=label.style_label_up,
+                                       color=color.new(color.orange, 0),
+                                       textcolor=color.white, size=size.small)
+                array.push(all_point_labels, point_candle_label)
+                if array.size(all_point_labels) > 100
+                    old_label = array.shift(all_point_labels)
+                    label.delete(old_label)
+
+            // Find new sandwich line for this new point
+            // IMMEDIATELY find sandwich line by looking backward for first bearish candle(s)
+            // For demand zone (bullish setup), look for last bearish move before point
+            // Look back up to 50 bars to find the last bearish candle/grouping
+            int lookback_limit = math.min(bar_index, 50)
+            for i = 1 to lookback_limit
+                if i <= bar_index and i <= 5000  // Safety check for history access
+                    candle_open = open[i]
+                    candle_close = close[i]
+                    candle_high = high[i]
+                    candle_low = low[i]
+
+                    // Found a bearish candle (close < open)
+                    if candle_close < candle_open
+                        // This is a bearish candle - track it
+                        if na(sandwich_high) or candle_high > sandwich_high
+                            sandwich_high := candle_high
+                        if na(sandwich_low) or candle_low < sandwich_low
+                            sandwich_low := candle_low
+                        sandwich_bar := bar_index - i
+                    else
+                        // Found a bullish candle - if we already found bearish candles, stop here
+                        if not na(sandwich_high)
+                            break
+
+    // STEP 3: Search for sandwich if we have a point but no sandwich found yet
+    // This runs even if price exits the zone, to ensure sandwich is always found
+    if in_demand_zone and not sandwich_breached and not na(point_candle_bar) and na(sandwich_high)
+        // Search backward from point candle for the last bearish move
+        // We need to look at bars BEFORE the point candle
+        int bars_since_point = bar_index - point_candle_bar
+        int lookback_limit = math.min(50, point_candle_bar)  // Don't go past bar 0
+
+        for i = bars_since_point + 1 to bars_since_point + lookback_limit
+            if i <= bar_index and i <= 5000  // Safety check for history access
+                candle_open = open[i]
+                candle_close = close[i]
+                candle_high = high[i]
+                candle_low = low[i]
+
+                // Found a bearish candle (close < open)
+                if candle_close < candle_open
+                    // This is a bearish candle - track it
+                    if na(sandwich_high) or candle_high > sandwich_high
+                        sandwich_high := candle_high
+                    if na(sandwich_low) or candle_low < sandwich_low
+                        sandwich_low := candle_low
+                    sandwich_bar := bar_index - i
+                else
+                    // Found a bullish candle - if we already found bearish candles, stop here
+                    if not na(sandwich_high)
+                        break
+
+    // STEP 3a: Draw sandwich line immediately when point is established
+    // Check if we have a point candle but no sandwich line drawn yet
+    if in_demand_zone and not sandwich_breached and not na(point_candle_bar) and na(sandwich_line)
+        // Draw sandwich line using most recent sandwich BEFORE the point
+        if not na(sandwich_high) and not na(sandwich_bar) and sandwich_bar < point_candle_bar
+            // Draw new sandwich line at the high (this is the level to breach)
+            // Calculate time for the sandwich bar
+            bars_back = bar_index - sandwich_bar
+            if bars_back <= 5000  // Safety check
+                sandwich_time = time[bars_back]
+                sandwich_line := line.new(sandwich_time, sandwich_high, sandwich_time, sandwich_high, xloc=xloc.bar_time, extend=extend.none, color=sandwich_line_color, width=2, style=line.style_solid)
+                array.push(all_sandwich_lines, sandwich_line)
+                if array.size(all_sandwich_lines) > 100
+                    old_line = array.shift(all_sandwich_lines)
+                    line.delete(old_line)
+
+    // STEP 3b: Update sandwich line (only if NOT breached yet)
+    // Extend sandwich line 10 bars or until breached
+    if in_demand_zone and not sandwich_breached and not na(sandwich_line) and not na(sandwich_bar)
+        bars_since_sandwich = bar_index - sandwich_bar
+        if bars_since_sandwich <= 10
+            line.set_x2(sandwich_line, time)
+        // Stop extending after 10 bars (line stays at bar 10)
+
+    // STEP 4: Check if price closes above sandwich line (CHECK THIS FIRST!)
+    if in_demand_zone and not na(sandwich_high) and not sandwich_breached and close > sandwich_high
+        sandwich_breached := true
+        waiting_for_entry := true
+        hurdle3_valid := true  // Hurdle 3 complete - sandwich breached
+        hurdle4_valid := true  // Hurdle 4 complete - entry zone established
+
+        // Stop extending the sandwich line at the breach point
+        if not na(sandwich_line)
+            line.set_x2(sandwich_line, time)
+
+        // Check if point candle is unusually large compared to recent candles
+        // Calculate average candle size over last 10 bars (excluding current point candle)
+        float temp_avg = 0.0
+        int candles_to_check = 10
+        int bars_back_to_point = bar_index - point_candle_bar
+        for i = bars_back_to_point + 1 to bars_back_to_point + candles_to_check
+            if i <= bar_index and i <= 5000  // Safety check
+                temp_avg := temp_avg + (high[i] - low[i])
+        avg_candle_size := temp_avg / candles_to_check
+
+        // Check if point candle is significantly larger than average
+        point_candle_size := point_candle_high - point_candle_low
+        bool is_large_candle = point_candle_size > (avg_candle_size * large_candle_multiplier)
+
+        // Calculate entry zone levels - use 50% of range if candle is too large
+        entry_zone_high := point_candle_high
+        entry_zone_low := point_candle_low
+
+        if is_large_candle
+            // Use middle 50% of the point candle for entry
+            float candle_midpoint = (point_candle_high + point_candle_low) / 2
+            float half_range = (point_candle_high - point_candle_low) / 4  // 25% on each side
+            entry_zone_high := candle_midpoint + half_range
+            entry_zone_low := candle_midpoint - half_range
+
+        // Draw entry box around entry zone (full range or 50% depending on candle size)
+        if not na(entry_box)
+            box.delete(entry_box)
+        point_candle_time = time[bar_index - point_candle_bar]
+        // Create entry box - will extend continuously until trade entry or invalidation
+        entry_box := box.new(point_candle_time, entry_zone_high, time, entry_zone_low, xloc=xloc.bar_time, extend=extend.none, border_color=entry_zone_color, bgcolor=entry_zone_color, border_width=2, border_style=line.style_solid)
+        array.push(all_entry_boxes, entry_box)
+
+        // Keep only last 100 boxes
+        if array.size(all_entry_boxes) > 100
+            old_box = array.shift(all_entry_boxes)
+            box.delete(old_box)
+
+        // Calculate trade levels based on entry zone range
+        entry_price := entry_zone_high  // Entry at top of entry zone
+        stop_loss := point_candle_low - (stop_loss_ticks * syminfo.mintick)  // SL still at point candle low minus ticks
+        risk = entry_price - stop_loss
+        take_profit := entry_price + (risk * risk_reward_ratio)  // TP at 2:1 RR
+
+        // Draw 2xATR invalidation line (for demand zones, this is ABOVE sandwich high)
+        float atr_invalidation_level = sandwich_high + (current_atr * atr_invalidation_multiplier)
+        atr_invalidation_line := line.new(time, atr_invalidation_level, time, atr_invalidation_level, xloc=xloc.bar_time, extend=extend.none, color=color.black, width=1, style=line.style_dashed)
+        array.push(all_atr_invalidation_lines, atr_invalidation_line)
+        if array.size(all_atr_invalidation_lines) > 100
+            old_line = array.shift(all_atr_invalidation_lines)
+            line.delete(old_line)
+
+    // Update entry box and ATR invalidation line extension - extend until trade entry or invalidation
+    if waiting_for_entry and not na(entry_box)
+        // Continuously extend the entry box until trade is entered or invalidated
+        box.set_right(entry_box, time)
+        // Extend ATR invalidation line
+        if not na(atr_invalidation_line)
+            line.set_x2(atr_invalidation_line, time)
+
+    // STEP 5: Check for entry signal (buy when price enters entry zone)
+    // IMPORTANT: Only trigger buy signal if we're actually in a demand zone setup
+    if in_demand_zone and waiting_for_entry and not na(entry_price)
+        if low <= entry_zone_high and high >= entry_zone_low
+            buy_signal := true
+            trade_entered := true  // Trade has been entered
+            trade_active := true   // Start tracking active trade
+            status_clear_bar := na  // Clear any pending status clear from previous trade
+            last_trade_entry := entry_price
+            last_trade_sl := stop_loss
+            last_trade_tp := take_profit
+            last_trade_rr := risk_reward_ratio
+            last_trade_result := ""  // Clear previous result
+            last_point_candle_high := point_candle_high  // Store for exit label positioning
+            last_point_candle_low := point_candle_low
+            trade_start_time := time  // Track when trade started
+            if show_hurdles
+                // Delete the point label since trade is being entered
+                if not na(point_candle_label)
+                    label.delete(point_candle_label)
+                    point_candle_label := na
+
+                // Position BUY label below the point candle low
+                label_y = point_candle_low - (point_candle_high - point_candle_low) * 0.5
+                signal_label := label.new(bar_index, label_y, "BUY",
+                                         style=label.style_label_up,
+                                         color=color.new(color.green, 0),
+                                         textcolor=color.white, size=size.normal)
+                array.push(all_labels, signal_label)
+                // Store reference to update later with trade result
+                last_signal_label := signal_label
+
+                // Keep only last 100 labels
+                if array.size(all_labels) > 100
+                    old_label = array.shift(all_labels)
+                    label.delete(old_label)
+
+            // Create trade profit box (from entry to TP) - green shaded
+            trade_profit_box := box.new(time, take_profit, time, entry_price,
+                                         xloc=xloc.bar_time,
+                                         border_color=color.new(color.green, 70),
+                                         bgcolor=color.new(color.green, 92),
+                                         border_width=1,
+                                         border_style=line.style_solid)
+            array.push(all_trade_boxes, trade_profit_box)
+
+            // Create trade loss box (from entry to SL) - red shaded
+            trade_loss_box := box.new(time, entry_price, time, stop_loss,
+                                       xloc=xloc.bar_time,
+                                       border_color=color.new(color.red, 70),
+                                       bgcolor=color.new(color.red, 92),
+                                       border_width=1,
+                                       border_style=line.style_solid)
+            array.push(all_trade_boxes, trade_loss_box)
+
+            // Keep only last 100 boxes
+            if array.size(all_trade_boxes) > 100
+                old_box = array.shift(all_trade_boxes)
+                box.delete(old_box)
+            if array.size(all_trade_boxes) > 100
+                old_box = array.shift(all_trade_boxes)
+                box.delete(old_box)
+
+            // Reset setup after signal (keep point label, sandwich line, and entry box visible)
+            in_demand_zone := false
+            waiting_for_entry := false
+            // Don't reset entry_box to na - keep the reference so it stays visible on chart
+            // Don't delete point_candle_label or sandwich_line - leave them visible
+
+    // NOTE: Hurdle 1 (zone entry) is NOT invalidated by price exiting the zone
+    // Once price enters a zone, the setup remains valid until:
+    // 1. A new deeper point candle is formed (handled in point candle tracking)
+    // 2. Price moves 2xATR from sandwich line (handled in ATR invalidation)
+    // 3. Price enters opposite zone type (handled above)
+    // 4. Setup is too old or re-entering same zone (handled above)
+
+    // ========================================================================
+    // SUPPLY ZONE SETUP (SHORT) - Sell Setup
+    // ========================================================================
+
+    // STEP 1: Enter supply zone (Hurdle #1)
+    // IMPORTANT: Cannot start new setup during active trade
+    if current_in_supply and not in_supply_zone and not trade_active
+        in_supply_zone := true
+        active_zone_idx := current_supply_idx
+        hurdle1_valid := true
+        hurdle2_valid := false
+        hurdle3_valid := false
+        hurdle4_valid := false
+        trade_entered := false
+        trade_voided := false
+        invalidation_reason := ""  // Clear any previous invalidation reason
+        // Reset all setup variables
+        point_candle_open := na
+        point_candle_close := na
+        point_candle_high := na
+        point_candle_low := na
+        point_candle_bar := na
+        point_candle_size := na
+        avg_candle_size := na
+        sandwich_high := na
+        sandwich_low := na
+        sandwich_bar := na
+        sandwich_breached := false
+        waiting_for_entry := false
+        // CRITICAL FIX: Always clear previous point requirement when entering ANY zone fresh
+        // This ensures we can create a point immediately on zone entry
+        prev_point_high := na
+        prev_supply_zone_idx := -1
+        // Don't delete point_candle_label, sandwich_line, or entry_box - arrays will manage them
+        point_candle_label := na
+        sandwich_line := na
+        entry_box := na
+
+    // STEP 2: Track point candle (deepest candle in zone - highest high)
+    // IMPORTANT: Only track point candles BEFORE sandwich is breached AND not during an active trade
+    // NOTE: Point candle is established as soon as zone is entered, then updated if price goes deeper
+    // DEEPER REQUIREMENT: After trade/invalidation, price must go deeper than previous point
+    // CRITICAL: Must be currently IN the zone to update the point (current_in_supply)
+    if in_supply_zone and current_in_supply and not sandwich_breached and not trade_active and active_zone_idx >= 0 and active_zone_idx < array.size(supply_zones)
+        // Check if we need to go deeper than previous point (after trade/invalidation)
+        // IMPORTANT: Only apply depth requirement if re-entering the SAME zone
+        bool is_same_zone = active_zone_idx == prev_supply_zone_idx
+        bool must_go_deeper = is_same_zone and not na(prev_point_high)
+        bool went_deeper = true
+        if must_go_deeper
+            went_deeper := high > prev_point_high
+
+        // Update point candle if:
+        // 1. First entry into zone (no point exists yet) - must go deeper than prev point (if same zone)
+        // 2. Going deeper than current point - must also go deeper than prev point (if same zone)
+        // In both cases, must satisfy the went_deeper requirement
+        if went_deeper and (na(point_candle_high) or high > point_candle_high)
+            // This is a NEW point (deeper in zone) - delete old sandwich line and point label
+            if not na(point_candle_label)
+                label.delete(point_candle_label)
+            if not na(sandwich_line)
+                line.delete(sandwich_line)
+
+            point_candle_open := open
+            point_candle_close := close
+            point_candle_high := high
+            point_candle_low := low
+            point_candle_bar := bar_index
+
+            // Clear the previous point requirement once we've established a new point
+            prev_point_high := na
+            prev_supply_zone_idx := -1
+
+            // Reset sandwich tracking for new point
+            sandwich_high := na
+            sandwich_low := na
+            sandwich_bar := na
+            sandwich_line := na
+
+            // Hurdle 2 is now valid (point established)
+            hurdle2_valid := true
+
+            // Draw arrow above the point candle (with some space)
+            if show_hurdles
+                arrow_y = high + (high - low) * 0.5  // Place arrow with 50% of candle range above
+                point_candle_label := label.new(bar_index, arrow_y, "POINT",
+                                       style=label.style_label_down,
+                                       color=color.new(color.orange, 0),
+                                       textcolor=color.white, size=size.small)
+                array.push(all_point_labels, point_candle_label)
+                if array.size(all_point_labels) > 100
+                    old_label = array.shift(all_point_labels)
+                    label.delete(old_label)
+
+            // Find new sandwich line for this new point
+            // IMMEDIATELY find sandwich line by looking backward for first bullish candle(s)
+            // For supply zone (bearish setup), look for last bullish move before point
+            // Look back up to 50 bars to find the last bullish candle/grouping
+            int lookback_limit = math.min(bar_index, 50)
+            for i = 1 to lookback_limit
+                if i <= bar_index and i <= 5000  // Safety check for history access
+                    candle_open = open[i]
+                    candle_close = close[i]
+                    candle_high = high[i]
+                    candle_low = low[i]
+
+                    // Found a bullish candle (close > open)
+                    if candle_close > candle_open
+                        // This is a bullish candle - track it
+                        if na(sandwich_high) or candle_high > sandwich_high
+                            sandwich_high := candle_high
+                        if na(sandwich_low) or candle_low < sandwich_low
+                            sandwich_low := candle_low
+                        sandwich_bar := bar_index - i
+                    else
+                        // Found a bearish candle - if we already found bullish candles, stop here
+                        if not na(sandwich_low)
+                            break
+
+    // STEP 3: Search for sandwich if we have a point but no sandwich found yet
+    // This runs even if price exits the zone, to ensure sandwich is always found
+    if in_supply_zone and not sandwich_breached and not na(point_candle_bar) and na(sandwich_low)
+        // Search backward from point candle for the last bullish move
+        // We need to look at bars BEFORE the point candle
+        int bars_since_point = bar_index - point_candle_bar
+        int lookback_limit = math.min(50, point_candle_bar)  // Don't go past bar 0
+
+        for i = bars_since_point + 1 to bars_since_point + lookback_limit
+            if i <= bar_index and i <= 5000  // Safety check for history access
+                candle_open = open[i]
+                candle_close = close[i]
+                candle_high = high[i]
+                candle_low = low[i]
+
+                // Found a bullish candle (close > open)
+                if candle_close > candle_open
+                    // This is a bullish candle - track it
+                    if na(sandwich_high) or candle_high > sandwich_high
+                        sandwich_high := candle_high
+                    if na(sandwich_low) or candle_low < sandwich_low
+                        sandwich_low := candle_low
+                    sandwich_bar := bar_index - i
+                else
+                    // Found a bearish candle - if we already found bullish candles, stop here
+                    if not na(sandwich_low)
+                        break
+
+    // STEP 3a: Draw sandwich line immediately when point is established
+    // Check if we have a point candle but no sandwich line drawn yet
+    if in_supply_zone and not sandwich_breached and not na(point_candle_bar) and na(sandwich_line)
+        // Draw sandwich line using most recent sandwich BEFORE the point
+        if not na(sandwich_low) and not na(sandwich_bar) and sandwich_bar < point_candle_bar
+            // Draw new sandwich line at the low (this is the level to breach)
+            // Calculate time for the sandwich bar
+            bars_back = bar_index - sandwich_bar
+            if bars_back <= 5000  // Safety check
+                sandwich_time = time[bars_back]
+                sandwich_line := line.new(sandwich_time, sandwich_low, sandwich_time, sandwich_low, xloc=xloc.bar_time, extend=extend.none, color=sandwich_line_color, width=2, style=line.style_solid)
+                array.push(all_sandwich_lines, sandwich_line)
+                if array.size(all_sandwich_lines) > 100
+                    old_line = array.shift(all_sandwich_lines)
+                    line.delete(old_line)
+
+    // STEP 3b: Update sandwich line (only if NOT breached yet)
+    // Extend sandwich line 10 bars or until breached
+    if in_supply_zone and not sandwich_breached and not na(sandwich_line) and not na(sandwich_bar)
+        bars_since_sandwich = bar_index - sandwich_bar
+        if bars_since_sandwich <= 10
+            line.set_x2(sandwich_line, time)
+        // Stop extending after 10 bars (line stays at bar 10)
+
+    // STEP 4: Check if price closes below sandwich line (CHECK THIS FIRST!)
+    if in_supply_zone and not na(sandwich_low) and not sandwich_breached and close < sandwich_low
+        sandwich_breached := true
+        waiting_for_entry := true
+        hurdle3_valid := true  // Hurdle 3 complete - sandwich breached
+        hurdle4_valid := true  // Hurdle 4 complete - entry zone established
+
+        // Stop extending the sandwich line at the breach point
+        if not na(sandwich_line)
+            line.set_x2(sandwich_line, time)
+
+        // Check if point candle is unusually large compared to recent candles
+        // Calculate average candle size over last 10 bars (excluding current point candle)
+        float temp_avg = 0.0
+        int candles_to_check = 10
+        int bars_back_to_point = bar_index - point_candle_bar
+        for i = bars_back_to_point + 1 to bars_back_to_point + candles_to_check
+            if i <= bar_index and i <= 5000  // Safety check
+                temp_avg := temp_avg + (high[i] - low[i])
+        avg_candle_size := temp_avg / candles_to_check
+
+        // Check if point candle is significantly larger than average
+        point_candle_size := point_candle_high - point_candle_low
+        bool is_large_candle = point_candle_size > (avg_candle_size * large_candle_multiplier)
+
+        // Calculate entry zone levels - use 50% of range if candle is too large
+        entry_zone_high := point_candle_high
+        entry_zone_low := point_candle_low
+
+        if is_large_candle
+            // Use middle 50% of the point candle for entry
+            float candle_midpoint = (point_candle_high + point_candle_low) / 2
+            float half_range = (point_candle_high - point_candle_low) / 4  // 25% on each side
+            entry_zone_high := candle_midpoint + half_range
+            entry_zone_low := candle_midpoint - half_range
+
+        // Draw entry box around entry zone (full range or 50% depending on candle size)
+        point_candle_time = time[bar_index - point_candle_bar]
+        // Create entry box - will extend continuously until trade entry or invalidation
+
+        if not na(entry_box)
+            box.delete(entry_box)
+        entry_box := box.new(point_candle_time, entry_zone_high, time, entry_zone_low,
+                             xloc=xloc.bar_time, extend=extend.none, border_color=entry_zone_color,
+                             bgcolor=entry_zone_color, border_width=2, border_style=line.style_solid)
+        array.push(all_entry_boxes, entry_box)
+
+        // Keep only last 100 boxes
+        if array.size(all_entry_boxes) > 100
+            old_box = array.shift(all_entry_boxes)
+            box.delete(old_box)
+
+        // Calculate trade levels based on entry zone range
+        entry_price := entry_zone_high  // Entry at top of entry zone (sell high for shorts)
+        stop_loss := point_candle_high + (stop_loss_ticks * syminfo.mintick)  // SL still at point candle high plus ticks
+        risk = stop_loss - entry_price
+        take_profit := entry_price - (risk * risk_reward_ratio)  // TP at 2:1 RR
+
+        // Draw 2xATR invalidation line (for supply zones, this is BELOW sandwich low)
+        float atr_invalidation_level = sandwich_low - (current_atr * atr_invalidation_multiplier)
+        atr_invalidation_line := line.new(time, atr_invalidation_level, time, atr_invalidation_level, xloc=xloc.bar_time, extend=extend.none, color=color.black, width=1, style=line.style_dashed)
+        array.push(all_atr_invalidation_lines, atr_invalidation_line)
+        if array.size(all_atr_invalidation_lines) > 100
+            old_line = array.shift(all_atr_invalidation_lines)
+            line.delete(old_line)
+
+    // Update entry box and ATR invalidation line extension - extend until trade entry or invalidation
+    if waiting_for_entry and not na(entry_box)
+        // Continuously extend the entry box until trade is entered or invalidated
+        box.set_right(entry_box, time)
+        // Extend ATR invalidation line
+        if not na(atr_invalidation_line)
+            line.set_x2(atr_invalidation_line, time)
+
+    // STEP 5: Check for entry signal (sell when price enters entry zone)
+    // IMPORTANT: Only trigger sell signal if we're actually in a supply zone setup
+    if in_supply_zone and waiting_for_entry and not na(entry_price)
+        // Check if price enters the entry zone
+        if low <= entry_zone_high and high >= entry_zone_low
+            sell_signal := true
+            trade_entered := true  // Trade has been entered
+            trade_active := true   // Start tracking active trade
+            status_clear_bar := na  // Clear any pending status clear from previous trade
+            last_trade_entry := entry_price
+            last_trade_sl := stop_loss
+            last_trade_tp := take_profit
+            last_trade_rr := risk_reward_ratio
+            last_trade_result := ""  // Clear previous result
+            last_point_candle_high := point_candle_high  // Store for exit label positioning
+            last_point_candle_low := point_candle_low
+            trade_start_time := time  // Track when trade started
+            if show_hurdles
+                // Delete the point label since trade is being entered
+                if not na(point_candle_label)
+                    label.delete(point_candle_label)
+                    point_candle_label := na
+
+                // Position SELL label above the point candle high
+                label_y = point_candle_high + (point_candle_high - point_candle_low) * 0.5
+                signal_label := label.new(bar_index, label_y, "SELL",
+                                         style=label.style_label_down,
+                                         color=color.new(color.red, 0),
+                                         textcolor=color.white, size=size.normal)
+                array.push(all_labels, signal_label)
+                // Store reference to update later with trade result
+                last_signal_label := signal_label
+
+                // Keep only last 100 labels
+                if array.size(all_labels) > 100
+                    old_label = array.shift(all_labels)
+                    label.delete(old_label)
+
+            // Create trade loss box (from entry to SL) - red shaded (SL is above for short)
+            trade_loss_box := box.new(time, stop_loss, time, entry_price,
+                                      xloc=xloc.bar_time,
+                                      border_color=color.new(color.red, 70),
+                                      bgcolor=color.new(color.red, 92),
+                                      border_width=1,
+                                      border_style=line.style_solid)
+            array.push(all_trade_boxes, trade_loss_box)
+
+            // Create trade profit box (from entry to TP) - green shaded (TP is below for short)
+            trade_profit_box := box.new(time, entry_price, time, take_profit,
+                                         xloc=xloc.bar_time,
+                                         border_color=color.new(color.green, 70),
+                                         bgcolor=color.new(color.green, 92),
+                                         border_width=1,
+                                         border_style=line.style_solid)
+            array.push(all_trade_boxes, trade_profit_box)
+
+            // Keep only last 100 boxes
+            if array.size(all_trade_boxes) > 100
+                old_box = array.shift(all_trade_boxes)
+                box.delete(old_box)
+            if array.size(all_trade_boxes) > 100
+                old_box = array.shift(all_trade_boxes)
+                box.delete(old_box)
+
+            // Reset setup after signal (keep point label, sandwich line, and entry box visible)
+            in_supply_zone := false
+            waiting_for_entry := false
+            // Don't reset entry_box to na - keep the reference so it stays visible on chart
+            // Don't delete point_candle_label or sandwich_line - leave them visible
+
+    // NOTE: Hurdle 1 (zone entry) is NOT invalidated by price exiting the zone
+    // Once price enters a zone, the setup remains valid until:
+    // 1. A new deeper point candle is formed (handled in point candle tracking)
+    // 2. Price moves 2xATR from sandwich line (handled in ATR invalidation)
+    // 3. Price enters opposite zone type (handled above)
+    // 4. Setup is too old or re-entering same zone (handled above)
+// ZONE INVALIDATION - HTF CLOSES THROUGH ZONES
+// ============================================================================
+
+// Get HTF close price for invalidation checks
+htf_close = request.security(syminfo.tickerid, htf, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// IMPORTANT: Only check for zone invalidation when a NEW HTF bar closes
+// This prevents zones from being invalidated by LTF price action within the HTF bar
+if is_new_htf_bar
+    // Invalidate demand zones if HTF closed below them
+    if array.size(demand_zones) > 0
+        for i = array.size(demand_zones) - 1 to 0
+            zone_box = array.get(demand_zones, i)
+            zone_bottom = box.get_bottom(zone_box)
+
+            // If HTF closed below the demand zone, invalidate it
+            if htf_close < zone_bottom
+                box.delete(zone_box)
+                array.remove(demand_zones, i)
+
+    // Invalidate supply zones if HTF closed above them
+    if array.size(supply_zones) > 0
+        for i = array.size(supply_zones) - 1 to 0
+            zone_box = array.get(supply_zones, i)
+            zone_top = box.get_top(zone_box)
+
+            // If HTF closed above the supply zone, invalidate it
+            if htf_close > zone_top
+                box.delete(zone_box)
+                array.remove(supply_zones, i)
+
+// ============================================================================
+// DEBUG TABLE
+// ============================================================================
+
+if enable_superman and show_debug_table
+    // Determine if bullish (demand) or bearish (supply) setup
+    bool is_bullish = in_demand_zone or (current_in_demand and not in_supply_zone)
+    bool is_bearish = in_supply_zone or (current_in_supply and not in_demand_zone)
+
+    // Set background colors based on setup direction (darker for better visibility on white charts)
+    color label_bg_color = color.new(color.gray, 20)  // Left column - always gray
+    color bg_color = color.new(color.gray, 20)  // Much darker gray
+    if is_bullish
+        bg_color := color.new(color.green, 40)  // Darker green
+    else if is_bearish
+        bg_color := color.new(color.red, 40)  // Darker red
+
+    // Hurdle 1 status
+    string h1_status = "-"
+    color h1_color = color.new(color.gray, 30)
+    if hurdle1_valid
+        h1_status := "✓"
+        h1_color := is_bullish ? color.new(color.green, 20) : color.new(color.red, 20)
+
+    // Hurdle 2 status
+    string h2_status = "-"
+    color h2_color = color.new(color.gray, 30)
+    if hurdle2_valid
+        h2_status := "✓"
+        h2_color := is_bullish ? color.new(color.green, 20) : color.new(color.red, 20)
+
+    // Hurdle 3 status
+    string h3_status = "..."
+    color h3_color = color.new(color.gray, 30)
+    if hurdle3_valid
+        h3_status := "✓"
+        h3_color := is_bullish ? color.new(color.green, 20) : color.new(color.red, 20)
+    else if not hurdle2_valid
+        h3_status := "-"
+
+    // Hurdle 4 status
+    string h4_status = "..."
+    color h4_color = color.new(color.gray, 30)
+    if hurdle4_valid
+        h4_status := "✓"
+        h4_color := is_bullish ? color.new(color.green, 20) : color.new(color.red, 20)
+    else if not hurdle3_valid
+        h4_status := "-"
+
+    // Overall status
+    string overall_status = "Waiting"
+    color status_color = color.new(color.gray, 30)
+
+    if trade_active and not na(last_trade_entry)
+        // Show active trade status
+        overall_status := "In Trade"
+        status_color := is_bullish ? color.new(color.green, 10) : color.new(color.red, 10)
+    else if last_trade_result != ""
+        // Show last trade result (exit or invalidation)
+        overall_status := last_trade_result
+        if str.contains(last_trade_result, "TP")
+            status_color := color.new(color.green, 20)
+        else if str.contains(last_trade_result, "SL")
+            status_color := color.new(color.red, 20)
+        else
+            status_color := color.new(color.orange, 20)  // For invalidations
+    else if trade_entered
+        overall_status := "Entered Zone"
+        status_color := is_bullish ? color.new(color.green, 10) : color.new(color.red, 10)
+    else if trade_voided
+        overall_status := "Voided"
+        status_color := color.new(color.orange, 20)
+    else if hurdle3_valid and waiting_for_entry
+        overall_status := "Valid"
+        status_color := is_bullish ? color.new(color.green, 15) : color.new(color.red, 15)
+    else if hurdle1_valid and (in_demand_zone or in_supply_zone)
+        // Only show "In Zone" when we've actually entered a zone
+        // Check if we have a point established
+        if na(point_candle_bar) or not hurdle2_valid
+            overall_status := "Waiting on Point"
+            status_color := is_bullish ? color.new(color.green, 25) : color.new(color.red, 25)
+        else
+            overall_status := "In Zone"
+            status_color := is_bullish ? color.new(color.green, 25) : color.new(color.red, 25)
+
+    // Create debug table (15 rows: status + 4 hurdles + notes + type + point + sandwich + bars + bars out + zones + atr + trade levels + candle sizes)
+    var table debug_table = table.new(position.top_right, 2, 15, border_width=1)
+
+    // Row 0: Status
+    table.cell(debug_table, 0, 0, "Status", bgcolor=label_bg_color, text_color=color.white, text_size=size.small, width=6)
+    table.cell(debug_table, 1, 0, overall_status, bgcolor=status_color, text_color=color.white, text_size=size.small, width=12)
+
+    // Row 1: Hurdle 1 - Zone Entry
+    table.cell(debug_table, 0, 1, "Zone", bgcolor=label_bg_color, text_color=color.white, text_size=size.small, width=6)
+    table.cell(debug_table, 1, 1, h1_status, bgcolor=h1_color, text_color=color.white, text_size=size.small, width=12)
+
+    // Row 2: Hurdle 2 - Point Candle
+    table.cell(debug_table, 0, 2, "Point", bgcolor=label_bg_color, text_color=color.white, text_size=size.small, width=6)
+    table.cell(debug_table, 1, 2, h2_status, bgcolor=h2_color, text_color=color.white, text_size=size.small, width=12)
+
+    // Row 3: Hurdle 3 - Sandwich Breach
+    table.cell(debug_table, 0, 3, "Sndwch", bgcolor=label_bg_color, text_color=color.white, text_size=size.small, width=6)
+    table.cell(debug_table, 1, 3, h3_status, bgcolor=h3_color, text_color=color.white, text_size=size.small, width=12)
+
+    // Row 4: Hurdle 4 - Entry Zone
+    table.cell(debug_table, 0, 4, "Entry", bgcolor=label_bg_color, text_color=color.white, text_size=size.small, width=6)
+    table.cell(debug_table, 1, 4, h4_status, bgcolor=h4_color, text_color=color.white, text_size=size.small, width=12)
+
+    // Row 5: Notes (invalidation reason if trade is voided)
+    string notes = "-"
+    color notes_color = color.new(color.gray, 10)
+    if trade_voided and invalidation_reason != ""
+        // Shorten invalidation reasons
+        if str.contains(invalidation_reason, "2xATR")
+            notes := "2xATR"
+        else if str.contains(invalidation_reason, "opposite")
+            notes := "Opp Zone"
+        else if str.contains(invalidation_reason, "old")
+            notes := "Old"
+        else if str.contains(invalidation_reason, "Re-entered")
+            notes := "Re-enter"
+        else
+            notes := invalidation_reason
+        notes_color := color.new(color.orange, 30)
+    table.cell(debug_table, 0, 5, "Note", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 5, notes, bgcolor=notes_color, text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 6: Setup type and zone count
+    string setup_type = is_bullish ? "BULL" : (is_bearish ? "BEAR" : "NONE")
+    string zones_info = "S" + str.tostring(array.size(supply_zones)) + "D" + str.tostring(array.size(demand_zones))
+    table.cell(debug_table, 0, 6, "Type", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 6, setup_type, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 7: Point Candle Price
+    string point_price = "-"
+    if not na(point_candle_low) and in_demand_zone
+        point_price := str.tostring(point_candle_low, format.mintick)
+    else if not na(point_candle_high) and in_supply_zone
+        point_price := str.tostring(point_candle_high, format.mintick)
+    table.cell(debug_table, 0, 7, "Point", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 7, point_price, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 8: Sandwich Level
+    string sandwich_price = "-"
+    if not na(sandwich_high) and in_demand_zone
+        sandwich_price := str.tostring(sandwich_high, format.mintick)
+    else if not na(sandwich_low) and in_supply_zone
+        sandwich_price := str.tostring(sandwich_low, format.mintick)
+    table.cell(debug_table, 0, 8, "Sndwch", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 8, sandwich_price, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 9: Bars since Point
+    string bars_ago = "-"
+    if not na(point_candle_bar)
+        bars_ago := str.tostring(bar_index - point_candle_bar)
+    table.cell(debug_table, 0, 9, "Bars", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 9, bars_ago, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 10: Bars Out of Zone
+    string bars_out = "-"
+    // Show bars out of zone if we have an exit recorded
+    if not na(last_zone_exit_bar)
+        bars_out := str.tostring(bar_index - last_zone_exit_bar)
+    table.cell(debug_table, 0, 10, "Out", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 10, bars_out, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 11: Zone count
+    table.cell(debug_table, 0, 11, "Zones", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 11, zones_info, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 12: ATR
+    string atr_str = str.tostring(current_atr, format.mintick)
+    table.cell(debug_table, 0, 12, "ATR", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 12, atr_str, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 13: Trade Levels (Entry/SL/TP on one line)
+    string trade_levels = "-"
+    if not na(entry_price) and not na(stop_loss) and not na(take_profit)
+        trade_levels := str.tostring(entry_price, format.mintick) + "/" + str.tostring(stop_loss, format.mintick) + "/" + str.tostring(take_profit, format.mintick)
+    else if trade_active and not na(last_trade_entry) and not na(last_trade_sl) and not na(last_trade_tp)
+        trade_levels := str.tostring(last_trade_entry, format.mintick) + "/" + str.tostring(last_trade_sl, format.mintick) + "/" + str.tostring(last_trade_tp, format.mintick)
+    table.cell(debug_table, 0, 13, "E/SL/TP", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 13, trade_levels, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+    // Row 14: Candle size info (point candle vs average)
+    string candle_sizes = "-"
+    if not na(point_candle_size) and not na(avg_candle_size)
+        candle_sizes := "PC:" + str.tostring(point_candle_size, "#.#####") + "/Avg:" + str.tostring(avg_candle_size, "#.#####")
+    table.cell(debug_table, 0, 14, "Sizes", bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=6)
+    table.cell(debug_table, 1, 14, candle_sizes, bgcolor=color.new(color.gray, 10), text_color=color.white, text_size=size.tiny, width=12)
+
+// ============================================================================
+// Trade Exit Tracking
+// ============================================================================
+if trade_active and not na(last_trade_entry)
+    // Extend both profit and loss boxes to current time while trade is active
+    if not na(trade_profit_box)
+        box.set_right(trade_profit_box, time)
+    if not na(trade_loss_box)
+        box.set_right(trade_loss_box, time)
+
+    // Determine if this is a long or short trade
+    bool is_long_trade = last_trade_sl < last_trade_entry
+
+    if is_long_trade
+        // Long position - check for SL or TP hit
+        if low <= last_trade_sl
+            // Stop loss hit
+            float r_multiple = -1.0
+            last_trade_result := "SL Hit: -1R"
+            trade_active := false
+            // Update the original BUY label with the result
+            if not na(last_signal_label)
+                label.set_text(last_signal_label, "BUY\nloss: 1R")
+                // Keep original green color
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+        else if high >= last_trade_tp
+            // Take profit hit
+            float r_multiple = last_trade_rr
+            last_trade_result := "TP Hit: +" + str.tostring(r_multiple) + "R"
+            trade_active := false
+            // Update the original BUY label with the result
+            if not na(last_signal_label)
+                string rr_display = str.tostring(r_multiple, "#.#")
+                label.set_text(last_signal_label, "BUY\nwin: " + rr_display + ":1 RR")
+                // Keep original green color
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+    else
+        // Short position - check for SL or TP hit
+        if high >= last_trade_sl
+            // Stop loss hit
+            float r_multiple = -1.0
+            last_trade_result := "SL Hit: -1R"
+            trade_active := false
+            // Update the original SELL label with the result
+            if not na(last_signal_label)
+                label.set_text(last_signal_label, "SELL\nloss: 1R")
+                // Keep original red color
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+        else if low <= last_trade_tp
+            // Take profit hit
+            float r_multiple = last_trade_rr
+            last_trade_result := "TP Hit: +" + str.tostring(r_multiple) + "R"
+            trade_active := false
+            // Update the original SELL label with the result
+            if not na(last_signal_label)
+                string rr_display = str.tostring(r_multiple, "#.#")
+                label.set_text(last_signal_label, "SELL\nwin: " + rr_display + ":1 RR")
+                // Keep original red color
+            // Set status clear for next bar
+            status_clear_bar := bar_index + 1
+
+// Plot signals for debugging (appears on current timeframe)
+plotchar(buy_signal, "BUY", "▲", location.belowbar, color.green, size=size.small)
+plotchar(sell_signal, "SELL", "▼", location.abovebar, color.red, size=size.small)

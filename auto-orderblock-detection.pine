@@ -1,0 +1,258 @@
+//@version=5
+indicator("Auto Order Block Detection [Reference]", overlay=true, max_boxes_count=100, max_lines_count=100)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+htfTimeframe            = input.timeframe("60", "HTF Timeframe (for OB detection)", tooltip="Order blocks will be detected on this timeframe and displayed on the chart timeframe")
+swingLengthInput        = input.int(10, "Swing Detection Length", minval=5, maxval=50)
+maxOrderBlocksInput     = input.int(5, "Max Order Blocks to Display", minval=1, maxval=20)
+useVolatilityFilter     = input.bool(true, "Use Volatility Filter")
+showSwingPoints         = input.bool(true, "Show Swing Points")
+bullishOBColor          = input.color(color.new(color.green, 70), "Bullish OB Color")
+bearishOBColor          = input.color(color.new(color.red, 70), "Bearish OB Color")
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+type orderBlock
+    float barHigh
+    float barLow
+    int barTime
+    int bias  // 1 = bullish, -1 = bearish
+
+type pivot
+    float level
+    float lastLevel
+    bool crossed
+    int barTime
+    int barIndex
+
+// ============================================================================
+// HTF DATA FETCHING (NO REPAINT)
+// ============================================================================
+// Fetch HTF OHLC data with lookahead=barmerge.lookahead_off to prevent repainting
+[htf_open, htf_high, htf_low, htf_close, htf_time] = request.security(syminfo.tickerid, htfTimeframe, [open, high, low, close, time], lookahead=barmerge.lookahead_off)
+
+// Detect HTF bar changes (when a new HTF candle forms)
+htf_bar_changed = ta.change(htf_time) != 0
+
+// ============================================================================
+// VARIABLES (HTF-based)
+// ============================================================================
+var pivot htf_swingHigh = pivot.new(na, na, false, na, na)
+var pivot htf_swingLow = pivot.new(na, na, false, na, na)
+var int htf_trendBias = 0  // 1 = bullish, -1 = bearish
+
+// Storage arrays for HTF order blocks
+var array<orderBlock> htf_orderBlocks = array.new<orderBlock>()
+var array<box> orderBlockBoxes = array.new<box>()
+var array<float> htf_parsedHighs = array.new<float>()
+var array<float> htf_parsedLows = array.new<float>()
+var array<int> htf_times = array.new<int>()
+
+// Create boxes on first bar
+if barstate.isfirst
+    for i = 0 to maxOrderBlocksInput - 1
+        orderBlockBoxes.push(box.new(na, na, na, na, xloc=xloc.bar_time))
+
+// ============================================================================
+// VOLATILITY FILTERING (HTF-based)
+// ============================================================================
+// Calculate volatility based on HTF data
+htf_atrMeasure = request.security(syminfo.tickerid, htfTimeframe, ta.atr(200), lookahead=barmerge.lookahead_off)
+htf_tr = math.max(htf_high - htf_low, math.max(math.abs(htf_high - htf_close[1]), math.abs(htf_low - htf_close[1])))
+htf_volatilityMeasure = ta.cum(htf_tr) / bar_index
+htf_highVolatilityBar = useVolatilityFilter ? (htf_high - htf_low) >= (2 * htf_volatilityMeasure) : false
+
+// Parsed HTF prices (flip high/low for volatile bars)
+htf_parsedHigh = htf_highVolatilityBar ? htf_low : htf_high
+htf_parsedLow = htf_highVolatilityBar ? htf_high : htf_low
+
+// Store values only when HTF bar changes (to avoid duplicates on LTF)
+if htf_bar_changed
+    htf_parsedHighs.push(htf_parsedHigh)
+    htf_parsedLows.push(htf_parsedLow)
+    htf_times.push(htf_time)
+
+    // Keep arrays manageable
+    if htf_parsedHighs.size() > 500
+        htf_parsedHighs.shift()
+        htf_parsedLows.shift()
+        htf_times.shift()
+
+// ============================================================================
+// SWING DETECTION (LEG SYSTEM) - HTF
+// ============================================================================
+// Track HTF bar index for lookback calculations
+var int htf_barIndex = 0
+if htf_bar_changed
+    htf_barIndex += 1
+
+getLeg_HTF(int size, float h, float l) =>
+    var leg = 0
+    if htf_barIndex >= size
+        // Get HTF data from N bars ago
+        htf_high_lookback = request.security(syminfo.tickerid, htfTimeframe, high[size], lookahead=barmerge.lookahead_off)
+        htf_low_lookback = request.security(syminfo.tickerid, htfTimeframe, low[size], lookahead=barmerge.lookahead_off)
+        htf_highest = request.security(syminfo.tickerid, htfTimeframe, ta.highest(size), lookahead=barmerge.lookahead_off)
+        htf_lowest = request.security(syminfo.tickerid, htfTimeframe, ta.lowest(size), lookahead=barmerge.lookahead_off)
+
+        newLegHigh = htf_high_lookback > htf_highest
+        newLegLow = htf_low_lookback < htf_lowest
+
+        if newLegHigh
+            leg := 0  // Bearish leg
+        else if newLegLow
+            leg := 1  // Bullish leg
+    leg
+
+htf_currentLeg = getLeg_HTF(swingLengthInput, htf_high, htf_low)
+htf_newPivot = ta.change(htf_currentLeg) != 0
+htf_pivotLow = ta.change(htf_currentLeg) == 1
+htf_pivotHigh = ta.change(htf_currentLeg) == -1
+
+// Update swing points
+if newPivot and bar_index >= swingLengthInput
+    if pivotLow
+        swingLow.lastLevel := swingLow.level
+        swingLow.level := low[swingLengthInput]
+        swingLow.crossed := false
+        swingLow.barTime := time[swingLengthInput]
+        swingLow.barIndex := bar_index - swingLengthInput
+
+        if showSwingPoints
+            label.new(time[swingLengthInput], low[swingLengthInput], "L", xloc=xloc.bar_time, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny)
+
+    if pivotHigh
+        swingHigh.lastLevel := swingHigh.level
+        swingHigh.level := high[swingLengthInput]
+        swingHigh.crossed := false
+        swingHigh.barTime := time[swingLengthInput]
+        swingHigh.barIndex := bar_index - swingLengthInput
+
+        if showSwingPoints
+            label.new(time[swingLengthInput], high[swingLengthInput], "H", xloc=xloc.bar_time, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+
+// ============================================================================
+// ORDER BLOCK STORAGE
+// ============================================================================
+storeOrderBlock(int pivotIndex, int bias) =>
+    if pivotIndex >= 0 and pivotIndex < bar_index
+        // Get slice of data between pivot and current bar
+        int startIdx = math.max(0, parsedHighs.size() - (bar_index - pivotIndex))
+        int endIdx = parsedHighs.size()
+
+        if startIdx < endIdx
+            if bias == -1  // Bearish OB
+                // Find highest high in range (last bullish push)
+                float maxHigh = na
+                int maxIdx = na
+                for i = startIdx to endIdx - 1
+                    float h = parsedHighs.get(i)
+                    if na(maxHigh) or h > maxHigh
+                        maxHigh := h
+                        maxIdx := i
+
+                if not na(maxIdx)
+                    orderBlock ob = orderBlock.new(parsedHighs.get(maxIdx), parsedLows.get(maxIdx), times.get(maxIdx), bias)
+                    orderBlocks.unshift(ob)
+
+            else  // Bullish OB
+                // Find lowest low in range (last bearish push)
+                float minLow = na
+                int minIdx = na
+                for i = startIdx to endIdx - 1
+                    float l = parsedLows.get(i)
+                    if na(minLow) or l < minLow
+                        minLow := l
+                        minIdx := i
+
+                if not na(minIdx)
+                    orderBlock ob = orderBlock.new(parsedHighs.get(minIdx), parsedLows.get(minIdx), times.get(minIdx), bias)
+                    orderBlocks.unshift(ob)
+
+        // Keep array manageable
+        if orderBlocks.size() > 50
+            orderBlocks.pop()
+
+// ============================================================================
+// STRUCTURE DETECTION & OB CREATION
+// ============================================================================
+
+// Bullish structure (price crosses above swing high)
+if ta.crossover(close, swingHigh.level) and not swingHigh.crossed and not na(swingHigh.level)
+    swingHigh.crossed := true
+    bool wasBearish = trendBias == -1
+    trendBias := 1
+
+    // Store bullish order block
+    storeOrderBlock(swingHigh.barIndex, 1)
+
+    // Draw structure line
+    line.new(swingHigh.barTime, swingHigh.level, time, swingHigh.level, xloc=xloc.bar_time, color=color.green, style=line.style_solid, width=1)
+    label.new(time, swingHigh.level, wasBearish ? "CHoCH" : "BOS", xloc=xloc.bar_time, style=label.style_label_down, color=color.new(color.white, 100), textcolor=color.green, size=size.small)
+
+// Bearish structure (price crosses below swing low)
+if ta.crossunder(close, swingLow.level) and not swingLow.crossed and not na(swingLow.level)
+    swingLow.crossed := true
+    bool wasBullish = trendBias == 1
+    trendBias := -1
+
+    // Store bearish order block
+    storeOrderBlock(swingLow.barIndex, -1)
+
+    // Draw structure line
+    line.new(swingLow.barTime, swingLow.level, time, swingLow.level, xloc=xloc.bar_time, color=color.red, style=line.style_solid, width=1)
+    label.new(time, swingLow.level, wasBullish ? "CHoCH" : "BOS", xloc=xloc.bar_time, style=label.style_label_up, color=color.new(color.white, 100), textcolor=color.red, size=size.small)
+
+// ============================================================================
+// ORDER BLOCK MITIGATION (DELETION)
+// ============================================================================
+for [index, ob] in orderBlocks
+    bool mitigated = false
+
+    if ob.bias == -1 and high > ob.barHigh  // Bearish OB mitigated
+        mitigated := true
+    else if ob.bias == 1 and low < ob.barLow  // Bullish OB mitigated
+        mitigated := true
+
+    if mitigated
+        orderBlocks.remove(index)
+
+// ============================================================================
+// DISPLAY ORDER BLOCKS
+// ============================================================================
+if orderBlocks.size() > 0
+    int displayCount = math.min(maxOrderBlocksInput, orderBlocks.size())
+
+    for i = 0 to displayCount - 1
+        orderBlock ob = orderBlocks.get(i)
+        box b = orderBlockBoxes.get(i)
+
+        color obColor = ob.bias == 1 ? bullishOBColor : bearishOBColor
+
+        b.set_top_left_point(chart.point.new(ob.barTime, na, ob.barHigh))
+        b.set_bottom_right_point(chart.point.new(time, na, ob.barLow))
+        b.set_bgcolor(obColor)
+        b.set_border_color(obColor)
+
+    // Hide unused boxes
+    if displayCount < maxOrderBlocksInput
+        for i = displayCount to maxOrderBlocksInput - 1
+            box b = orderBlockBoxes.get(i)
+            b.set_top_left_point(chart.point.new(na, na, na))
+            b.set_bottom_right_point(chart.point.new(na, na, na))
+else
+    // Hide all boxes when no order blocks exist
+    for i = 0 to maxOrderBlocksInput - 1
+        box b = orderBlockBoxes.get(i)
+        b.set_top_left_point(chart.point.new(na, na, na))
+        b.set_bottom_right_point(chart.point.new(na, na, na))
+
+// ============================================================================
+// VISUAL REFERENCE
+// ============================================================================
+// Plot ATR for reference
+plot(useVolatilityFilter ? high + (2 * volatilityMeasure) : na, "High Vol Threshold",
+     color=color.new(color.gray, 80), style=plot.style_circles)

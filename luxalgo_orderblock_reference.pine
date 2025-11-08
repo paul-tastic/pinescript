@@ -1,0 +1,218 @@
+// ============================================================================
+// EXTRACTED FROM: Smart Money Concepts [LuxAlgo]
+// PURPOSE: Reference implementation for automatic Order Block detection
+// ============================================================================
+
+// KEY CONCEPTS FROM LUXALGO:
+// 1. Order Blocks are stored when structure breaks (BOS/CHoCH)
+// 2. Uses "parsed" highs/lows to filter high volatility bars
+// 3. Finds the last opposing candle before the breakout move
+// 4. Stores blocks in arrays and displays only the most recent N blocks
+// 5. Mitigates (deletes) blocks when price returns through them
+
+// ============================================================================
+// VOLATILITY FILTERING
+// ============================================================================
+
+// LuxAlgo filters out high volatility bars by using "parsed" prices
+atrMeasure          = ta.atr(200)
+volatilityMeasure   = ta.cum(ta.tr)/bar_index  // Cumulative mean range option
+highVolatilityBar   = (high - low) >= (2 * volatilityMeasure)
+
+// For high volatility bars, they flip the high/low
+// This prevents OBs from forming on overly volatile moves
+parsedHigh          = highVolatilityBar ? low : high
+parsedLow           = highVolatilityBar ? high : low
+
+// Store parsed values in arrays for lookback
+var array<float> parsedHighs = array.new<float>()
+var array<float> parsedLows  = array.new<float>()
+var array<int> times         = array.new<int>()
+
+parsedHighs.push(parsedHigh)
+parsedLows.push(parsedLow)
+times.push(time)
+
+// ============================================================================
+// PIVOT/SWING DETECTION
+// ============================================================================
+
+// They use a "leg" system to detect swing points
+// A leg is BULLISH (1) or BEARISH (0)
+leg(int size) =>
+    var leg     = 0
+    newLegHigh  = high[size] > ta.highest(size)  // New high N bars ago
+    newLegLow   = low[size]  < ta.lowest(size)   // New low N bars ago
+
+    if newLegHigh
+        leg := 0  // BEARISH_LEG
+    else if newLegLow
+        leg := 1  // BULLISH_LEG
+    leg
+
+// When leg changes, that's a new swing point
+startOfNewLeg(int leg)      => ta.change(leg) != 0
+startOfBearishLeg(int leg)  => ta.change(leg) == -1
+startOfBullishLeg(int leg)  => ta.change(leg) == +1
+
+// ============================================================================
+// ORDER BLOCK STORAGE (KEY LOGIC)
+// ============================================================================
+
+// When a structure breaks (BOS/CHoCH detected), they store an Order Block
+// The OB is the LAST OPPOSING CANDLE before the breakout move
+
+// For BEARISH structure break (price crosses BELOW pivot):
+// - Find the highest parsed high between the pivot and current bar
+// - That candle is the last bullish push before bearish move
+// - Store that candle's high/low as the bearish OB
+
+// For BULLISH structure break (price crosses ABOVE pivot):
+// - Find the lowest parsed low between the pivot and current bar
+// - That candle is the last bearish push before bullish move
+// - Store that candle's high/low as the bullish OB
+
+storeOrderBlock(pivotBarIndex, currentBarIndex, bias) =>
+    // Get the slice of data between pivot and current bar
+    if bias == -1  // BEARISH
+        arraySlice      = parsedHighs.slice(pivotBarIndex, currentBarIndex)
+        parsedIndex     = pivotBarIndex + arraySlice.indexof(arraySlice.max())
+
+        // The candle at parsedIndex is the OB
+        obHigh  = parsedHighs.get(parsedIndex)
+        obLow   = parsedLows.get(parsedIndex)
+        obTime  = times.get(parsedIndex)
+
+    else  // BULLISH (bias == +1)
+        arraySlice      = parsedLows.slice(pivotBarIndex, currentBarIndex)
+        parsedIndex     = pivotBarIndex + arraySlice.indexof(arraySlice.min())
+
+        // The candle at parsedIndex is the OB
+        obHigh  = parsedHighs.get(parsedIndex)
+        obLow   = parsedLows.get(parsedIndex)
+        obTime  = times.get(parsedIndex)
+
+// ============================================================================
+// ORDER BLOCK MITIGATION (DELETION)
+// ============================================================================
+
+// They delete OBs when price "mitigates" them
+// Mitigation = price returns and closes through the OB
+
+// User can choose mitigation based on:
+// - CLOSE: Use close price
+// - HIGH/LOW: Use high for bearish OBs, low for bullish OBs
+
+deleteOrderBlocks(orderBlocksArray) =>
+    for [index, eachOrderBlock] in orderBlocksArray
+        bool crossedOrderBlock = false
+
+        // Bearish OB is mitigated when price goes above its high
+        if high > eachOrderBlock.barHigh and eachOrderBlock.bias == -1
+            crossedOrderBlock := true
+
+        // Bullish OB is mitigated when price goes below its low
+        else if low < eachOrderBlock.barLow and eachOrderBlock.bias == +1
+            crossedOrderBlock := true
+
+        if crossedOrderBlock
+            orderBlocksArray.remove(index)
+
+// ============================================================================
+// DISPLAY ORDER BLOCKS
+// ============================================================================
+
+// They only display the most recent N order blocks
+// Uses a fixed array of box objects that get updated each bar
+
+// At initialization:
+// - Create N empty boxes
+// - Store them in an array
+
+// On each bar:
+// - Get the first N order blocks from storage
+// - Update each box with the OB coordinates
+// - Extend boxes to current time
+
+drawOrderBlocks(orderBlocksArray, boxesArray, maxBlocks) =>
+    if orderBlocksArray.size() > 0
+        // Get only the most recent blocks
+        recentBlocks = orderBlocksArray.slice(0, math.min(maxBlocks, orderBlocksArray.size()))
+
+        for [index, eachOrderBlock] in recentBlocks
+            box b_ox = boxesArray.get(index)
+
+            // Update box coordinates
+            b_ox.set_top_left_point(chart.point.new(
+                eachOrderBlock.barTime, na, eachOrderBlock.barHigh))
+            b_ox.set_bottom_right_point(chart.point.new(
+                last_bar_time, na, eachOrderBlock.barLow))
+
+            // Set colors based on bias
+            orderBlockColor = eachOrderBlock.bias == -1 ? bearishColor : bullishColor
+            b_ox.set_bgcolor(orderBlockColor)
+
+// ============================================================================
+// KEY TAKEAWAYS FOR AUTO ORDER BLOCK DETECTION:
+// ============================================================================
+
+// 1. SWING DETECTION
+//    - Use a lookback period (they use 5 for internal, 50 for swing)
+//    - Detect when price makes new highs/lows
+//    - Track when "legs" change direction
+
+// 2. STRUCTURE BREAKS
+//    - When price crosses above a swing high = bullish structure
+//    - When price crosses below a swing low = bearish structure
+//    - This triggers OB storage
+
+// 3. ORDER BLOCK IDENTIFICATION
+//    - Look BACKWARDS from the structure break to the pivot
+//    - Find the LAST candle that moved against the new direction
+//    - For bullish break: find lowest low in that range
+//    - For bearish break: find highest high in that range
+
+// 4. VOLATILITY FILTER
+//    - Filter out candles with range > 2x ATR
+//    - Use "parsed" prices for OB detection
+
+// 5. MITIGATION
+//    - Delete OBs when price returns through them
+//    - Can use close or high/low for mitigation trigger
+
+// 6. DISPLAY
+//    - Store OBs in array (up to 100)
+//    - Only display most recent N (user configurable)
+//    - Extend boxes to current time
+//    - Update box positions every bar
+
+// ============================================================================
+// HOW THIS DIFFERS FROM YOUR MANUAL APPROACH:
+// ============================================================================
+
+// MANUAL (your current code):
+// - User inputs zone boundaries manually
+// - Zones stay fixed at those prices
+// - OBs form within the manual zones
+
+// AUTO (LuxAlgo approach):
+// - System detects swing highs/lows automatically
+// - Zones are the last opposing candle before structure break
+// - No user input needed for zone placement
+// - Zones are discovered dynamically as price moves
+
+// ============================================================================
+// POTENTIAL INTEGRATION:
+// ============================================================================
+
+// You could ADD automatic OB detection alongside your manual zones:
+// 1. Keep your manual demand/supply zones for user-defined areas
+// 2. Add automatic OB detection based on structure breaks
+// 3. Display both types with different colors
+// 4. Use auto OBs as additional confirmation for trades
+
+// Or REPLACE manual zones entirely:
+// 1. Remove manual zone inputs
+// 2. Detect swing highs/lows automatically
+// 3. Create OBs on structure breaks
+// 4. Engulfing detection works within these auto-detected zones
