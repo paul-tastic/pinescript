@@ -1,0 +1,199 @@
+//@version=5
+strategy("Nexus Strategy Manual", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// ============================================================================
+// INPUTS - MANUAL ZONES
+// ============================================================================
+supply_top = input.float(0.0, "Supply Zone Top", group="Manual Zones")
+supply_bottom = input.float(0.0, "Supply Zone Bottom", group="Manual Zones")
+demand_top = input.float(0.0, "Demand Zone Top", group="Manual Zones")
+demand_bottom = input.float(0.0, "Demand Zone Bottom", group="Manual Zones")
+
+// ============================================================================
+// ZONE DETECTION
+// ============================================================================
+bool supply_configured = supply_top > 0 and supply_bottom > 0 and supply_top > supply_bottom
+bool demand_configured = demand_top > 0 and demand_bottom > 0 and demand_top > demand_bottom
+
+// Check if candle touches zone (high/low overlap with zone range)
+// Uses real-time high/low so it triggers immediately when zone is touched
+bool in_supply = supply_configured and not (low > supply_top or high < supply_bottom)
+bool in_demand = demand_configured and not (low > demand_top or high < demand_bottom)
+
+// Track zone entry - once triggered, stays true for the entire bar + 1 more bar
+var bool supply_triggered = false
+var bool demand_triggered = false
+var int supply_trigger_bar = -1
+var int demand_trigger_bar = -1
+
+// Track deepest penetration into zones (resets on fresh entry)
+var float demand_lowest_low = na
+var float supply_highest_high = na
+
+// Track if we're completely outside both zones (ready to reset)
+var bool was_outside_zones = true
+
+// Check if currently outside both zones
+bool outside_both_zones = not in_supply and not in_demand
+
+if barstate.isnew
+    // Clear trigger only if it's been more than 1 bar since entry
+    if bar_index - supply_trigger_bar > 1
+        supply_triggered := false
+    if bar_index - demand_trigger_bar > 1
+        demand_triggered := false
+
+    // Track when we're outside both zones
+    if outside_both_zones
+        was_outside_zones := true
+
+if in_supply
+    supply_triggered := true
+    supply_trigger_bar := bar_index
+
+    // Reset deepest on fresh entry after being outside
+    if was_outside_zones
+        supply_highest_high := high
+        was_outside_zones := false
+    // Otherwise, track highest high in supply zone
+    else if na(supply_highest_high) or high > supply_highest_high
+        supply_highest_high := high
+
+if in_demand
+    demand_triggered := true
+    demand_trigger_bar := bar_index
+
+    // Reset deepest on fresh entry after being outside
+    if was_outside_zones
+        demand_lowest_low := low
+        was_outside_zones := false
+    // Otherwise, track lowest low in demand zone
+    else if na(demand_lowest_low) or low < demand_lowest_low
+        demand_lowest_low := low
+
+// ============================================================================
+// ENGULFING ORDER BLOCK DETECTION
+// ============================================================================
+bool is_bullish_engulfing = false
+bool is_bearish_engulfing = false
+
+// Only check for engulfing when in an AOI
+if demand_triggered and bar_index > 0
+    // Bullish engulfing: current candle body engulfs previous candle body
+    bool current_bullish = close > open
+    bool prev_bearish = close[1] < open[1]
+    bool engulfs_body = open <= close[1] and close >= open[1]
+
+    // Check if current or previous candle made the deepest low
+    bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
+
+    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
+
+if supply_triggered and bar_index > 0
+    // Bearish engulfing: current candle body engulfs previous candle body
+    bool current_bearish = close < open
+    bool prev_bullish = close[1] > open[1]
+    bool engulfs_body = open >= close[1] and close <= open[1]
+
+    // Check if current or previous candle made the highest high
+    bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
+
+    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest
+
+bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
+
+// Track which candle made the deepest penetration (only show current)
+var label deepest_demand_label = na
+var label deepest_supply_label = na
+
+// Update deepest marker when new deepest is found
+if demand_triggered and not na(demand_lowest_low) and low == demand_lowest_low
+    // Delete old label
+    if not na(deepest_demand_label)
+        label.delete(deepest_demand_label)
+    // Create new label at deepest point
+    deepest_demand_label := label.new(bar_index, low, "●", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.blue, size=size.tiny, style=label.style_none)
+
+if supply_triggered and not na(supply_highest_high) and high == supply_highest_high
+    // Delete old label
+    if not na(deepest_supply_label)
+        label.delete(deepest_supply_label)
+    // Create new label at deepest point
+    deepest_supply_label := label.new(bar_index, high, "●", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.orange, size=size.tiny, style=label.style_none)
+
+// Plot diamonds for engulfing OB detection (smaller size)
+plotshape(is_bullish_engulfing, title="Bullish Engulfing OB", style=shape.diamond, location=location.belowbar, color=color.black, size=size.tiny)
+plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamond, location=location.abovebar, color=color.black, size=size.tiny)
+
+// ============================================================================
+// DEBUG TABLE
+// ============================================================================
+var table debugTable = table.new(position.top_right, 2, 13, border_width=1)
+
+string aoi_status = "-"
+color aoi_bgcolor = color.new(color.gray, 30)
+
+if supply_triggered
+    aoi_status := "IN AOI"
+    aoi_bgcolor := color.new(color.orange, 0)  // Solid orange for supply
+else if demand_triggered
+    aoi_status := "IN AOI"
+    aoi_bgcolor := color.new(color.blue, 0)  // Solid blue for demand
+
+// Update table every tick (not just on barstate.islast)
+// Pad the status text to keep column width consistent
+string padded_status = aoi_status == "-" ? "  -   " : aoi_status
+
+table.cell(debugTable, 0, 0, "AOI Status", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.normal)
+table.cell(debugTable, 1, 0, padded_status, text_color=color.white, bgcolor=aoi_bgcolor, text_size=size.normal)
+
+// Debug info - show zone configuration and current price levels
+table.cell(debugTable, 0, 1, "Supply Cfg", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+table.cell(debugTable, 1, 1, supply_configured ? "YES" : "NO", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+
+table.cell(debugTable, 0, 2, "Demand Cfg", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+table.cell(debugTable, 1, 2, demand_configured ? "YES" : "NO", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+
+table.cell(debugTable, 0, 3, "Current Low", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+table.cell(debugTable, 1, 3, str.tostring(low, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+
+table.cell(debugTable, 0, 4, "Current High", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+table.cell(debugTable, 1, 4, str.tostring(high, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+
+// Engulfing OB status
+string eng_status = engulfing_ob_detected ? (is_bullish_engulfing ? "BULL ENG" : "BEAR ENG") : "-"
+color eng_bgcolor = engulfing_ob_detected ? (is_bullish_engulfing ? color.new(color.blue, 0) : color.new(color.orange, 0)) : color.new(color.gray, 30)
+table.cell(debugTable, 0, 5, "Engulfing OB", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.small)
+table.cell(debugTable, 1, 5, eng_status, text_color=color.white, bgcolor=eng_bgcolor, text_size=size.small)
+
+// Debug engulfing detection components
+table.cell(debugTable, 0, 6, "Curr Open", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 6, str.tostring(open, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+table.cell(debugTable, 0, 7, "Curr Close", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 7, str.tostring(close, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+table.cell(debugTable, 0, 8, "Prev Open", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 8, str.tostring(open[1], format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+table.cell(debugTable, 0, 9, "Prev Close", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 9, str.tostring(close[1], format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+// Deepest level tracker
+string deepest_level = "-"
+if supply_triggered and not na(supply_highest_high)
+    deepest_level := str.tostring(supply_highest_high, format.mintick) + " (S)"
+else if demand_triggered and not na(demand_lowest_low)
+    deepest_level := str.tostring(demand_lowest_low, format.mintick) + " (D)"
+table.cell(debugTable, 0, 10, "Deepest Lvl", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 10, deepest_level, text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+// Supply zone levels
+string supply_zone = supply_configured ? str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick) : "-"
+table.cell(debugTable, 0, 11, "Supply Zone", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 11, supply_zone, text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+
+// Demand zone levels
+string demand_zone = demand_configured ? str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick) : "-"
+table.cell(debugTable, 0, 12, "Demand Zone", text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
+table.cell(debugTable, 1, 12, demand_zone, text_color=color.white, bgcolor=color.new(color.gray, 30), text_size=size.tiny)
