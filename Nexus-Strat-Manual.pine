@@ -146,14 +146,26 @@ if clear_supply or clear_demand
     eng_ob_candle_high := na
     eng_ob_candle_low := na
 
-// INVALIDATION: Clear setup when entering a NEW zone (reset on fresh zone entry)
-if barstate.isnew and was_outside_zones and (in_supply or in_demand)
-    eng_ob_active := false
-    eng_ob_is_bullish := false
-    eng_ob_deepest_level := na
-    eng_ob_bar_index := na
-    eng_ob_candle_high := na
-    eng_ob_candle_low := na
+// INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
+// Bullish setup (from demand) invalidated by entering supply zone
+// Bearish setup (from supply) invalidated by entering demand zone
+if barstate.isnew and was_outside_zones
+    if eng_ob_active and eng_ob_is_bullish and in_supply
+        // Bullish setup invalidated by entering supply zone
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+    else if eng_ob_active and not eng_ob_is_bullish and in_demand
+        // Bearish setup invalidated by entering demand zone
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
 if is_bullish_engulfing
