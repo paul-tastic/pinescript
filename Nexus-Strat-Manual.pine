@@ -172,6 +172,7 @@ if is_bullish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := true
     eng_ob_deepest_level := demand_lowest_low
+    target_fractal_level := na  // Reset fractal search for new ENG OB
 
     // Determine which candle is the actual OB candle (the one that made the deepest low)
     // For bullish engulfing, the OB candle is whichever made the lowest low
@@ -190,6 +191,7 @@ else if is_bearish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := false
     eng_ob_deepest_level := supply_highest_high
+    target_fractal_level := na  // Reset fractal search for new ENG OB
 
     // Determine which candle is the actual OB candle (the one that made the highest high)
     // For bearish engulfing, the OB candle is whichever made the highest high
@@ -204,8 +206,9 @@ else if is_bearish_engulfing
         eng_ob_candle_high := high[1]
         eng_ob_candle_low := low[1]
 
-// INVALIDATION: Price goes deeper into zone than ENG OB candle (before MSS)
-if eng_ob_active and na(target_fractal_level)  // Only before fractal cross
+// INVALIDATION: Price goes deeper into zone than ENG OB candle (before MSS OB is crossed)
+// TODO: Once MSS OB crossing detection is implemented, add condition to stop invalidation after cross
+if eng_ob_active
     if eng_ob_is_bullish and not na(eng_ob_candle_low)
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low
         if low < eng_ob_candle_low
@@ -215,6 +218,7 @@ if eng_ob_active and na(target_fractal_level)  // Only before fractal cross
             eng_ob_bar_index := na
             eng_ob_candle_high := na
             eng_ob_candle_low := na
+            target_fractal_level := na
     else if not eng_ob_is_bullish and not na(eng_ob_candle_high)
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high
         if high > eng_ob_candle_high
@@ -224,6 +228,7 @@ if eng_ob_active and na(target_fractal_level)  // Only before fractal cross
             eng_ob_bar_index := na
             eng_ob_candle_high := na
             eng_ob_candle_low := na
+            target_fractal_level := na
 
 // Track which candle made the deepest penetration (only show current)
 var label deepest_demand_label = na
@@ -268,13 +273,6 @@ if should_detect_fractals and bar_index >= 2
 // Plot fractals for debugging (only when actively detecting)
 plotshape(is_bearish_fractal, title="Bearish Fractal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, offset=-2)
 plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, offset=-2)
-
-// When ENG OB forms, we need to find the most recent OPPOSITE fractal
-// For bullish ENG OB: look for bearish fractal (need to break above its high)
-// For bearish ENG OB: look for bullish fractal (need to break below its low)
-if is_bullish_engulfing or is_bearish_engulfing
-    // Reset target fractal level when new ENG OB forms
-    target_fractal_level := na
 
 // TODO: Implement backward fractal search when ENG OB forms
 // For now, track fractals as they appear (will be replaced with backward search)
