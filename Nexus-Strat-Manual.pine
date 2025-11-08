@@ -274,15 +274,30 @@ if should_detect_fractals and bar_index >= 2
 plotshape(is_bearish_fractal, title="Bearish Fractal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, offset=-2)
 plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, offset=-2)
 
-// TODO: Implement backward fractal search when ENG OB forms
-// For now, track fractals as they appear (will be replaced with backward search)
-if eng_ob_active and na(target_fractal_level)
-    if eng_ob_is_bullish and is_bearish_fractal
-        // Bullish setup needs to break bearish fractal high
-        target_fractal_level := high[2]
-    else if not eng_ob_is_bullish and is_bullish_fractal
-        // Bearish setup needs to break bullish fractal low
-        target_fractal_level := low[2]
+// When ENG OB forms, search BACKWARD for the most recent opposite fractal
+// This runs once when target_fractal_level is na (right after ENG OB forms)
+if eng_ob_active and na(target_fractal_level) and bar_index >= 4
+    // Search backward up to 50 bars for the most recent opposite fractal
+    int lookback_limit = 50
+
+    if eng_ob_is_bullish
+        // Bullish setup: look for most recent bearish fractal (high point)
+        for i = 2 to math.min(lookback_limit, bar_index - 2)
+            // Check if bar at offset i is a bearish fractal
+            bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
+            if is_bearish_frac
+                // Found the most recent bearish fractal
+                target_fractal_level := high[i]
+                break
+    else
+        // Bearish setup: look for most recent bullish fractal (low point)
+        for i = 2 to math.min(lookback_limit, bar_index - 2)
+            // Check if bar at offset i is a bullish fractal
+            bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
+            if is_bullish_frac
+                // Found the most recent bullish fractal
+                target_fractal_level := low[i]
+                break
 
 // ============================================================================
 // DEBUG TABLE
