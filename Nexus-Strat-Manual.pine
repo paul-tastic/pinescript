@@ -12,6 +12,8 @@ demand_top = input.float(0.0, "Demand Zone Top", group="Manual Zones")
 demand_bottom = input.float(0.0, "Demand Zone Bottom", group="Manual Zones")
 clear_demand = input.bool(false, "Disable Demand Zone", group="Manual Zones", tooltip="Check to temporarily disable demand zone without clearing values")
 
+show_zones = input.bool(true, "Show Zones", group="Manual Zones", tooltip="Show/hide zone boxes on chart")
+
 // ============================================================================
 // ZONE DETECTION
 // ============================================================================
@@ -23,6 +25,108 @@ bool demand_configured = not clear_demand and demand_top > 0 and demand_bottom >
 // Uses real-time high/low so it triggers immediately when zone is touched
 bool in_supply = supply_configured and not (low > supply_top or high < supply_bottom)
 bool in_demand = demand_configured and not (low > demand_top or high < demand_bottom)
+
+// ============================================================================
+// HTF (1H) ZONE VALIDATION
+// ============================================================================
+// Request 1H data for HTF validation
+[htf_close, htf_open] = request.security(syminfo.tickerid, "60", [close, open], barmerge.gaps_off, barmerge.lookahead_on)
+
+// Check if 1H candle shows rejection:
+// - Supply rejection: opened BELOW supply top, closed ABOVE supply top (bullish rejection)
+// - Demand rejection: opened ABOVE demand bottom, closed BELOW demand bottom (bearish rejection)
+bool htf_closes_above_supply = supply_configured and htf_open < supply_top and htf_close > supply_top
+bool htf_closes_below_demand = demand_configured and htf_open > demand_bottom and htf_close < demand_bottom
+
+// Visual indicators for HTF rejections
+// Track if this is a new HTF rejection (only show label once per rejection)
+var bool prev_htf_above_supply = false
+var bool prev_htf_below_demand = false
+
+if htf_closes_above_supply and not prev_htf_above_supply
+    // New bullish rejection of supply - show label
+    label.new(bar_index, high, "1H ↑ SUPPLY",
+             color=color.new(color.green, 20),
+             textcolor=color.white,
+             style=label.style_label_down,
+             size=size.small)
+
+if htf_closes_below_demand and not prev_htf_below_demand
+    // New bearish rejection of demand - show label
+    label.new(bar_index, low, "1H ↓ DEMAND",
+             color=color.new(color.red, 20),
+             textcolor=color.white,
+             style=label.style_label_up,
+             size=size.small)
+
+// Update previous state
+prev_htf_above_supply := htf_closes_above_supply
+prev_htf_below_demand := htf_closes_below_demand
+
+// Background color for HTF rejection candles
+bgcolor(htf_closes_above_supply ? color.new(color.green, 90) : na, title="HTF Bullish Rejection BG")
+bgcolor(htf_closes_below_demand ? color.new(color.red, 90) : na, title="HTF Bearish Rejection BG")
+
+// ============================================================================
+// ZONE VISUALIZATION - Draw zones from 09:00 to 16:00 current day
+// ============================================================================
+// Get current time info
+int current_hour = hour(time, "America/New_York")
+int current_minute = minute(time, "America/New_York")
+bool is_new_day = ta.change(dayofmonth(time, "America/New_York")) != 0
+
+// Track zone boxes
+var box supply_zone_box = na
+var box demand_zone_box = na
+var int zone_start_bar = na
+
+// At 09:00, create new zone boxes for the day
+if current_hour == 9 and current_minute == 0 and is_new_day
+    zone_start_bar := bar_index
+
+    // Delete old boxes
+    if not na(supply_zone_box)
+        box.delete(supply_zone_box)
+    if not na(demand_zone_box)
+        box.delete(demand_zone_box)
+
+    // Create supply zone box (only if show_zones is enabled)
+    if show_zones and supply_configured
+        supply_zone_box := box.new(bar_index, supply_top, bar_index + 1, supply_bottom,
+                                   border_color=color.red,
+                                   bgcolor=color.new(color.red, 90),
+                                   border_width=1,
+                                   extend=extend.none)
+
+    // Create demand zone box (only if show_zones is enabled)
+    if show_zones and demand_configured
+        demand_zone_box := box.new(bar_index, demand_top, bar_index + 1, demand_bottom,
+                                   border_color=color.blue,
+                                   bgcolor=color.new(color.blue, 90),
+                                   border_width=1,
+                                   extend=extend.none)
+
+// Update zone boxes to extend to current bar (between 09:00 and 16:00)
+if show_zones and current_hour >= 9 and current_hour < 16
+    if supply_configured and not na(supply_zone_box)
+        box.set_right(supply_zone_box, bar_index + 1)
+    if demand_configured and not na(demand_zone_box)
+        box.set_right(demand_zone_box, bar_index + 1)
+else if show_zones and current_hour == 16 and current_minute == 0
+    // Stop extending at 16:00
+    if supply_configured and not na(supply_zone_box)
+        box.set_right(supply_zone_box, bar_index)
+    if demand_configured and not na(demand_zone_box)
+        box.set_right(demand_zone_box, bar_index)
+
+// If show_zones is disabled, delete any existing boxes
+if not show_zones
+    if not na(supply_zone_box)
+        box.delete(supply_zone_box)
+        supply_zone_box := na
+    if not na(demand_zone_box)
+        box.delete(demand_zone_box)
+        demand_zone_box := na
 
 // Track zone entry - once triggered, stays true for the entire bar + 1 more bar
 var bool supply_triggered = false
@@ -330,6 +434,45 @@ if eng_ob_active
                 box.delete(eng_ob_box)
                 eng_ob_box := na
 
+// INVALIDATION: MSS OB invalidated when price reaches opposite zone
+// This invalidation applies even if we haven't left both zones
+// Bullish MSS OB invalidated by touching supply zone
+// Bearish MSS OB invalidated by touching demand zone
+if mss_ob_active
+    bool should_invalidate_mss = false
+
+    if eng_ob_is_bullish and in_supply
+        // Bullish MSS OB invalidated by reaching supply zone
+        should_invalidate_mss := true
+        label.new(bar_index, high, "❌ MSS OB INVAL\nReached Supply",
+                 color=color.orange, textcolor=color.white, style=label.style_label_down, size=size.small)
+    else if not eng_ob_is_bullish and in_demand
+        // Bearish MSS OB invalidated by reaching demand zone
+        should_invalidate_mss := true
+        label.new(bar_index, low, "❌ MSS OB INVAL\nReached Demand",
+                 color=color.orange, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+    if should_invalidate_mss
+        // Clear the entire setup
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level := na
+
+        // Clear MSS OB
+        mss_ob_active := false
+        mss_ob_entry := na
+        mss_ob_tp := na
+        mss_ob_sl := na
+
+        // Delete the box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
+
 // Track which candle made the deepest penetration (only show current)
 var label deepest_demand_label = na
 var label deepest_supply_label = na
@@ -464,7 +607,7 @@ if eng_ob_active and not mss_ob_active and not na(target_fractal_level)
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.bottom_left, 2, 9, border_width=1)  // Increased from 6 to 9 rows
+var table debugTable = table.new(position.bottom_left, 2, 10, border_width=1)  // Increased to 10 rows for HTF validation
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
@@ -478,15 +621,15 @@ bool is_demand_setup = demand_triggered or (eng_ob_active and eng_ob_is_bullish)
 if mss_ob_active
     // MSS OB is active - awaiting entry
     aoi_status := "AWAITING ENTRY"
-    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.orange, 50)
+    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if eng_ob_active
     // Once ENG OB forms, status is ACTIVE (even if price leaves AOI)
     aoi_status := "ACTIVE"
-    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.orange, 50)
+    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if supply_triggered or demand_triggered
     // In AOI but no ENG OB yet
     aoi_status := "IN AOI"
-    value_bgcolor := supply_triggered ? color.new(color.orange, 50) : color.new(color.blue, 50)
+    value_bgcolor := supply_triggered ? color.new(color.red, 50) : color.new(color.blue, 50)
 else
     // Not in AOI and no active setup
     aoi_status := "-"
@@ -548,14 +691,27 @@ if mss_ob_active and not na(mss_ob_sl)
 table.cell(debugTable, 0, 6, "SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 6, sl_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
+// HTF (1H) Validation - highlight if 1H closes above supply or below demand
+string htf_validation = "-"
+color htf_bgcolor = value_bgcolor
+if htf_closes_above_supply or htf_closes_below_demand
+    if htf_closes_above_supply
+        htf_validation := "✓ ABOVE SUPPLY"
+        htf_bgcolor := color.new(color.green, 50)  // Green highlight for bullish confirmation
+    else
+        htf_validation := "✓ BELOW DEMAND"
+        htf_bgcolor := color.new(color.red, 50)   // Red highlight for bearish confirmation
+table.cell(debugTable, 0, 7, "HTF (1H) Close", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 7, htf_validation, text_color=color.white, bgcolor=htf_bgcolor, text_size=size.small)
+
 // Supply zone levels - show DISABLED if disabled
 string supply_zone = "-"
 if clear_supply
     supply_zone := "DISABLED"
 else if supply_configured
     supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, 7, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 7, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 8, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 8, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Demand zone levels - show DISABLED if disabled
 string demand_zone = "-"
@@ -563,5 +719,5 @@ if clear_demand
     demand_zone := "DISABLED"
 else if demand_configured
     demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
-table.cell(debugTable, 0, 8, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 8, demand_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 9, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 9, demand_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
