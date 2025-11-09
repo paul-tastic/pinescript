@@ -45,6 +45,13 @@ var float target_fractal_level = na
 var int eng_ob_bar_index = na
 var float eng_ob_candle_high = na
 var float eng_ob_candle_low = na
+var box eng_ob_box = na  // Yellow box around ENG OB candle for visual debug
+
+// Track MSS OB (formed when price crosses fractal level)
+var bool mss_ob_active = false
+var float mss_ob_entry = na  // Entry price (high of OB candle for bullish, low for bearish)
+var float mss_ob_tp = na     // Take profit level
+var float mss_ob_sl = na     // Stop loss level
 
 // Check if currently outside both zones
 bool outside_both_zones = not in_supply and not in_demand
@@ -137,19 +144,52 @@ if supply_triggered and bar_index > 0
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
 // INVALIDATION: Clear setup when zones are disabled
-if clear_supply or clear_demand
-    eng_ob_active := false
-    eng_ob_is_bullish := false
-    eng_ob_deepest_level := na
-    eng_ob_bar_index := na
-    eng_ob_candle_high := na
-    eng_ob_candle_low := na
+// Only invalidate if the disabled zone MATCHES the setup's zone
+// Bullish setup (from demand) only invalidated by clear_demand
+// Bearish setup (from supply) only invalidated by clear_supply
+if eng_ob_active
+    bool should_invalidate = false
+
+    if eng_ob_is_bullish and clear_demand
+        // Bullish setup invalidated by disabling demand zone
+        should_invalidate := true
+        label.new(bar_index, high, "❌ ZONE DISABLED\nDemand zone",
+                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
+    else if not eng_ob_is_bullish and clear_supply
+        // Bearish setup invalidated by disabling supply zone
+        should_invalidate := true
+        label.new(bar_index, high, "❌ ZONE DISABLED\nSupply zone",
+                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+    if should_invalidate
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level := na
+
+        // Clear MSS OB
+        mss_ob_active := false
+        mss_ob_entry := na
+        mss_ob_tp := na
+        mss_ob_sl := na
+
+        // Delete yellow box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
 
 // INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
 // Bullish setup (from demand) invalidated by entering supply zone
 // Bearish setup (from supply) invalidated by entering demand zone
 if barstate.isnew and was_outside_zones
     if eng_ob_active and eng_ob_is_bullish and in_supply
+        // DEBUG: Show opposite zone entry invalidation
+        label.new(bar_index, high, "❌ OPPOSITE ZONE\nBullish setup → Supply",
+                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
+
         // Bullish setup invalidated by entering supply zone
         eng_ob_active := false
         eng_ob_is_bullish := false
@@ -157,7 +197,24 @@ if barstate.isnew and was_outside_zones
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
+        target_fractal_level := na
+
+        // Clear MSS OB
+        mss_ob_active := false
+        mss_ob_entry := na
+        mss_ob_tp := na
+        mss_ob_sl := na
+
+        // Delete yellow box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
+
     else if eng_ob_active and not eng_ob_is_bullish and in_demand
+        // DEBUG: Show opposite zone entry invalidation
+        label.new(bar_index, low, "❌ OPPOSITE ZONE\nBearish setup → Demand",
+                 color=color.purple, textcolor=color.white, style=label.style_label_up, size=size.small)
+
         // Bearish setup invalidated by entering demand zone
         eng_ob_active := false
         eng_ob_is_bullish := false
@@ -165,6 +222,18 @@ if barstate.isnew and was_outside_zones
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
+        target_fractal_level := na
+
+        // Clear MSS OB
+        mss_ob_active := false
+        mss_ob_entry := na
+        mss_ob_tp := na
+        mss_ob_sl := na
+
+        // Delete yellow box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
 if is_bullish_engulfing
@@ -212,6 +281,10 @@ if eng_ob_active
     if eng_ob_is_bullish and demand_triggered and not na(eng_ob_candle_low)
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
         if low < eng_ob_candle_low
+            // DEBUG: Show invalidation reason
+            label.new(bar_index, low, "❌ INVAL\nlow:" + str.tostring(low, format.mintick) + "\nOB:" + str.tostring(eng_ob_candle_low, format.mintick),
+                     color=color.red, textcolor=color.white, style=label.style_label_up, size=size.small)
+
             eng_ob_active := false
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
@@ -219,9 +292,25 @@ if eng_ob_active
             eng_ob_candle_high := na
             eng_ob_candle_low := na
             target_fractal_level := na
+
+            // Clear MSS OB
+            mss_ob_active := false
+            mss_ob_entry := na
+            mss_ob_tp := na
+            mss_ob_sl := na
+
+            // Delete the yellow box when invalidated
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
+
     else if not eng_ob_is_bullish and supply_triggered and not na(eng_ob_candle_high)
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
         if high > eng_ob_candle_high
+            // DEBUG: Show invalidation reason
+            label.new(bar_index, high, "❌ INVAL\nhigh:" + str.tostring(high, format.mintick) + "\nOB:" + str.tostring(eng_ob_candle_high, format.mintick),
+                     color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
             eng_ob_active := false
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
@@ -229,6 +318,17 @@ if eng_ob_active
             eng_ob_candle_high := na
             eng_ob_candle_low := na
             target_fractal_level := na
+
+            // Clear MSS OB
+            mss_ob_active := false
+            mss_ob_entry := na
+            mss_ob_tp := na
+            mss_ob_sl := na
+
+            // Delete the yellow box when invalidated
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
 
 // Track which candle made the deepest penetration (only show current)
 var label deepest_demand_label = na
@@ -252,6 +352,36 @@ if supply_triggered and not na(supply_highest_high) and high == supply_highest_h
 // Plot diamonds for engulfing OB detection (smaller size)
 plotshape(is_bullish_engulfing, title="Bullish Engulfing OB", style=shape.diamond, location=location.belowbar, color=color.black, size=size.tiny)
 plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamond, location=location.abovebar, color=color.black, size=size.tiny)
+
+// ============================================================================
+// VISUAL DEBUG - ENG OB CANDLE BOX
+// ============================================================================
+// Draw a colored box around the ENG OB candle (green for bullish, red for bearish)
+// Box extends to the right while setup is active
+if is_bullish_engulfing or is_bearish_engulfing
+    // Delete old box
+    if not na(eng_ob_box)
+        box.delete(eng_ob_box)
+
+    // Draw new box around the OB candle we just identified
+    if not na(eng_ob_bar_index)
+        int box_left = eng_ob_bar_index
+        int box_right = eng_ob_bar_index + 1
+        float box_top = eng_ob_candle_high
+        float box_bottom = eng_ob_candle_low
+
+        // Use green for bullish, red for bearish
+        color box_color = eng_ob_is_bullish ? color.green : color.red
+
+        eng_ob_box := box.new(box_left, box_top, box_right, box_bottom,
+                              border_color=box_color,
+                              bgcolor=color.new(box_color, 90),
+                              border_width=1,
+                              extend=extend.none)
+
+// Update the box to extend to current bar while setup is active (bar by bar, not infinite)
+if eng_ob_active and not na(eng_ob_box)
+    box.set_right(eng_ob_box, bar_index + 1)
 
 // ============================================================================
 // LTF FRACTAL DETECTION (only when in AOI or active setup)
@@ -300,9 +430,41 @@ if eng_ob_active and na(target_fractal_level) and bar_index >= 4
                 break
 
 // ============================================================================
+// MSS OB DETECTION - Price crosses fractal level
+// ============================================================================
+// Check if price has crossed the fractal level (wick or close through)
+if eng_ob_active and not mss_ob_active and not na(target_fractal_level)
+    bool fractal_crossed = false
+
+    if eng_ob_is_bullish
+        // Bullish setup: check if price crossed above the bearish fractal high
+        fractal_crossed := high >= target_fractal_level
+    else
+        // Bearish setup: check if price crossed below the bullish fractal low
+        fractal_crossed := low <= target_fractal_level
+
+    if fractal_crossed
+        // MSS OB is now valid - the ENG OB candle IS the MSS OB
+        mss_ob_active := true
+
+        // Set entry, TP, and SL based on the OB candle
+        if eng_ob_is_bullish
+            // Bullish: Entry at high of OB candle, SL at low, TP at 2:1 RR
+            mss_ob_entry := eng_ob_candle_high
+            mss_ob_sl := eng_ob_candle_low
+            float risk = mss_ob_entry - mss_ob_sl
+            mss_ob_tp := mss_ob_entry + (risk * 2)  // 2:1 reward to risk
+        else
+            // Bearish: Entry at low of OB candle, SL at high, TP at 2:1 RR
+            mss_ob_entry := eng_ob_candle_low
+            mss_ob_sl := eng_ob_candle_high
+            float risk = mss_ob_sl - mss_ob_entry
+            mss_ob_tp := mss_ob_entry - (risk * 2)  // 2:1 reward to risk
+
+// ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.top_right, 2, 6, border_width=1)
+var table debugTable = table.new(position.bottom_left, 2, 9, border_width=1)  // Increased from 6 to 9 rows
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
@@ -313,7 +475,11 @@ color value_bgcolor = color.new(color.gray, 30)   // Default background for valu
 bool is_supply_setup = supply_triggered or (eng_ob_active and not eng_ob_is_bullish)
 bool is_demand_setup = demand_triggered or (eng_ob_active and eng_ob_is_bullish)
 
-if eng_ob_active
+if mss_ob_active
+    // MSS OB is active - awaiting entry
+    aoi_status := "AWAITING ENTRY"
+    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.orange, 50)
+else if eng_ob_active
     // Once ENG OB forms, status is ACTIVE (even if price leaves AOI)
     aoi_status := "ACTIVE"
     value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.orange, 50)
@@ -342,9 +508,13 @@ if eng_ob_active
 table.cell(debugTable, 0, 1, "Engulfing OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
 table.cell(debugTable, 1, 1, eng_status, text_color=color.white, bgcolor=eng_bgcolor, text_size=size.normal)
 
-// MSS OB placeholder (for future implementation)
+// MSS OB status - show checkmark when active
+string mss_status = "-"
+color mss_bgcolor = value_bgcolor
+if mss_ob_active
+    mss_status := "✓"
 table.cell(debugTable, 0, 2, "MSS OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, 2, "-", text_color=color.white, bgcolor=value_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 2, mss_status, text_color=color.white, bgcolor=mss_bgcolor, text_size=size.normal)
 
 // Fractal Level - show target price for MSS OB (only when setup is active)
 string fractal_level = "-"
@@ -357,14 +527,35 @@ if eng_ob_active
 table.cell(debugTable, 0, 3, "Fractal Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 3, fractal_level, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
+// Entry Price
+string entry_price = "-"
+if mss_ob_active and not na(mss_ob_entry)
+    entry_price := str.tostring(mss_ob_entry, format.mintick)
+table.cell(debugTable, 0, 4, "Entry Price", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 4, entry_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+
+// Take Profit
+string tp_price = "-"
+if mss_ob_active and not na(mss_ob_tp)
+    tp_price := str.tostring(mss_ob_tp, format.mintick)
+table.cell(debugTable, 0, 5, "TP", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 5, tp_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+
+// Stop Loss
+string sl_price = "-"
+if mss_ob_active and not na(mss_ob_sl)
+    sl_price := str.tostring(mss_ob_sl, format.mintick)
+table.cell(debugTable, 0, 6, "SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 6, sl_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+
 // Supply zone levels - show DISABLED if disabled
 string supply_zone = "-"
 if clear_supply
     supply_zone := "DISABLED"
 else if supply_configured
     supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, 4, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 4, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 7, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 7, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Demand zone levels - show DISABLED if disabled
 string demand_zone = "-"
@@ -372,5 +563,5 @@ if clear_demand
     demand_zone := "DISABLED"
 else if demand_configured
     demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
-table.cell(debugTable, 0, 5, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 5, demand_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 8, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 8, demand_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
