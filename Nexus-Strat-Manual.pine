@@ -299,6 +299,7 @@ var bool trade_entered = false
 
 // Track if limit order has been placed for current entry signal
 var bool order_placed = false
+var int order_placed_bar = -1  // Track which bar the order was placed on
 
 // Track the bar on which the last trade exited (prevent same-bar re-entry)
 var int last_exit_bar = -1
@@ -359,6 +360,7 @@ if barstate.isnew
             // Reset trade flags
             trade_entered := false
             order_placed := false
+            order_placed_bar := -1
 
             // Delete yellow box
             if not na(eng_ob_box)
@@ -1294,6 +1296,7 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
 
     // Mark that order has been placed for this signal
     order_placed := true
+    order_placed_bar := bar_index
 
 // ============================================================================
 // TRADE EXECUTION - Track when limit order is filled
@@ -1368,6 +1371,7 @@ if trade_entered and strategy.position_size == 0
     // Reset trade flag and order placement flag
     trade_entered := false
     order_placed := false
+    order_placed_bar := -1
 
     // Persist TP/SL boxes for the day (don't delete, just stop extending)
     // Add them to daily arrays so they stay visible until 20:00
@@ -1403,7 +1407,8 @@ if trade_entered and strategy.position_size == 0
 // If order was placed but trade never got marked as entered, and position is now closed,
 // this means the trade opened and closed intrabar (before bar-close detection).
 // Clean up the stuck state to allow new trades.
-if order_placed and not trade_entered and strategy.position_size == 0 and bar_index != last_exit_bar
+// ONLY run this if it's been at least 1 bar since order was placed (prevents same-bar cleanup)
+if order_placed and not trade_entered and strategy.position_size == 0 and bar_index != last_exit_bar and (bar_index - order_placed_bar) >= 1
     // Cancel any pending orders
     strategy.cancel_all()
 
@@ -1421,6 +1426,7 @@ if order_placed and not trade_entered and strategy.position_size == 0 and bar_in
     entry_tp := na
     entry_sl := na
     order_placed := false
+    order_placed_bar := -1
 
     // Clear strategy-specific state based on which strategy placed the order
     if active_entry_strategy == "MSS OB"
