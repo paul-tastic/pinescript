@@ -844,22 +844,45 @@ if eng_ob_active
 if entry_signal_active
     bool should_invalidate_entry = false
 
-    if eng_ob_is_bullish and in_supply
+    // Use entry_is_bullish (generic for all strategies) instead of eng_ob_is_bullish (ENG OB specific)
+    if entry_is_bullish and in_supply
         // Bullish entry invalidated by reaching supply zone
         should_invalidate_entry := true
-    else if not eng_ob_is_bullish and in_demand
+    else if not entry_is_bullish and in_demand
         // Bearish entry invalidated by reaching demand zone
         should_invalidate_entry := true
 
     if should_invalidate_entry
-        // Clear the entire setup
-        eng_ob_active := false
-        eng_ob_is_bullish := false
-        eng_ob_deepest_level := na
-        eng_ob_bar_index := na
-        eng_ob_candle_high := na
-        eng_ob_candle_low := na
-        target_fractal_level_mss := na
+        // Clear strategy-specific state based on which strategy placed the order
+        if active_entry_strategy == "MSS OB" or active_entry_strategy == "Inverted FVG" or active_entry_strategy == "Breaker Block"
+            // ENG OB-based strategies - clear ENG OB state
+            eng_ob_active := false
+            eng_ob_is_bullish := false
+            eng_ob_deepest_level := na
+            eng_ob_bar_index := na
+            eng_ob_candle_high := na
+            eng_ob_candle_low := na
+            target_fractal_level_mss := na
+
+            // Delete the ENG OB box
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
+
+        else if active_entry_strategy == "BPR FVG"
+            // BPR FVG strategy - clear BPR FVG state
+            bpr_fvg_active := false
+            bpr_fvg_is_bullish := false
+            bpr_fvg_top := na
+            bpr_fvg_bottom := na
+            bpr_fvg_invalidation_level := na
+            bpr_fvg_bar_index := na
+            bpr_fvg_invalidation_reason := "Opposite zone reached"
+
+            // Delete the BPR FVG box
+            if not na(bpr_fvg_box)
+                box.delete(bpr_fvg_box)
+                bpr_fvg_box := na
 
         // Clear entry signals (all strategies)
         entry_signal_active := false
@@ -868,12 +891,7 @@ if entry_signal_active
         entry_tp := na
         entry_sl := na
 
-        // Delete the box
-        if not na(eng_ob_box)
-            box.delete(eng_ob_box)
-            eng_ob_box := na
-
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (shared across all strategies)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
@@ -984,16 +1002,18 @@ if not bpr_fvg_active and not entry_signal_active and not trade_entered and not 
                 bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
 
 // INVALIDATION: Price closes beyond invalidation level (deeper into zone)
+// This catches price going BACK INTO the zone (wrong direction), not price breaching THROUGH the FVG
+// Don't run this invalidation once entry signal is active
 if bpr_fvg_active and not entry_signal_active
     bool should_invalidate_fvg = false
 
-    if bpr_fvg_is_bullish and supply_triggered
-        // Bullish FVG invalidated if close goes higher than invalidation level
+    if bpr_fvg_is_bullish
+        // Bullish FVG (bearish trade): invalidated if close goes HIGHER than invalidation level (back into supply)
         if close > bpr_fvg_invalidation_level
             should_invalidate_fvg := true
             bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
-    else if not bpr_fvg_is_bullish and demand_triggered
-        // Bearish FVG invalidated if close goes lower than invalidation level
+    else
+        // Bearish FVG (bullish trade): invalidated if close goes LOWER than invalidation level (back into demand)
         if close < bpr_fvg_invalidation_level
             should_invalidate_fvg := true
             bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
@@ -1403,89 +1423,11 @@ if trade_entered and strategy.position_size == 0
     bpr_fvg_invalidation_reason := "Trade exited"
 
 // ============================================================================
-// INTRABAR TRADE CLEANUP - Handle trades that open and close within same candle
+// INTRABAR TRADE CLEANUP - REMOVED
 // ============================================================================
-// If order was placed but trade never got marked as entered, and position is now closed,
-// this means the trade opened and closed intrabar (before bar-close detection).
-// Clean up the stuck state to allow new trades.
-// ONLY run this if it's been at least 1 bar since order was placed (prevents same-bar cleanup)
-if order_placed and not trade_entered and strategy.position_size == 0 and bar_index != last_exit_bar and (bar_index - order_placed_bar) >= 1
-    // Cancel any pending orders
-    strategy.cancel_all()
-
-    // Record the exit bar to prevent same-bar re-entry
-    last_exit_bar := bar_index
-
-    // Only clear the strategy that actually placed the order
-    // If MSS OB placed the order, clear ENG OB but leave BPR FVG intact
-    // If BPR FVG placed the order, clear BPR FVG but leave ENG OB intact
-
-    // Clear the entry signal that placed the order
-    entry_signal_active := false
-    entry_is_bullish := false
-    entry_price := na
-    entry_tp := na
-    entry_sl := na
-    order_placed := false
-    order_placed_bar := -1
-
-    // Clear strategy-specific state based on which strategy placed the order
-    if active_entry_strategy == "MSS OB"
-        // MSS OB placed the order - clear ENG OB but keep BPR FVG
-        eng_ob_active := false
-        eng_ob_is_bullish := false
-        eng_ob_deepest_level := na
-        eng_ob_bar_index := na
-        eng_ob_candle_high := na
-        eng_ob_candle_low := na
-        target_fractal_level_mss := na
-
-        // Delete eng_ob_box
-        if not na(eng_ob_box)
-            box.delete(eng_ob_box)
-            eng_ob_box := na
-
-    else if active_entry_strategy == "BPR FVG"
-        // BPR FVG placed the order - clear BPR FVG state
-        bpr_fvg_active := false
-        bpr_fvg_is_bullish := false
-        bpr_fvg_top := na
-        bpr_fvg_bottom := na
-        bpr_fvg_invalidation_level := na
-        bpr_fvg_bar_index := na
-        bpr_fvg_invalidation_reason := "Intrabar cleanup (BPR FVG)"
-
-        // Delete bpr_fvg_box
-        if not na(bpr_fvg_box)
-            box.delete(bpr_fvg_box)
-            bpr_fvg_box := na
-    else
-        // Unknown strategy or empty - clear everything to be safe
-        eng_ob_active := false
-        eng_ob_is_bullish := false
-        eng_ob_deepest_level := na
-        eng_ob_bar_index := na
-        eng_ob_candle_high := na
-        eng_ob_candle_low := na
-        target_fractal_level_mss := na
-
-        bpr_fvg_active := false
-        bpr_fvg_is_bullish := false
-        bpr_fvg_top := na
-        bpr_fvg_bottom := na
-        bpr_fvg_invalidation_level := na
-        bpr_fvg_bar_index := na
-        bpr_fvg_invalidation_reason := "Intrabar cleanup (unknown strategy)"
-
-        if not na(eng_ob_box)
-            box.delete(eng_ob_box)
-            eng_ob_box := na
-        if not na(bpr_fvg_box)
-            box.delete(bpr_fvg_box)
-            bpr_fvg_box := na
-
-    // Clear the active strategy name last
-    active_entry_strategy := ""
+// Intrabar cleanup has been removed to simplify the strategy logic
+// The regular exit handler handles all trade exits (including intrabar fills)
+// Unfilled limit orders will be cleaned up at 9 AM reset or when new setups form
 
 // Update TP/SL boxes to extend one bar at a time while trade is entered (only show when in trade)
 if trade_entered and not na(tp_box) and not na(sl_box)
@@ -1509,11 +1451,11 @@ bool is_demand_setup = demand_triggered or (eng_ob_active and eng_ob_is_bullish)
 if trade_entered and strategy.position_size != 0
     // Trade is active - in position
     aoi_status := "IN TRADE"
-    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
+    value_bgcolor := entry_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if entry_signal_active
     // Entry signal is active - awaiting entry
     aoi_status := "AWAITING ENTRY"
-    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
+    value_bgcolor := entry_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if eng_ob_active
     // Once ENG OB forms, status is ACTIVE (even if price leaves AOI)
     aoi_status := "ACTIVE"
