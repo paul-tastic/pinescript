@@ -27,6 +27,16 @@ trading_end_minute = input.int(45, "Trading End Minute", minval=0, maxval=59, gr
 // ============================================================================
 risk_per_trade = input.float(500.0, "Risk Per Trade ($)", minval=1.0, group="Trade Settings", tooltip="Dollar amount to risk per trade")
 max_setup_bars = input.int(100, "Max Setup Age (bars)", minval=1, group="Trade Settings", tooltip="Maximum number of bars before setup is invalidated")
+grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
+
+// ============================================================================
+// INPUTS - ENTRY STRATEGIES (can enable multiple)
+// ============================================================================
+use_mss_ob = input.bool(true, "MSS OB", group="Entry Strategies", tooltip="Market Structure Shift Order Block - enters when price crosses opposite fractal level")
+use_bpr_fvg = input.bool(false, "Balanced Price Range FVG", group="Entry Strategies", tooltip="Fair Value Gap within balanced price range")
+bpr_fvg_min_ticks = input.float(2.0, "BPR FVG Min Size (ticks)", minval=0.0, step=0.25, group="Entry Strategies", tooltip="Minimum FVG size in ticks - smaller FVGs will be ignored")
+use_inverted_fvg = input.bool(false, "Inverted FVG", group="Entry Strategies", tooltip="Inverted Fair Value Gap entry")
+use_breaker_block = input.bool(false, "Breaker Block", group="Entry Strategies", tooltip="Breaker Block entry pattern")
 
 // ============================================================================
 // ZONE DETECTION
@@ -235,6 +245,10 @@ var int demand_trigger_bar = -1
 var float demand_lowest_low = na
 var float supply_highest_high = na
 
+// Track deepest HISTORICAL penetration (for validating new ENG OBs must be deeper)
+var float demand_deepest_ever = na  // Deepest low ever reached in demand zone
+var float supply_deepest_ever = na  // Highest high ever reached in supply zone
+
 // Track if we're completely outside both zones (ready to reset)
 var bool was_outside_zones = true
 
@@ -242,24 +256,171 @@ var bool was_outside_zones = true
 var bool eng_ob_active = false
 var bool eng_ob_is_bullish = false
 var float eng_ob_deepest_level = na
-var float target_fractal_level = na
 var int eng_ob_bar_index = na
 var float eng_ob_candle_high = na
 var float eng_ob_candle_low = na
 var box eng_ob_box = na  // Yellow box around ENG OB candle for visual debug
 
-// Track MSS OB (formed when price crosses fractal level)
-var bool mss_ob_active = false
-var float mss_ob_entry = na  // Entry price (high of OB candle for bullish, low for bearish)
-var float mss_ob_tp = na     // Take profit level
-var float mss_ob_sl = na     // Stop loss level
+// Track ENTRY SIGNALS - generic for all entry strategies
+var bool entry_signal_active = false  // Any entry strategy has triggered
+var string active_entry_strategy = ""  // Which strategy triggered (for display/debug)
+var bool entry_is_bullish = false  // Trade direction: true = long, false = short
+var float entry_price = na  // Entry price (regardless of strategy)
+var float entry_tp = na     // Take profit level
+var float entry_sl = na     // Stop loss level
 
-// Track TP/SL indicator boxes
-var box tp_box = na
-var box sl_box = na
+// Track MSS OB specific state (one of four entry strategies)
+var float target_fractal_level_mss = na  // Fractal level for MSS OB strategy
+
+// Track BPR FVG specific state
+var bool bpr_fvg_active = false  // BPR FVG has been detected
+var bool bpr_fvg_is_bullish = false  // True = bullish FVG (in supply), False = bearish FVG (in demand)
+var float bpr_fvg_top = na  // Top of the FVG
+var float bpr_fvg_bottom = na  // Bottom of the FVG
+var float bpr_fvg_invalidation_level = na  // Highest/lowest of 3-candle pattern for invalidation
+var int bpr_fvg_bar_index = na  // Bar index where FVG was detected
+var box bpr_fvg_box = na  // Yellow box around FVG
+
+// Track Inverted FVG specific state
+// TODO: Add Inverted FVG variables when implementing
+
+// Track Breaker Block specific state
+// TODO: Add Breaker Block variables when implementing
+
+// Track TP/SL indicator boxes - use arrays to persist multiple boxes throughout the day
+var array<box> daily_tp_boxes = array.new<box>()
+var array<box> daily_sl_boxes = array.new<box>()
+var box tp_box = na  // Current active TP box
+var box sl_box = na  // Current active SL box
 
 // Track if we've already entered a trade for this setup
 var bool trade_entered = false
+
+// Track if limit order has been placed for current entry signal
+var bool order_placed = false
+
+// Track the bar on which the last trade exited (prevent same-bar re-entry)
+var int last_exit_bar = -1
+
+// Track bars to wait after exit before allowing new setups (cooldown period)
+cooldown_bars = input.int(2, "Cooldown After Exit (bars)", minval=0, group="Trade Settings", tooltip="Number of bars to wait after trade exit before detecting new setups")
+
+// ============================================================================
+// DAILY PERFORMANCE TRACKING
+// ============================================================================
+var int today_trade_count = 0
+var int today_wins = 0
+var int today_losses = 0
+var float today_pnl = 0.0
+var int last_trade_day = na
+var float last_position_entry = na  // Track entry price to calculate P&L
+
+// Reset daily stats at midnight and clear old boxes at 20:00 (start of Asian session)
+if barstate.isnew
+    int current_day = dayofmonth(time, "America/New_York")
+    int current_hour = hour(time, "America/New_York")
+    int current_minute = minute(time, "America/New_York")
+
+    // At midnight, reset daily stats
+    if not na(last_trade_day) and current_day != last_trade_day
+        today_trade_count := 0
+        today_wins := 0
+        today_losses := 0
+        today_pnl := 0.0
+
+    // At 09:00 NY time, reset deepest zone penetration tracking for the new trading day
+    // Also invalidate any active setups from previous day
+    if current_hour == 9 and current_minute == 0
+        demand_deepest_ever := na
+        supply_deepest_ever := na
+
+        // Invalidate any active setups from previous day
+        if eng_ob_active or entry_signal_active
+            // Close any open positions and cancel pending orders
+            strategy.close_all()
+            strategy.cancel_all()
+
+            eng_ob_active := false
+            eng_ob_is_bullish := false
+            eng_ob_deepest_level := na
+            eng_ob_bar_index := na
+            eng_ob_candle_high := na
+            eng_ob_candle_low := na
+            target_fractal_level_mss := na
+
+            // Clear entry signals (all strategies)
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+
+            // Reset trade flags
+            trade_entered := false
+            order_placed := false
+
+            // Delete yellow box
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
+
+            // Delete TP/SL boxes
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
+
+            // Clear BPR FVG state
+            if not na(bpr_fvg_box)
+                box.delete(bpr_fvg_box)
+                bpr_fvg_box := na
+            bpr_fvg_active := false
+            bpr_fvg_is_bullish := false
+            bpr_fvg_top := na
+            bpr_fvg_bottom := na
+            bpr_fvg_invalidation_level := na
+            bpr_fvg_bar_index := na
+
+    // At 20:00 (start of Asian session), clear all persisted boxes from the day
+    if current_hour == 20
+        // Delete all TP boxes - only if array has elements
+        if array.size(daily_tp_boxes) > 0
+            for i = 0 to array.size(daily_tp_boxes) - 1
+                box.delete(array.get(daily_tp_boxes, i))
+        array.clear(daily_tp_boxes)
+
+        // Delete all SL boxes - only if array has elements
+        if array.size(daily_sl_boxes) > 0
+            for i = 0 to array.size(daily_sl_boxes) - 1
+                box.delete(array.get(daily_sl_boxes, i))
+        array.clear(daily_sl_boxes)
+
+    last_trade_day := current_day
+
+// Track when trade enters
+if entry_signal_active and not trade_entered and strategy.position_size != 0
+    last_position_entry := strategy.position_avg_price
+
+// Track when trade exits and calculate P&L using strategy's closed trade P&L
+var int last_closed_trades = 0
+int current_closed_trades = strategy.closedtrades
+
+if current_closed_trades > last_closed_trades
+    // A new trade just closed - get the P&L from the most recent closed trade
+    float trade_pnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+
+    // Update daily stats
+    today_trade_count += 1
+    today_pnl += trade_pnl
+
+    if trade_pnl > 0
+        today_wins += 1
+    else
+        today_losses += 1
+
+    last_closed_trades := current_closed_trades
 
 // ============================================================================
 // FORCE CLOSE AT TRADING WINDOW END - TOP LEVEL (runs every bar)
@@ -307,6 +468,10 @@ if in_supply
     else if na(supply_highest_high) or high > supply_highest_high
         supply_highest_high := high
 
+    // Track deepest EVER in supply zone (never resets, only gets deeper) - using CLOSE
+    if na(supply_deepest_ever) or close > supply_deepest_ever
+        supply_deepest_ever := close
+
 if in_demand
     demand_triggered := true
     demand_trigger_bar := bar_index
@@ -318,6 +483,10 @@ if in_demand
     // Otherwise, track lowest low in demand zone
     else if na(demand_lowest_low) or low < demand_lowest_low
         demand_lowest_low := low
+
+    // Track deepest EVER in demand zone (never resets, only gets deeper) - using CLOSE
+    if na(demand_deepest_ever) or close < demand_deepest_ever
+        demand_deepest_ever := close
 
 // ============================================================================
 // SETUP FLOW AND INVALIDATION RULES
@@ -352,10 +521,15 @@ if demand_triggered and bar_index > 0 and in_trading_window
     bool prev_bearish = close[1] < open[1]
     bool engulfs_body = close >= open[1]
 
-    // Check if current or previous candle made the deepest low
+    // Check if current or previous candle made the deepest low FOR THIS ZONE ENTRY
     bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
 
-    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
+    // VALIDATION: ENG OB must be deeper than or equal to any previous ENG OB
+    // The CLOSE of whichever candle made the deepest low must be lower than or equal to previous deepest close
+    float deepest_candle_close = low <= low[1] ? close : close[1]
+    bool is_deeper_than_previous = na(demand_deepest_ever) or deepest_candle_close <= demand_deepest_ever
+
+    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest and is_deeper_than_previous
 
 if supply_triggered and bar_index > 0 and in_trading_window
     // Bearish engulfing: current candle close engulfs previous candle body
@@ -363,10 +537,15 @@ if supply_triggered and bar_index > 0 and in_trading_window
     bool prev_bullish = close[1] > open[1]
     bool engulfs_body = close <= open[1]
 
-    // Check if current or previous candle made the highest high
+    // Check if current or previous candle made the highest high FOR THIS ZONE ENTRY
     bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
 
-    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest
+    // VALIDATION: ENG OB must be deeper than or equal to any previous ENG OB
+    // The CLOSE of whichever candle made the highest high must be higher than or equal to previous deepest close
+    float deepest_candle_close = high >= high[1] ? close : close[1]
+    bool is_deeper_than_previous = na(supply_deepest_ever) or deepest_candle_close >= supply_deepest_ever
+
+    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest and is_deeper_than_previous
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
@@ -413,13 +592,14 @@ if eng_ob_active and not na(eng_ob_bar_index)
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
-        target_fractal_level := na
+        target_fractal_level_mss := na
 
-        // Clear MSS OB
-        mss_ob_active := false
-        mss_ob_entry := na
-        mss_ob_tp := na
-        mss_ob_sl := na
+        // Clear entry signals (all strategies)
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_price := na
+        entry_tp := na
+        entry_sl := na
 
         // Reset trade flag
         trade_entered := false
@@ -458,13 +638,14 @@ if eng_ob_active
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
-        target_fractal_level := na
+        target_fractal_level_mss := na
 
-        // Clear MSS OB
-        mss_ob_active := false
-        mss_ob_entry := na
-        mss_ob_tp := na
-        mss_ob_sl := na
+        // Clear entry signals (all strategies)
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_price := na
+        entry_tp := na
+        entry_sl := na
 
         // Delete yellow box
         if not na(eng_ob_box)
@@ -491,13 +672,14 @@ if barstate.isnew and was_outside_zones
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
-        target_fractal_level := na
+        target_fractal_level_mss := na
 
-        // Clear MSS OB
-        mss_ob_active := false
-        mss_ob_entry := na
-        mss_ob_tp := na
-        mss_ob_sl := na
+        // Clear entry signals (all strategies)
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_price := na
+        entry_tp := na
+        entry_sl := na
 
         // Delete yellow box
         if not na(eng_ob_box)
@@ -520,13 +702,14 @@ if barstate.isnew and was_outside_zones
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
-        target_fractal_level := na
+        target_fractal_level_mss := na
 
-        // Clear MSS OB
-        mss_ob_active := false
-        mss_ob_entry := na
-        mss_ob_tp := na
-        mss_ob_sl := na
+        // Clear entry signals (all strategies)
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_price := na
+        entry_tp := na
+        entry_sl := na
 
         // Delete yellow box
         if not na(eng_ob_box)
@@ -546,7 +729,7 @@ if is_bullish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := true
     eng_ob_deepest_level := demand_lowest_low
-    target_fractal_level := na  // Reset fractal search for new ENG OB
+    target_fractal_level_mss := na  // Reset fractal search for new ENG OB
 
     // Determine which candle is the actual OB candle (the one that made the deepest low)
     // For bullish engulfing, the OB candle is whichever made the lowest low
@@ -565,7 +748,7 @@ else if is_bearish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := false
     eng_ob_deepest_level := supply_highest_high
-    target_fractal_level := na  // Reset fractal search for new ENG OB
+    target_fractal_level_mss := na  // Reset fractal search for new ENG OB
 
     // Determine which candle is the actual OB candle (the one that made the highest high)
     // For bearish engulfing, the OB candle is whichever made the highest high
@@ -593,13 +776,14 @@ if eng_ob_active
             eng_ob_bar_index := na
             eng_ob_candle_high := na
             eng_ob_candle_low := na
-            target_fractal_level := na
+            target_fractal_level_mss := na
 
-            // Clear MSS OB
-            mss_ob_active := false
-            mss_ob_entry := na
-            mss_ob_tp := na
-            mss_ob_sl := na
+            // Clear entry signals (all strategies)
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
 
             // Delete the yellow box when invalidated
             if not na(eng_ob_box)
@@ -623,13 +807,14 @@ if eng_ob_active
             eng_ob_bar_index := na
             eng_ob_candle_high := na
             eng_ob_candle_low := na
-            target_fractal_level := na
+            target_fractal_level_mss := na
 
-            // Clear MSS OB
-            mss_ob_active := false
-            mss_ob_entry := na
-            mss_ob_tp := na
-            mss_ob_sl := na
+            // Clear entry signals (all strategies)
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
 
             // Delete the yellow box when invalidated
             if not na(eng_ob_box)
@@ -644,21 +829,21 @@ if eng_ob_active
                 box.delete(sl_box)
                 sl_box := na
 
-// INVALIDATION: MSS OB invalidated when price reaches opposite zone
+// INVALIDATION: Entry signal invalidated when price reaches opposite zone
 // This invalidation applies even if we haven't left both zones
-// Bullish MSS OB invalidated by touching supply zone
-// Bearish MSS OB invalidated by touching demand zone
-if mss_ob_active
-    bool should_invalidate_mss = false
+// Bullish entry invalidated by touching supply zone
+// Bearish entry invalidated by touching demand zone
+if entry_signal_active
+    bool should_invalidate_entry = false
 
     if eng_ob_is_bullish and in_supply
-        // Bullish MSS OB invalidated by reaching supply zone
-        should_invalidate_mss := true
+        // Bullish entry invalidated by reaching supply zone
+        should_invalidate_entry := true
     else if not eng_ob_is_bullish and in_demand
-        // Bearish MSS OB invalidated by reaching demand zone
-        should_invalidate_mss := true
+        // Bearish entry invalidated by reaching demand zone
+        should_invalidate_entry := true
 
-    if should_invalidate_mss
+    if should_invalidate_entry
         // Clear the entire setup
         eng_ob_active := false
         eng_ob_is_bullish := false
@@ -666,13 +851,14 @@ if mss_ob_active
         eng_ob_bar_index := na
         eng_ob_candle_high := na
         eng_ob_candle_low := na
-        target_fractal_level := na
+        target_fractal_level_mss := na
 
-        // Clear MSS OB
-        mss_ob_active := false
-        mss_ob_entry := na
-        mss_ob_tp := na
-        mss_ob_sl := na
+        // Clear entry signals (all strategies)
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_price := na
+        entry_tp := na
+        entry_sl := na
 
         // Delete the box
         if not na(eng_ob_box)
@@ -711,10 +897,178 @@ plotshape(is_bullish_engulfing, title="Bullish Engulfing OB", style=shape.diamon
 plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamond, location=location.abovebar, color=color.black, size=size.tiny)
 
 // ============================================================================
-// VISUAL DEBUG - ENG OB CANDLE BOX
+// BPR FVG DETECTION
 // ============================================================================
-// Draw a colored box around the ENG OB candle (green for bullish, red for bearish)
-// Box extends to the right while setup is active
+// FVG = Fair Value Gap = gap between candle 1 high/low and candle 3 low/high
+// Bullish FVG: low[0] > high[2] (gap up)
+// Bearish FVG: high[0] < low[2] (gap down)
+// BPR = Balanced Price Range = FVG that forms in AOI
+
+// Detect BPR FVG when in AOI and within trading window (no ENG OB requirement)
+// Check if ANY of the 3 FVG candles touched the zone
+// Don't detect new FVGs when we already have an active entry signal, active trade, or within cooldown
+bool in_cooldown = last_exit_bar >= 0 and (bar_index - last_exit_bar) < cooldown_bars
+if not bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and bar_index >= 2 and in_trading_window
+    // Bearish setup: detect bullish FVG in supply zone
+    // Check if current candle OR previous 2 candles touched supply zone
+    bool supply_touched_by_fvg_candles = false
+    if supply_configured
+        // Check current candle (candle 3)
+        bool c0_in_supply = not (low > supply_top or high < supply_bottom)
+        // Check candle 1 bar ago (candle 2)
+        bool c1_in_supply = not (low[1] > supply_top or high[1] < supply_bottom)
+        // Check candle 2 bars ago (candle 1)
+        bool c2_in_supply = not (low[2] > supply_top or high[2] < supply_bottom)
+
+        supply_touched_by_fvg_candles := c0_in_supply or c1_in_supply or c2_in_supply
+
+    if supply_touched_by_fvg_candles
+        // Bullish FVG: current low > high of 2 bars ago (gap up)
+        bool has_bullish_fvg = low > high[2]
+
+        if has_bullish_fvg
+            // Calculate FVG size in ticks
+            float fvg_size = low - high[2]
+            float fvg_size_ticks = fvg_size / syminfo.mintick
+
+            // Only activate if FVG meets minimum tick size requirement
+            if fvg_size_ticks >= bpr_fvg_min_ticks
+                bpr_fvg_active := true
+                bpr_fvg_is_bullish := true
+                bpr_fvg_bottom := high[2]  // Bottom of gap
+                bpr_fvg_top := low  // Top of gap
+                bpr_fvg_bar_index := bar_index
+
+                // Invalidation level: highest high of the 3 candles involved
+                bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
+
+    // Bullish setup: detect bearish FVG in demand zone
+    // Check if current candle OR previous 2 candles touched demand zone
+    bool demand_touched_by_fvg_candles = false
+    if demand_configured
+        // Check current candle (candle 3)
+        bool c0_in_demand = not (low > demand_top or high < demand_bottom)
+        // Check candle 1 bar ago (candle 2)
+        bool c1_in_demand = not (low[1] > demand_top or high[1] < demand_bottom)
+        // Check candle 2 bars ago (candle 1)
+        bool c2_in_demand = not (low[2] > demand_top or high[2] < demand_bottom)
+
+        demand_touched_by_fvg_candles := c0_in_demand or c1_in_demand or c2_in_demand
+
+    if demand_touched_by_fvg_candles
+        // Bearish FVG: current high < low of 2 bars ago (gap down)
+        bool has_bearish_fvg = high < low[2]
+
+        if has_bearish_fvg
+            // Calculate FVG size in ticks
+            float fvg_size = low[2] - high
+            float fvg_size_ticks = fvg_size / syminfo.mintick
+
+            // Only activate if FVG meets minimum tick size requirement
+            if fvg_size_ticks >= bpr_fvg_min_ticks
+                bpr_fvg_active := true
+                bpr_fvg_is_bullish := false
+                bpr_fvg_top := low[2]  // Top of gap
+                bpr_fvg_bottom := high  // Bottom of gap
+                bpr_fvg_bar_index := bar_index
+
+                // Invalidation level: lowest low of the 3 candles involved
+                bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
+
+// INVALIDATION: Price closes beyond invalidation level (deeper into zone)
+if bpr_fvg_active and not entry_signal_active
+    bool should_invalidate_fvg = false
+
+    if bpr_fvg_is_bullish and supply_triggered
+        // Bullish FVG invalidated if close goes higher than invalidation level
+        if close > bpr_fvg_invalidation_level
+            should_invalidate_fvg := true
+    else if not bpr_fvg_is_bullish and demand_triggered
+        // Bearish FVG invalidated if close goes lower than invalidation level
+        if close < bpr_fvg_invalidation_level
+            should_invalidate_fvg := true
+
+    if should_invalidate_fvg
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+
+        // Delete FVG box
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+// INVALIDATION: Clear BPR FVG when zones are disabled
+if bpr_fvg_active
+    bool should_invalidate_fvg_zone = false
+
+    if bpr_fvg_is_bullish and clear_supply
+        should_invalidate_fvg_zone := true
+    else if not bpr_fvg_is_bullish and clear_demand
+        should_invalidate_fvg_zone := true
+
+    if should_invalidate_fvg_zone
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+
+        // Delete FVG box
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+// INVALIDATION: Clear BPR FVG when entering opposite zone
+if barstate.isnew and was_outside_zones and bpr_fvg_active
+    bool should_invalidate_opposite = false
+
+    if bpr_fvg_is_bullish and in_demand
+        should_invalidate_opposite := true
+    else if not bpr_fvg_is_bullish and in_supply
+        should_invalidate_opposite := true
+
+    if should_invalidate_opposite
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+
+        // Delete FVG box
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+// Visualize BPR FVG with colored outline (red for bearish, green for bullish) and yellow fill
+if bpr_fvg_active
+    // Create box on first detection
+    if na(bpr_fvg_box)
+        // Red outline for bullish FVG (bearish trade), green outline for bearish FVG (bullish trade)
+        color outline_color = bpr_fvg_is_bullish ? color.red : color.green
+        bpr_fvg_box := box.new(bpr_fvg_bar_index, bpr_fvg_top, bpr_fvg_bar_index + 1, bpr_fvg_bottom,
+                               border_color=outline_color,
+                               bgcolor=color.new(color.yellow, 90),
+                               border_width=1,
+                               extend=extend.none)
+    else
+        // Extend box to current bar
+        box.set_right(bpr_fvg_box, bar_index + 1)
+
+// ============================================================================
+// ENTRY ZONE VISUALIZATION - Works for ALL entry strategies
+// ============================================================================
+// Standard visual flow for all 4 entry strategies:
+// 1. YELLOW box = ENG OB detected (entry zone identified)
+// 2. BLUE box = Entry signal active (limit order placed, awaiting fill)
+// 3. GREEN/RED boxes = Trade entered (TP/SL shown when position is open)
+
+// STEP 1: Create YELLOW box when ENG OB forms
 if is_bullish_engulfing or is_bearish_engulfing
     // Delete old box
     if not na(eng_ob_box)
@@ -727,7 +1081,7 @@ if is_bullish_engulfing or is_bearish_engulfing
         float box_top = eng_ob_candle_high
         float box_bottom = eng_ob_candle_low
 
-        // Use yellow for ENG OB (will turn blue when MSS OB is active)
+        // Use yellow for ENG OB (entry zone)
         color box_color = color.yellow
 
         eng_ob_box := box.new(box_left, box_top, box_right, box_bottom,
@@ -736,16 +1090,23 @@ if is_bullish_engulfing or is_bearish_engulfing
                               border_width=1,
                               extend=extend.none)
 
-// Update the box to extend to current bar while setup is active (bar by bar, not infinite)
-// Continue extending while setup is active (ENG OB or MSS OB active)
-// Change color to blue when MSS OB is active
-if (eng_ob_active or mss_ob_active) and not na(eng_ob_box)
+// STEP 2: Extend box and change to BLUE when entry signal activates
+if (eng_ob_active or entry_signal_active) and not na(eng_ob_box)
     box.set_right(eng_ob_box, bar_index + 1)
 
-    // Change box color to blue when MSS OB becomes active
-    if mss_ob_active
+    // Change to blue ONLY when MSS OB or other ENG OB-based strategies activate (not BPR FVG)
+    if entry_signal_active and active_entry_strategy != "BPR FVG"
         box.set_border_color(eng_ob_box, color.blue)
         box.set_bgcolor(eng_ob_box, color.new(color.blue, 90))
+
+// STEP 2: Extend BPR FVG box and change to BLUE when entry signal activates
+if bpr_fvg_active and not na(bpr_fvg_box)
+    box.set_right(bpr_fvg_box, bar_index + 1)
+
+    // Change to blue when BPR FVG entry strategy activates (limit order placed)
+    if entry_signal_active and active_entry_strategy == "BPR FVG"
+        box.set_border_color(bpr_fvg_box, color.blue)
+        box.set_bgcolor(bpr_fvg_box, color.new(color.blue, 90))
 
 // ============================================================================
 // LTF FRACTAL DETECTION (only when in AOI or active setup)
@@ -768,9 +1129,12 @@ if should_detect_fractals and bar_index >= 2
 plotshape(is_bearish_fractal, title="Bearish Fractal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, offset=-2)
 plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, offset=-2)
 
+// ============================================================================
+// MSS OB STRATEGY - Fractal Detection
+// ============================================================================
 // When ENG OB forms, search BACKWARD for the most recent opposite fractal
-// This runs once when target_fractal_level is na (right after ENG OB forms)
-if eng_ob_active and na(target_fractal_level) and bar_index >= 4
+// This runs once when target_fractal_level_mss is na (right after ENG OB forms)
+if use_mss_ob and eng_ob_active and na(target_fractal_level_mss) and bar_index >= 4
     // Search backward up to 20 bars for the most recent opposite fractal
     // Limit to avoid historical buffer issues (max lookback is bar_index, but fractal needs i+2)
     int lookback_limit = math.min(20, bar_index - 4)
@@ -784,7 +1148,7 @@ if eng_ob_active and na(target_fractal_level) and bar_index >= 4
                 bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
                 if is_bearish_frac
                     // Found the most recent bearish fractal
-                    target_fractal_level := high[i]
+                    target_fractal_level_mss := high[i]
                     break
     else
         // Bearish setup: look for most recent bullish fractal (low point)
@@ -795,56 +1159,139 @@ if eng_ob_active and na(target_fractal_level) and bar_index >= 4
                 bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
                 if is_bullish_frac
                     // Found the most recent bullish fractal
-                    target_fractal_level := low[i]
+                    target_fractal_level_mss := low[i]
                     break
 
 // ============================================================================
-// MSS OB DETECTION - Price crosses fractal level
+// MSS OB STRATEGY - Entry Signal Detection
 // ============================================================================
 // Check if price has crossed the fractal level (wick or close through)
-if eng_ob_active and not mss_ob_active and not na(target_fractal_level)
+// Don't trigger new entries while a trade is active, on same bar as exit, or within cooldown
+if use_mss_ob and eng_ob_active and not entry_signal_active and not trade_entered and not in_cooldown and not na(target_fractal_level_mss)
     bool fractal_crossed = false
 
     if eng_ob_is_bullish
         // Bullish setup: check if price crossed above the bearish fractal high
-        fractal_crossed := high >= target_fractal_level
+        fractal_crossed := high >= target_fractal_level_mss
     else
         // Bearish setup: check if price crossed below the bullish fractal low
-        fractal_crossed := low <= target_fractal_level
+        fractal_crossed := low <= target_fractal_level_mss
 
     if fractal_crossed
-        // MSS OB is now valid - the ENG OB candle IS the MSS OB
-        mss_ob_active := true
+        // MSS OB entry signal triggered
+        entry_signal_active := true
+        active_entry_strategy := "MSS OB"
+        entry_is_bullish := eng_ob_is_bullish
 
         // Set entry, TP, and SL based on the OB candle
         if eng_ob_is_bullish
-            // Bullish: Entry at high of OB candle, SL at low, TP at 2:1 RR
-            mss_ob_entry := eng_ob_candle_high
-            mss_ob_sl := eng_ob_candle_low
-            float risk = mss_ob_entry - mss_ob_sl
-            mss_ob_tp := mss_ob_entry + (risk * 2)  // 2:1 reward to risk
+            // Bullish: Entry at high of OB candle, SL at low (with grace ticks), TP at 2:1 RR
+            entry_price := eng_ob_candle_high
+            entry_sl := eng_ob_candle_low - grace_ticks  // Pad SL below the low
+            float risk = entry_price - entry_sl
+            entry_tp := entry_price + (risk * 2)  // 2:1 reward to risk
         else
-            // Bearish: Entry at low of OB candle, SL at high, TP at 2:1 RR
-            mss_ob_entry := eng_ob_candle_low
-            mss_ob_sl := eng_ob_candle_high
-            float risk = mss_ob_sl - mss_ob_entry
-            mss_ob_tp := mss_ob_entry - (risk * 2)  // 2:1 reward to risk
+            // Bearish: Entry at low of OB candle, SL at high (with grace ticks), TP at 2:1 RR
+            entry_price := eng_ob_candle_low
+            entry_sl := eng_ob_candle_high + grace_ticks  // Pad SL above the high
+            float risk = entry_sl - entry_price
+            entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
 
-        // Calculate position size based on risk
-        float risk_per_contract = math.abs(mss_ob_entry - mss_ob_sl)
-        float position_size = risk_per_trade / risk_per_contract
+// ============================================================================
+// BPR FVG STRATEGY - Entry Signal Detection
+// ============================================================================
+// Entry triggered when price closes below FVG bottom (bearish) or above FVG top (bullish)
+// Don't trigger new entries while a trade is active or within cooldown period
+if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown
+    bool close_through_fvg = false
 
-        // Place limit order at entry level
-        if eng_ob_is_bullish
-            // Enter long position with limit order at entry level
-            strategy.entry("Long", strategy.long, qty=position_size, limit=mss_ob_entry)
-            strategy.exit("TP/SL Long", "Long", limit=mss_ob_tp, stop=mss_ob_sl)
+    if bpr_fvg_is_bullish
+        // Bearish setup: wait for close below FVG bottom
+        close_through_fvg := close < bpr_fvg_bottom
+    else
+        // Bullish setup: wait for close above FVG top
+        close_through_fvg := close > bpr_fvg_top
+
+    if close_through_fvg
+        entry_signal_active := true
+        active_entry_strategy := "BPR FVG"
+        entry_is_bullish := not bpr_fvg_is_bullish  // Inverse: bullish FVG = bearish trade
+
+        if bpr_fvg_is_bullish
+            // Bearish setup: Entry at bottom of FVG, SL at top (with grace ticks), TP at 2:1 RR
+            entry_price := bpr_fvg_bottom
+            entry_sl := bpr_fvg_top + grace_ticks  // Pad SL above the top
+            float risk = entry_sl - entry_price
+            entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
         else
-            // Enter short position with limit order at entry level
-            strategy.entry("Short", strategy.short, qty=position_size, limit=mss_ob_entry)
-            strategy.exit("TP/SL Short", "Short", limit=mss_ob_tp, stop=mss_ob_sl)
+            // Bullish setup: Entry at top of FVG, SL at bottom (with grace ticks), TP at 2:1 RR
+            entry_price := bpr_fvg_top
+            entry_sl := bpr_fvg_bottom - grace_ticks  // Pad SL below the bottom
+            float risk = entry_price - entry_sl
+            entry_tp := entry_price + (risk * 2)  // 2:1 reward to risk
 
-        // Create TP and SL indicator boxes
+        // DON'T clear BPR FVG state here - keep it for debug table display
+        // It will be cleared when trade exits or is invalidated
+
+// ============================================================================
+// INVERTED FVG STRATEGY - Entry Signal Detection
+// ============================================================================
+// TODO: Implement Inverted FVG detection
+if use_inverted_fvg and eng_ob_active and not entry_signal_active
+    // Placeholder for Inverted FVG strategy
+    bool inv_fvg_triggered = false  // TODO: Add actual detection logic
+
+    if inv_fvg_triggered
+        entry_signal_active := true
+        active_entry_strategy := "Inverted FVG"
+        // TODO: Set entry_price, entry_tp, entry_sl
+
+// ============================================================================
+// BREAKER BLOCK STRATEGY - Entry Signal Detection
+// ============================================================================
+// TODO: Implement Breaker Block detection
+if use_breaker_block and eng_ob_active and not entry_signal_active
+    // Placeholder for Breaker Block strategy
+    bool breaker_triggered = false  // TODO: Add actual detection logic
+
+    if breaker_triggered
+        entry_signal_active := true
+        active_entry_strategy := "Breaker Block"
+        // TODO: Set entry_price, entry_tp, entry_sl
+
+// ============================================================================
+// GENERIC ENTRY EXECUTION - Works for all strategies
+// ============================================================================
+// When any entry signal becomes active, place the trade ONCE
+if entry_signal_active and not trade_entered and not order_placed and not na(entry_price)
+    // Calculate position size based on risk
+    float risk_per_contract = math.abs(entry_price - entry_sl)
+    float position_size = risk_per_trade / risk_per_contract
+
+    // Place limit order at entry level
+    if entry_is_bullish
+        // Enter long position with limit order at entry level
+        strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
+        strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
+    else
+        // Enter short position with limit order at entry level
+        strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
+        strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
+
+    // Mark that order has been placed for this signal
+    order_placed := true
+
+// ============================================================================
+// TRADE EXECUTION - Track when limit order is filled
+// ============================================================================
+// STEP 3: Create GREEN/RED boxes when trade is entered (generic for all strategies)
+if entry_signal_active and not trade_entered
+    // Check if we now have an open position (limit order was filled)
+    if strategy.position_size != 0
+        trade_entered := true
+
+        // Create TP and SL indicator boxes (only when trade is actually entered)
+        // This completes the standard visual flow: YELLOW → BLUE → GREEN/RED
         // Delete old boxes first
         if not na(tp_box)
             box.delete(tp_box)
@@ -852,44 +1299,41 @@ if eng_ob_active and not mss_ob_active and not na(target_fractal_level)
             box.delete(sl_box)
 
         // Create new TP box (green) and SL box (red)
-        if eng_ob_is_bullish
+        if entry_is_bullish
             // Bullish: TP is above entry
-            tp_box := box.new(bar_index, mss_ob_tp, bar_index + 1, mss_ob_entry,
+            tp_box := box.new(bar_index, entry_tp, bar_index + 1, entry_price,
                              border_color=color.green,
                              bgcolor=color.new(color.green, 85),
                              border_width=1,
                              extend=extend.none)
             // SL is below entry
-            sl_box := box.new(bar_index, mss_ob_entry, bar_index + 1, mss_ob_sl,
+            sl_box := box.new(bar_index, entry_price, bar_index + 1, entry_sl,
                              border_color=color.red,
                              bgcolor=color.new(color.red, 85),
                              border_width=1,
                              extend=extend.none)
         else
             // Bearish: TP is below entry
-            tp_box := box.new(bar_index, mss_ob_entry, bar_index + 1, mss_ob_tp,
+            tp_box := box.new(bar_index, entry_price, bar_index + 1, entry_tp,
                              border_color=color.green,
                              bgcolor=color.new(color.green, 85),
                              border_width=1,
                              extend=extend.none)
             // SL is above entry
-            sl_box := box.new(bar_index, mss_ob_sl, bar_index + 1, mss_ob_entry,
+            sl_box := box.new(bar_index, entry_sl, bar_index + 1, entry_price,
                              border_color=color.red,
                              bgcolor=color.new(color.red, 85),
                              border_width=1,
                              extend=extend.none)
 
-// ============================================================================
-// TRADE EXECUTION - Track when limit order is filled
-// ============================================================================
-// Check if limit order has been filled
-if mss_ob_active and not trade_entered
-    // Check if we now have an open position (limit order was filled)
-    if strategy.position_size != 0
-        trade_entered := true
-
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
+    // FIRST: Cancel all pending orders to prevent re-entry from lingering limit order
+    strategy.cancel_all()
+
+    // Record the exit bar to prevent same-bar re-entry
+    last_exit_bar := bar_index
+
     // Trade has exited - clear all setup variables
     eng_ob_active := false
     eng_ob_is_bullish := false
@@ -897,42 +1341,61 @@ if trade_entered and strategy.position_size == 0
     eng_ob_bar_index := na
     eng_ob_candle_high := na
     eng_ob_candle_low := na
-    target_fractal_level := na
+    target_fractal_level_mss := na
 
-    // Clear MSS OB
-    mss_ob_active := false
-    mss_ob_entry := na
-    mss_ob_tp := na
-    mss_ob_sl := na
+    // Clear entry signals (all strategies)
+    entry_signal_active := false
+    active_entry_strategy := ""
+    entry_is_bullish := false
+    entry_price := na
+    entry_tp := na
+    entry_sl := na
 
-    // Reset trade flag
+    // Reset trade flag and order placement flag
     trade_entered := false
+    order_placed := false
 
-    // Delete all boxes
+    // Persist TP/SL boxes for the day (don't delete, just stop extending)
+    // Add them to daily arrays so they stay visible until 20:00
+    if not na(tp_box)
+        array.push(daily_tp_boxes, tp_box)
+        tp_box := na
+    if not na(sl_box)
+        array.push(daily_sl_boxes, sl_box)
+        sl_box := na
+
+    // Delete eng_ob_box since it's just for active setup
     if not na(eng_ob_box)
         box.delete(eng_ob_box)
         eng_ob_box := na
-    if not na(tp_box)
-        box.delete(tp_box)
-        tp_box := na
-    if not na(sl_box)
-        box.delete(sl_box)
-        sl_box := na
 
-// Update TP/SL boxes to extend one bar at a time while MSS OB is active (awaiting entry or in trade)
-if mss_ob_active and not na(tp_box) and not na(sl_box)
+    // Delete bpr_fvg_box since it's just for active setup
+    if not na(bpr_fvg_box)
+        box.delete(bpr_fvg_box)
+        bpr_fvg_box := na
+
+    // Clear BPR FVG state
+    bpr_fvg_active := false
+    bpr_fvg_is_bullish := false
+    bpr_fvg_top := na
+    bpr_fvg_bottom := na
+    bpr_fvg_invalidation_level := na
+    bpr_fvg_bar_index := na
+
+// Update TP/SL boxes to extend one bar at a time while trade is entered (only show when in trade)
+if trade_entered and not na(tp_box) and not na(sl_box)
     box.set_right(tp_box, bar_index + 1)
     box.set_right(sl_box, bar_index + 1)
 
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.top_right, 2, 17, border_width=1)  // 17 rows: Position Size added
+var table debugTable = table.new(position.top_right, 2, 37, border_width=1)  // 37 rows: Added Order Placed + Trade Entered flags
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
-color label_bgcolor = color.new(color.black, 20)  // Dark background for labels (left column)
-color value_bgcolor = color.new(color.gray, 30)   // Default background for values (right column)
+color label_bgcolor = color.new(color.gray, 70)  // Light gray background for labels (left column)
+color value_bgcolor = color.new(color.gray, 80)   // Lighter gray background for values (right column)
 
 // Track which zone type we're working with for value column color
 bool is_supply_setup = supply_triggered or (eng_ob_active and not eng_ob_is_bullish)
@@ -942,8 +1405,8 @@ if trade_entered and strategy.position_size != 0
     // Trade is active - in position
     aoi_status := "IN TRADE"
     value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
-else if mss_ob_active
-    // MSS OB is active - awaiting entry
+else if entry_signal_active
+    // Entry signal is active - awaiting entry
     aoi_status := "AWAITING ENTRY"
     value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if eng_ob_active
@@ -957,75 +1420,102 @@ else if supply_triggered or demand_triggered
 else
     // Not in AOI and no active setup
     aoi_status := "-"
-    value_bgcolor := color.new(color.gray, 30)
+    value_bgcolor := color.new(color.gray, 80)
 
 // Pad the status text to keep column width consistent
 string padded_status = aoi_status == "-" ? "  -   " : aoi_status
 
-table.cell(debugTable, 0, 0, "AOI Status", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, 0, padded_status, text_color=color.white, bgcolor=value_bgcolor, text_size=size.normal)
+table.cell(debugTable, 0, 0, "AOI Status", text_color=color.black, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 0, padded_status, text_color=color.black, bgcolor=value_bgcolor, text_size=size.normal)
 
-// Engulfing OB status - show checkmark when active
+// Engulfing OB status - show checkmark when active (only for MSS OB and other ENG OB-based strategies)
 string eng_status = "-"
 color eng_bgcolor = value_bgcolor
-if eng_ob_active
+// Only show ENG OB as active if we're using a strategy that requires it (not BPR FVG)
+if eng_ob_active and active_entry_strategy != "BPR FVG"
     eng_status := "✓"
     // Keep the same background as the overall value column
 
-table.cell(debugTable, 0, 1, "Engulfing OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, 1, eng_status, text_color=color.white, bgcolor=eng_bgcolor, text_size=size.normal)
+table.cell(debugTable, 0, 1, "Engulfing OB", text_color=color.black, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 1, eng_status, text_color=color.black, bgcolor=eng_bgcolor, text_size=size.normal)
 
-// MSS OB status - show checkmark when active
-string mss_status = "-"
-color mss_bgcolor = value_bgcolor
-if mss_ob_active
-    mss_status := "✓"
-table.cell(debugTable, 0, 2, "MSS OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, 2, mss_status, text_color=color.white, bgcolor=mss_bgcolor, text_size=size.normal)
+// Entry Strategy - show which strategy triggered
+string entry_strategy_text = "-"
+color entry_strategy_bgcolor = value_bgcolor
+if entry_signal_active
+    entry_strategy_text := active_entry_strategy
+table.cell(debugTable, 0, 2, "Entry Strategy", text_color=color.black, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 2, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
 
-// Fractal Level - show target price for MSS OB (only when setup is active)
+// Order Placed Flag
+string order_placed_text = order_placed ? "✓ YES" : "✗ NO"
+color order_placed_bg = order_placed ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 3, "Order Placed", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 3, order_placed_text, text_color=color.black, bgcolor=order_placed_bg, text_size=size.small)
+
+// Trade Entered Flag
+string trade_entered_text = trade_entered ? "✓ YES" : "✗ NO"
+color trade_entered_bg = trade_entered ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 4, "Trade Entered", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 4, trade_entered_text, text_color=color.black, bgcolor=trade_entered_bg, text_size=size.small)
+
+// Fractal Level - show target price for MSS OB (only when MSS OB strategy is enabled and active)
 string fractal_level = "-"
-if eng_ob_active
-    if not na(target_fractal_level)
-        fractal_level := str.tostring(target_fractal_level, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
+if use_mss_ob and eng_ob_active
+    if not na(target_fractal_level_mss)
+        fractal_level := str.tostring(target_fractal_level_mss, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
     else
         // Show "SEARCHING" if we have an active ENG OB but no fractal yet
         fractal_level := "SEARCHING"
-table.cell(debugTable, 0, 3, "Fractal Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 3, fractal_level, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 5, "MSS Fractal", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 5, fractal_level, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Position Size - debug to see strategy.position_size
 string pos_size = str.tostring(strategy.position_size)
-table.cell(debugTable, 0, 4, "Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 4, pos_size, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 6, "Position Size", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 6, pos_size, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Entry Price
-string entry_price = "-"
-if mss_ob_active and not na(mss_ob_entry)
-    entry_price := str.tostring(mss_ob_entry, format.mintick)
-table.cell(debugTable, 0, 5, "Entry Price", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 5, entry_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+string entry_price_text = "-"
+if entry_signal_active and not na(entry_price)
+    entry_price_text := str.tostring(entry_price, format.mintick)
+table.cell(debugTable, 0, 7, "Entry Price", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 7, entry_price_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Take Profit
 string tp_price = "-"
-if mss_ob_active and not na(mss_ob_tp)
-    tp_price := str.tostring(mss_ob_tp, format.mintick)
-table.cell(debugTable, 0, 6, "TP", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 6, tp_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+if entry_signal_active and not na(entry_tp)
+    tp_price := str.tostring(entry_tp, format.mintick)
+table.cell(debugTable, 0, 8, "TP", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 8, tp_price, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Stop Loss
 string sl_price = "-"
-if mss_ob_active and not na(mss_ob_sl)
-    sl_price := str.tostring(mss_ob_sl, format.mintick)
-table.cell(debugTable, 0, 7, "SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 7, sl_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+if entry_signal_active and not na(entry_sl)
+    sl_price := str.tostring(entry_sl, format.mintick)
+table.cell(debugTable, 0, 9, "SL", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 9, sl_price, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Bars Since Setup - show how many bars since ENG OB formed
 string bars_since_setup = "-"
 if eng_ob_active and not na(eng_ob_bar_index)
     bars_since_setup := str.tostring(bar_index - eng_ob_bar_index)
-table.cell(debugTable, 0, 8, "Bars Since Setup", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 8, bars_since_setup, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 10, "Bars Since Setup", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 10, bars_since_setup, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+
+// Supply Deepest - show deepest historical penetration into supply zone
+string supply_deepest = "-"
+if not na(supply_deepest_ever)
+    supply_deepest := str.tostring(supply_deepest_ever, format.mintick)
+table.cell(debugTable, 0, 11, "Supply Deepest", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 11, supply_deepest, text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+
+// Demand Deepest - show deepest historical penetration into demand zone
+string demand_deepest = "-"
+if not na(demand_deepest_ever)
+    demand_deepest := str.tostring(demand_deepest_ever, format.mintick)
+table.cell(debugTable, 0, 12, "Demand Deepest", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 12, demand_deepest, text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
 
 // Supply zone levels - show DISABLED if disabled
 string supply_zone = "-"
@@ -1033,8 +1523,8 @@ if clear_supply
     supply_zone := "DISABLED"
 else if supply_configured
     supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, 9, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 9, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 13, "Supply Zone", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 13, supply_zone, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Demand zone levels - show DISABLED if disabled
 string demand_zone = "-"
@@ -1043,9 +1533,9 @@ if clear_demand
     demand_zone := "DISABLED"
 else if demand_configured
     demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
-    demand_zone_bgcolor := color.new(color.blue, 50)  // Always blue/green for demand
-table.cell(debugTable, 0, 10, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 10, demand_zone, text_color=color.white, bgcolor=demand_zone_bgcolor, text_size=size.small)
+    demand_zone_bgcolor := color.new(color.blue, 70)  // Lighter blue for better contrast
+table.cell(debugTable, 0, 14, "Demand Zone", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 14, demand_zone, text_color=color.black, bgcolor=demand_zone_bgcolor, text_size=size.small)
 
 // Session levels - show level or "X" if crossed
 // Asian High
@@ -1058,8 +1548,8 @@ if not na(asian_high)
     else
         asian_high_text := str.tostring(asian_high, format.mintick)
         asian_high_bg := color.new(color.red, 70)
-table.cell(debugTable, 0, 11, "Asian High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 11, asian_high_text, text_color=color.white, bgcolor=asian_high_bg, text_size=size.small)
+table.cell(debugTable, 0, 15, "Asian High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 15, asian_high_text, text_color=color.black, bgcolor=asian_high_bg, text_size=size.small)
 
 // Asian Low
 string asian_low_text = "-"
@@ -1071,8 +1561,8 @@ if not na(asian_low)
     else
         asian_low_text := str.tostring(asian_low, format.mintick)
         asian_low_bg := color.new(color.green, 70)
-table.cell(debugTable, 0, 12, "Asian Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 12, asian_low_text, text_color=color.white, bgcolor=asian_low_bg, text_size=size.small)
+table.cell(debugTable, 0, 16, "Asian Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 16, asian_low_text, text_color=color.black, bgcolor=asian_low_bg, text_size=size.small)
 
 // London High
 string london_high_text = "-"
@@ -1084,8 +1574,8 @@ if not na(london_high)
     else
         london_high_text := str.tostring(london_high, format.mintick)
         london_high_bg := color.new(color.red, 70)
-table.cell(debugTable, 0, 13, "London High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 13, london_high_text, text_color=color.white, bgcolor=london_high_bg, text_size=size.small)
+table.cell(debugTable, 0, 17, "London High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 17, london_high_text, text_color=color.black, bgcolor=london_high_bg, text_size=size.small)
 
 // London Low
 string london_low_text = "-"
@@ -1097,8 +1587,8 @@ if not na(london_low)
     else
         london_low_text := str.tostring(london_low, format.mintick)
         london_low_bg := color.new(color.green, 70)
-table.cell(debugTable, 0, 14, "London Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 14, london_low_text, text_color=color.white, bgcolor=london_low_bg, text_size=size.small)
+table.cell(debugTable, 0, 18, "London Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 18, london_low_text, text_color=color.black, bgcolor=london_low_bg, text_size=size.small)
 
 // Previous Day High
 string prev_high_text = "-"
@@ -1110,8 +1600,8 @@ if not na(prev_day_high)
     else
         prev_high_text := str.tostring(prev_day_high, format.mintick)
         prev_high_bg := color.new(color.red, 70)
-table.cell(debugTable, 0, 15, "Prev Day High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 15, prev_high_text, text_color=color.white, bgcolor=prev_high_bg, text_size=size.small)
+table.cell(debugTable, 0, 19, "Prev Day High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 19, prev_high_text, text_color=color.black, bgcolor=prev_high_bg, text_size=size.small)
 
 // Previous Day Low
 string prev_low_text = "-"
@@ -1123,5 +1613,174 @@ if not na(prev_day_low)
     else
         prev_low_text := str.tostring(prev_day_low, format.mintick)
         prev_low_bg := color.new(color.green, 70)
-table.cell(debugTable, 0, 16, "Prev Day Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 16, prev_low_text, text_color=color.white, bgcolor=prev_low_bg, text_size=size.small)
+table.cell(debugTable, 0, 20, "Prev Day Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 20, prev_low_text, text_color=color.black, bgcolor=prev_low_bg, text_size=size.small)
+
+// ============================================================================
+// ENG OB VALIDATION CHECKS (for debugging)
+// ============================================================================
+// Calculate all validation checks for display
+bool check_supply_triggered = supply_triggered
+bool check_bar_index = bar_index > 0
+bool check_trading_window = in_trading_window
+bool check_current_bearish = close < open
+bool check_prev_bullish = close[1] > open[1]
+bool check_engulfs_body = close <= open[1]
+bool check_is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
+float check_deepest_candle_close = high >= high[1] ? close : close[1]
+bool check_is_deeper = na(supply_deepest_ever) or check_deepest_candle_close >= supply_deepest_ever
+
+// Add divider row
+color divider_color = color.new(color.orange, 30)
+table.cell(debugTable, 0, 21, "ENG OB VALIDATION", text_color=color.black, bgcolor=divider_color, text_size=size.small)
+table.cell(debugTable, 1, 21, "", text_color=color.black, bgcolor=divider_color, text_size=size.small)
+
+// 1. Supply Triggered
+color check_color_1 = check_supply_triggered ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 22, "1. In Supply", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 22, check_supply_triggered ? "✓" : "✗", text_color=color.black, bgcolor=check_color_1, text_size=size.small)
+
+// 2. Trading Window
+color check_color_2 = check_trading_window ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 23, "2. Trading Window", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 23, check_trading_window ? "✓" : "✗", text_color=color.black, bgcolor=check_color_2, text_size=size.small)
+
+// 3. Current Bearish
+color check_color_3 = check_current_bearish ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 24, "3. Current Bearish", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 24, check_current_bearish ? "✓" : "✗", text_color=color.black, bgcolor=check_color_3, text_size=size.small)
+
+// 4. Prev Bullish
+color check_color_4 = check_prev_bullish ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 25, "4. Prev Bullish", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 25, check_prev_bullish ? "✓" : "✗", text_color=color.black, bgcolor=check_color_4, text_size=size.small)
+
+// 5. Engulfs Body
+color check_color_5 = check_engulfs_body ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 26, "5. Engulfs Body", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 26, check_engulfs_body ? "✓" : "✗", text_color=color.black, bgcolor=check_color_5, text_size=size.small)
+
+// 6. Is Deepest
+color check_color_6 = check_is_deepest ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 27, "6. Is Deepest", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 27, check_is_deepest ? "✓" : "✗", text_color=color.black, bgcolor=check_color_6, text_size=size.small)
+
+// 7. Deeper Than Previous
+color check_color_7 = check_is_deeper ? color.new(color.green, 70) : color.new(color.red, 70)
+string deeper_text = check_is_deeper ? "✓" : "✗"
+if not na(supply_deepest_ever)
+    deeper_text := deeper_text + " (" + str.tostring(check_deepest_candle_close, format.mintick) + " vs " + str.tostring(supply_deepest_ever, format.mintick) + ")"
+table.cell(debugTable, 0, 28, "7. Deeper Close", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 28, deeper_text, text_color=color.black, bgcolor=check_color_7, text_size=size.small)
+
+// ============================================================================
+// BPR FVG DEBUG
+// ============================================================================
+// Calculate BPR FVG checks for display
+bool bpr_fvg_enabled = use_bpr_fvg
+bool bpr_has_bar_index = bar_index >= 2
+bool bpr_in_window = in_trading_window
+
+// Check for FVG patterns
+bool bpr_bullish_fvg_exists = bar_index >= 2 and low > high[2]
+bool bpr_bearish_fvg_exists = bar_index >= 2 and high < low[2]
+
+// Check if close through FVG conditions
+bool bpr_close_through = false
+if bpr_fvg_active
+    if bpr_fvg_is_bullish
+        bpr_close_through := close < bpr_fvg_bottom
+    else
+        bpr_close_through := close > bpr_fvg_top
+
+// Add divider row
+color bpr_divider_color = color.new(color.yellow, 30)
+table.cell(debugTable, 0, 29, "BPR FVG DEBUG", text_color=color.black, bgcolor=bpr_divider_color, text_size=size.small)
+table.cell(debugTable, 1, 29, "", text_color=color.black, bgcolor=bpr_divider_color, text_size=size.small)
+
+// Determine if BPR FVG entry is active
+bool bpr_entry_active = entry_signal_active and active_entry_strategy == "BPR FVG"
+
+// 1. BPR FVG Enabled
+color bpr_check_1 = (bpr_fvg_enabled or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 30, "1. BPR Enabled", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 30, (bpr_fvg_enabled or bpr_entry_active) ? "✓" : "✗", text_color=color.black, bgcolor=bpr_check_1, text_size=size.small)
+
+// 2. BPR FVG Active - show success if FVG was found (even if entry is now active)
+color bpr_check_2 = (bpr_fvg_active or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 31, "2. BPR Active", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 31, (bpr_fvg_active or bpr_entry_active) ? "✓" : "✗", text_color=color.black, bgcolor=bpr_check_2, text_size=size.small)
+
+// 3. FVG Status (Found when BPR FVG is active OR entry is active - persists until invalidated or entered)
+color bpr_check_3 = (bpr_fvg_active or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.gray, 70)
+string bpr_text_3 = "-"
+if bpr_fvg_active or bpr_entry_active
+    // Calculate FVG size in ticks for display
+    float fvg_size = bpr_fvg_is_bullish ? (bpr_fvg_top - bpr_fvg_bottom) : (bpr_fvg_top - bpr_fvg_bottom)
+    float fvg_ticks = fvg_size / syminfo.mintick
+    bpr_text_3 := "Found (" + str.tostring(fvg_ticks, "#.#") + " ticks)"
+table.cell(debugTable, 0, 32, "3. FVG", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 32, bpr_text_3, text_color=color.black, bgcolor=bpr_check_3, text_size=size.small)
+
+// 4. Breached (Price closed through FVG - trade entry condition)
+color bpr_check_4 = (bpr_close_through or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.gray, 70)
+string bpr_text_4 = (bpr_close_through or bpr_entry_active) ? "Breached" : "-"
+table.cell(debugTable, 0, 33, "4. Breached", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 33, bpr_text_4, text_color=color.black, bgcolor=bpr_check_4, text_size=size.small)
+
+// 5. FVG Levels - show even when entry is active
+string bpr_levels = "-"
+color bpr_levels_bg = value_bgcolor
+if (bpr_fvg_active or bpr_entry_active) and not na(bpr_fvg_top) and not na(bpr_fvg_bottom)
+    bpr_levels := str.tostring(bpr_fvg_bottom, format.mintick) + " - " + str.tostring(bpr_fvg_top, format.mintick)
+    bpr_levels_bg := bpr_entry_active ? color.new(color.green, 70) : value_bgcolor
+table.cell(debugTable, 0, 34, "5. FVG Levels", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 34, bpr_levels, text_color=color.black, bgcolor=bpr_levels_bg, text_size=size.small)
+
+// 6. Invalidation Level - show even when entry is active
+string bpr_inval = "-"
+color bpr_inval_bg = value_bgcolor
+if (bpr_fvg_active or bpr_entry_active) and not na(bpr_fvg_invalidation_level)
+    bpr_inval := str.tostring(bpr_fvg_invalidation_level, format.mintick)
+    bpr_inval_bg := bpr_entry_active ? color.new(color.green, 70) : value_bgcolor
+table.cell(debugTable, 0, 35, "6. Inval Level", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 35, bpr_inval, text_color=color.black, bgcolor=bpr_inval_bg, text_size=size.small)
+
+// 7. Close Through FVG
+color bpr_check_7 = (bpr_close_through or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.gray, 70)
+string bpr_text_7 = (bpr_close_through or bpr_entry_active) ? "✓ YES" : "-"
+table.cell(debugTable, 0, 36, "7. Close Through", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 36, bpr_text_7, text_color=color.black, bgcolor=bpr_check_7, text_size=size.small)
+
+// ============================================================================
+// DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
+// ============================================================================
+// var table statsTable = table.new(position.bottom_right, 2, 5, border_width=1)
+//
+// color stats_label_bg = color.new(color.black, 20)
+// color stats_value_bg = color.new(color.gray, 30)
+//
+// // Title row
+// table.cell(statsTable, 0, 0, "TODAY'S STATS", text_color=color.white, bgcolor=color.new(color.blue, 30), text_size=size.normal)
+// table.cell(statsTable, 1, 0, "", text_color=color.white, bgcolor=color.new(color.blue, 30), text_size=size.normal)
+//
+// // Trades count
+// string trades_text = str.tostring(today_trade_count)
+// table.cell(statsTable, 0, 1, "Trades", text_color=color.white, bgcolor=stats_label_bg, text_size=size.normal)
+// table.cell(statsTable, 1, 1, trades_text, text_color=color.white, bgcolor=stats_value_bg, text_size=size.normal)
+//
+// // Wins
+// string wins_text = str.tostring(today_wins)
+// table.cell(statsTable, 0, 2, "Wins", text_color=color.white, bgcolor=stats_label_bg, text_size=size.normal)
+// table.cell(statsTable, 1, 2, wins_text, text_color=color.white, bgcolor=color.new(color.green, 50), text_size=size.normal)
+//
+// // Losses
+// string losses_text = str.tostring(today_losses)
+// table.cell(statsTable, 0, 3, "Losses", text_color=color.white, bgcolor=stats_label_bg, text_size=size.normal)
+// table.cell(statsTable, 1, 3, losses_text, text_color=color.white, bgcolor=color.new(color.red, 50), text_size=size.normal)
+//
+// // P&L
+// string pnl_text = (today_pnl >= 0 ? "+" : "") + str.tostring(today_pnl, "#.##")
+// color pnl_bg = today_pnl > 0 ? color.new(color.green, 30) : (today_pnl < 0 ? color.new(color.red, 30) : stats_value_bg)
+// table.cell(statsTable, 0, 4, "P&L", text_color=color.white, bgcolor=stats_label_bg, text_size=size.normal)
+// table.cell(statsTable, 1, 4, pnl_text, text_color=color.white, bgcolor=pnl_bg, text_size=size.normal)
