@@ -235,7 +235,7 @@ if not show_zones
         box.delete(demand_zone_box)
         demand_zone_box := na
 
-// Track zone entry - once triggered, stays true for the entire bar + 1 more bar
+// Track zone entry - stays true while in zone OR while setup is active
 var bool supply_triggered = false
 var bool demand_triggered = false
 var int supply_trigger_bar = -1
@@ -445,10 +445,14 @@ if check_time_mins >= end_time_mins and strategy.position_size != 0
 bool outside_both_zones = not in_supply and not in_demand
 
 if barstate.isnew
-    // Clear trigger only if it's been more than 1 bar since entry
-    if bar_index - supply_trigger_bar > 1
+    // Clear trigger only if it's been more than 1 bar since entry AND no active setup
+    // This keeps supply_triggered/demand_triggered true while a setup is tracking
+    bool has_supply_setup = (eng_ob_active and not eng_ob_is_bullish) or (bpr_fvg_active and bpr_fvg_is_bullish)
+    bool has_demand_setup = (eng_ob_active and eng_ob_is_bullish) or (bpr_fvg_active and not bpr_fvg_is_bullish)
+
+    if bar_index - supply_trigger_bar > 1 and not has_supply_setup
         supply_triggered := false
-    if bar_index - demand_trigger_bar > 1
+    if bar_index - demand_trigger_bar > 1 and not has_demand_setup
         demand_triggered := false
 
     // Track when we're outside both zones
@@ -1397,43 +1401,73 @@ if order_placed and not trade_entered and strategy.position_size == 0 and bar_in
     // Record the exit bar to prevent same-bar re-entry
     last_exit_bar := bar_index
 
-    // Trade has exited intrabar - clear all setup variables
-    eng_ob_active := false
-    eng_ob_is_bullish := false
-    eng_ob_deepest_level := na
-    eng_ob_bar_index := na
-    eng_ob_candle_high := na
-    eng_ob_candle_low := na
-    target_fractal_level_mss := na
+    // Only clear the strategy that actually placed the order
+    // If MSS OB placed the order, clear ENG OB but leave BPR FVG intact
+    // If BPR FVG placed the order, clear BPR FVG but leave ENG OB intact
 
-    // Clear entry signals (all strategies)
+    // Clear the entry signal that placed the order
     entry_signal_active := false
-    active_entry_strategy := ""
     entry_is_bullish := false
     entry_price := na
     entry_tp := na
     entry_sl := na
-
-    // Reset order placement flag (trade_entered already false)
     order_placed := false
 
-    // Delete eng_ob_box since setup is done
-    if not na(eng_ob_box)
-        box.delete(eng_ob_box)
-        eng_ob_box := na
+    // Clear strategy-specific state based on which strategy placed the order
+    if active_entry_strategy == "MSS OB"
+        // MSS OB placed the order - clear ENG OB but keep BPR FVG
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level_mss := na
 
-    // Delete bpr_fvg_box since setup is done
-    if not na(bpr_fvg_box)
-        box.delete(bpr_fvg_box)
-        bpr_fvg_box := na
+        // Delete eng_ob_box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
 
-    // Clear BPR FVG state
-    bpr_fvg_active := false
-    bpr_fvg_is_bullish := false
-    bpr_fvg_top := na
-    bpr_fvg_bottom := na
-    bpr_fvg_invalidation_level := na
-    bpr_fvg_bar_index := na
+    else if active_entry_strategy == "BPR FVG"
+        // BPR FVG placed the order - clear BPR FVG state
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+
+        // Delete bpr_fvg_box
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+    else
+        // Unknown strategy or empty - clear everything to be safe
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level_mss := na
+
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+    // Clear the active strategy name last
+    active_entry_strategy := ""
 
 // Update TP/SL boxes to extend one bar at a time while trade is entered (only show when in trade)
 if trade_entered and not na(tp_box) and not na(sl_box)
