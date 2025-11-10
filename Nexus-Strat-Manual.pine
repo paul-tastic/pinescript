@@ -280,6 +280,7 @@ var float bpr_fvg_bottom = na  // Bottom of the FVG
 var float bpr_fvg_invalidation_level = na  // Highest/lowest of 3-candle pattern for invalidation
 var int bpr_fvg_bar_index = na  // Bar index where FVG was detected
 var box bpr_fvg_box = na  // Yellow box around FVG
+var string bpr_fvg_invalidation_reason = ""  // Track why BPR FVG was cleared (for debugging)
 
 // Track Inverted FVG specific state
 // TODO: Add Inverted FVG variables when implementing
@@ -382,6 +383,7 @@ if barstate.isnew
             bpr_fvg_bottom := na
             bpr_fvg_invalidation_level := na
             bpr_fvg_bar_index := na
+            bpr_fvg_invalidation_reason := "9 AM reset"
 
     // At 20:00 (start of Asian session), clear all persisted boxes from the day
     if current_hour == 20
@@ -987,10 +989,12 @@ if bpr_fvg_active and not entry_signal_active
         // Bullish FVG invalidated if close goes higher than invalidation level
         if close > bpr_fvg_invalidation_level
             should_invalidate_fvg := true
+            bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
     else if not bpr_fvg_is_bullish and demand_triggered
         // Bearish FVG invalidated if close goes lower than invalidation level
         if close < bpr_fvg_invalidation_level
             should_invalidate_fvg := true
+            bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
 
     if should_invalidate_fvg
         bpr_fvg_active := false
@@ -1011,8 +1015,10 @@ if bpr_fvg_active
 
     if bpr_fvg_is_bullish and clear_supply
         should_invalidate_fvg_zone := true
+        bpr_fvg_invalidation_reason := "Supply zone disabled"
     else if not bpr_fvg_is_bullish and clear_demand
         should_invalidate_fvg_zone := true
+        bpr_fvg_invalidation_reason := "Demand zone disabled"
 
     if should_invalidate_fvg_zone
         bpr_fvg_active := false
@@ -1033,8 +1039,10 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
 
     if bpr_fvg_is_bullish and in_demand
         should_invalidate_opposite := true
+        bpr_fvg_invalidation_reason := "Entered opposite zone (demand)"
     else if not bpr_fvg_is_bullish and in_supply
         should_invalidate_opposite := true
+        bpr_fvg_invalidation_reason := "Entered opposite zone (supply)"
 
     if should_invalidate_opposite
         bpr_fvg_active := false
@@ -1387,6 +1395,7 @@ if trade_entered and strategy.position_size == 0
     bpr_fvg_bottom := na
     bpr_fvg_invalidation_level := na
     bpr_fvg_bar_index := na
+    bpr_fvg_invalidation_reason := "Trade exited"
 
 // ============================================================================
 // INTRABAR TRADE CLEANUP - Handle trades that open and close within same candle
@@ -1437,6 +1446,7 @@ if order_placed and not trade_entered and strategy.position_size == 0 and bar_in
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
         bpr_fvg_bar_index := na
+        bpr_fvg_invalidation_reason := "Intrabar cleanup (BPR FVG)"
 
         // Delete bpr_fvg_box
         if not na(bpr_fvg_box)
@@ -1458,6 +1468,7 @@ if order_placed and not trade_entered and strategy.position_size == 0 and bar_in
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
         bpr_fvg_bar_index := na
+        bpr_fvg_invalidation_reason := "Intrabar cleanup (unknown strategy)"
 
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
@@ -1861,6 +1872,27 @@ if bpr_fvg_active or bpr_entry_active
     bpr_check_8 := would_breach ? color.new(color.green, 70) : color.new(color.red, 70)
 table.cell(debugTable, 0, 37, "8. Close Check", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 37, bpr_text_8, text_color=color.black, bgcolor=bpr_check_8, text_size=size.small)
+
+// 9. Invalidation Reason - shows why BPR FVG was last cleared (for debugging)
+string bpr_text_9 = bpr_fvg_invalidation_reason == "" ? "-" : bpr_fvg_invalidation_reason
+color bpr_check_9 = bpr_fvg_invalidation_reason == "" ? color.new(color.gray, 70) : color.new(color.yellow, 70)
+table.cell(debugTable, 0, 38, "9. Last Clear", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 38, bpr_text_9, text_color=color.black, bgcolor=bpr_check_9, text_size=size.small)
+
+// 10. Supply/Demand Triggered - shows zone trigger state
+string bpr_text_10 = "-"
+color bpr_check_10 = color.new(color.gray, 70)
+if bpr_fvg_active or bpr_entry_active
+    if bpr_fvg_is_bullish
+        // Bullish FVG needs supply_triggered
+        bpr_text_10 := supply_triggered ? "✓ Supply" : "✗ Supply"
+        bpr_check_10 := supply_triggered ? color.new(color.green, 70) : color.new(color.red, 70)
+    else
+        // Bearish FVG needs demand_triggered
+        bpr_text_10 := demand_triggered ? "✓ Demand" : "✗ Demand"
+        bpr_check_10 := demand_triggered ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 39, "10. Zone Trig", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 39, bpr_text_10, text_color=color.black, bgcolor=bpr_check_10, text_size=size.small)
 
 // ============================================================================
 // DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
