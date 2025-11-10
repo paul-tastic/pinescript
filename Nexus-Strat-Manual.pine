@@ -1134,28 +1134,30 @@ plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, l
 // ============================================================================
 // When ENG OB forms, search BACKWARD for the most recent opposite fractal
 // This runs once when target_fractal_level_mss is na (right after ENG OB forms)
-if use_mss_ob and eng_ob_active and na(target_fractal_level_mss) and bar_index >= 4
+if use_mss_ob and eng_ob_active and na(target_fractal_level_mss) and bar_index >= 6
     // Search backward up to 20 bars for the most recent opposite fractal
-    // Limit to avoid historical buffer issues (max lookback is bar_index, but fractal needs i+2)
-    int lookback_limit = math.min(20, bar_index - 4)
+    // Fractal pattern needs i-2, i-1, i, i+1, i+2 so we can only look back where i+2 is valid
+    // Maximum safe lookback considering historical buffer limit
+    int max_safe_lookback = bar_index - 4  // Ensures i+2 doesn't exceed bar_index
+    int lookback_limit = math.min(20, max_safe_lookback)
 
-    if eng_ob_is_bullish
+    if eng_ob_is_bullish and lookback_limit >= 2
         // Bullish setup: look for most recent bearish fractal (high point)
         for i = 2 to lookback_limit
-            // Check if bar at offset i is a bearish fractal
-            // Only check if we have enough history (i+2 bars back)
-            if i + 2 <= bar_index
+            // Double-check bounds before accessing historical data
+            // This prevents accessing offsets beyond the historical buffer
+            if i + 2 <= bar_index and not na(high[i+2]) and not na(high[i+1]) and not na(high[i-1]) and not na(high[i-2])
                 bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
                 if is_bearish_frac
                     // Found the most recent bearish fractal
                     target_fractal_level_mss := high[i]
                     break
-    else
+    else if lookback_limit >= 2
         // Bearish setup: look for most recent bullish fractal (low point)
         for i = 2 to lookback_limit
-            // Check if bar at offset i is a bullish fractal
-            // Only check if we have enough history (i+2 bars back)
-            if i + 2 <= bar_index
+            // Double-check bounds before accessing historical data
+            // This prevents accessing offsets beyond the historical buffer
+            if i + 2 <= bar_index and not na(low[i+2]) and not na(low[i+1]) and not na(low[i-1]) and not na(low[i-2])
                 bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
                 if is_bullish_frac
                     // Found the most recent bullish fractal
@@ -1206,11 +1208,11 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
     bool close_through_fvg = false
 
     if bpr_fvg_is_bullish
-        // Bearish setup: wait for close below FVG bottom
-        close_through_fvg := close < bpr_fvg_bottom
+        // Bearish setup: wait for close at or below FVG bottom
+        close_through_fvg := close <= bpr_fvg_bottom
     else
-        // Bullish setup: wait for close above FVG top
-        close_through_fvg := close > bpr_fvg_top
+        // Bullish setup: wait for close at or above FVG top
+        close_through_fvg := close >= bpr_fvg_top
 
     if close_through_fvg
         entry_signal_active := true
@@ -1382,6 +1384,57 @@ if trade_entered and strategy.position_size == 0
     bpr_fvg_invalidation_level := na
     bpr_fvg_bar_index := na
 
+// ============================================================================
+// INTRABAR TRADE CLEANUP - Handle trades that open and close within same candle
+// ============================================================================
+// If order was placed but trade never got marked as entered, and position is now closed,
+// this means the trade opened and closed intrabar (before bar-close detection).
+// Clean up the stuck state to allow new trades.
+if order_placed and not trade_entered and strategy.position_size == 0 and bar_index != last_exit_bar
+    // Cancel any pending orders
+    strategy.cancel_all()
+
+    // Record the exit bar to prevent same-bar re-entry
+    last_exit_bar := bar_index
+
+    // Trade has exited intrabar - clear all setup variables
+    eng_ob_active := false
+    eng_ob_is_bullish := false
+    eng_ob_deepest_level := na
+    eng_ob_bar_index := na
+    eng_ob_candle_high := na
+    eng_ob_candle_low := na
+    target_fractal_level_mss := na
+
+    // Clear entry signals (all strategies)
+    entry_signal_active := false
+    active_entry_strategy := ""
+    entry_is_bullish := false
+    entry_price := na
+    entry_tp := na
+    entry_sl := na
+
+    // Reset order placement flag (trade_entered already false)
+    order_placed := false
+
+    // Delete eng_ob_box since setup is done
+    if not na(eng_ob_box)
+        box.delete(eng_ob_box)
+        eng_ob_box := na
+
+    // Delete bpr_fvg_box since setup is done
+    if not na(bpr_fvg_box)
+        box.delete(bpr_fvg_box)
+        bpr_fvg_box := na
+
+    // Clear BPR FVG state
+    bpr_fvg_active := false
+    bpr_fvg_is_bullish := false
+    bpr_fvg_top := na
+    bpr_fvg_bottom := na
+    bpr_fvg_invalidation_level := na
+    bpr_fvg_bar_index := na
+
 // Update TP/SL boxes to extend one bar at a time while trade is entered (only show when in trade)
 if trade_entered and not na(tp_box) and not na(sl_box)
     box.set_right(tp_box, bar_index + 1)
@@ -1390,7 +1443,7 @@ if trade_entered and not na(tp_box) and not na(sl_box)
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.top_right, 2, 37, border_width=1)  // 37 rows: Added Order Placed + Trade Entered flags
+var table debugTable = table.new(position.top_right, 2, 38, border_width=1)  // 38 rows: Added cooldown + close check debug
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
@@ -1746,11 +1799,34 @@ if (bpr_fvg_active or bpr_entry_active) and not na(bpr_fvg_invalidation_level)
 table.cell(debugTable, 0, 35, "6. Inval Level", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 35, bpr_inval, text_color=color.black, bgcolor=bpr_inval_bg, text_size=size.small)
 
-// 7. Close Through FVG
-color bpr_check_7 = (bpr_close_through or bpr_entry_active) ? color.new(color.green, 70) : color.new(color.gray, 70)
-string bpr_text_7 = (bpr_close_through or bpr_entry_active) ? "✓ YES" : "-"
-table.cell(debugTable, 0, 36, "7. Close Through", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+// 7. In Cooldown - show if we're in cooldown period
+color bpr_check_7 = in_cooldown ? color.new(color.red, 70) : color.new(color.green, 70)
+string bpr_text_7 = in_cooldown ? "✗ YES (blocked)" : "✓ NO"
+if last_exit_bar >= 0
+    int bars_since_exit = bar_index - last_exit_bar
+    bpr_text_7 := bpr_text_7 + " (" + str.tostring(bars_since_exit) + " bars)"
+table.cell(debugTable, 0, 36, "7. In Cooldown", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 36, bpr_text_7, text_color=color.black, bgcolor=bpr_check_7, text_size=size.small)
+
+// 8. Close Price Check - show actual breach logic
+string bpr_text_8 = "-"
+color bpr_check_8 = color.new(color.gray, 70)
+if bpr_fvg_active or bpr_entry_active
+    string comparison = ""
+    bool would_breach = false
+    if bpr_fvg_is_bullish
+        // Bullish FVG = bearish trade = wait for close < bottom
+        would_breach := close < bpr_fvg_bottom
+        comparison := str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_bottom, format.mintick)
+    else
+        // Bearish FVG = bullish trade = wait for close > top
+        would_breach := close > bpr_fvg_top
+        comparison := str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_top, format.mintick)
+
+    bpr_text_8 := (would_breach ? "✓ " : "✗ ") + comparison
+    bpr_check_8 := would_breach ? color.new(color.green, 70) : color.new(color.red, 70)
+table.cell(debugTable, 0, 37, "8. Close Check", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 37, bpr_text_8, text_color=color.black, bgcolor=bpr_check_8, text_size=size.small)
 
 // ============================================================================
 // DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
