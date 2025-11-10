@@ -1216,9 +1216,10 @@ if use_mss_ob and eng_ob_active and not entry_signal_active and not trade_entere
 // ============================================================================
 // BPR FVG STRATEGY - Entry Signal Detection
 // ============================================================================
-// Entry triggered when price closes below FVG bottom (bearish) or above FVG top (bullish)
+// Entry triggered when price CLOSES below FVG bottom (bearish) or above FVG top (bullish)
 // Don't trigger new entries while a trade is active or within cooldown period
-if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown
+// IMPORTANT: Only check at bar close (barstate.isconfirmed) to wait for candle to fully close
+if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and barstate.isconfirmed
     bool close_through_fvg = false
 
     if bpr_fvg_is_bullish
