@@ -1223,11 +1223,11 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
     bool close_through_fvg = false
 
     if bpr_fvg_is_bullish
-        // Bearish setup: wait for close at or below FVG bottom
-        close_through_fvg := close <= bpr_fvg_bottom
+        // Bearish setup: wait for close BELOW FVG bottom (fully breached)
+        close_through_fvg := close < bpr_fvg_bottom
     else
-        // Bullish setup: wait for close at or above FVG top
-        close_through_fvg := close >= bpr_fvg_top
+        // Bullish setup: wait for close ABOVE FVG top (fully breached)
+        close_through_fvg := close > bpr_fvg_top
 
     if close_through_fvg
         entry_signal_active := true
