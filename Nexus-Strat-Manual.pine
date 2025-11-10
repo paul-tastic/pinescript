@@ -1488,7 +1488,7 @@ if trade_entered and not na(tp_box) and not na(sl_box)
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.top_right, 2, 38, border_width=1)  // 38 rows: Added cooldown + close check debug
+var table debugTable = table.new(position.top_right, 2, 40, border_width=1)  // 40 rows: Added invalidation reason + zone trigger debug
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
