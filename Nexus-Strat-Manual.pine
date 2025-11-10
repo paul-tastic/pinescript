@@ -15,6 +15,20 @@ clear_demand = input.bool(false, "Disable Demand Zone", group="Manual Zones", to
 show_zones = input.bool(true, "Show Zones", group="Manual Zones", tooltip="Show/hide zone boxes on chart")
 
 // ============================================================================
+// INPUTS - TRADING WINDOW
+// ============================================================================
+trading_start_hour = input.int(9, "Trading Start Hour", minval=0, maxval=23, group="Trading Window", tooltip="Hour to start trading (NY time)")
+trading_start_minute = input.int(30, "Trading Start Minute", minval=0, maxval=59, group="Trading Window", tooltip="Minute to start trading (NY time)")
+trading_end_hour = input.int(16, "Trading End Hour", minval=0, maxval=23, group="Trading Window", tooltip="Hour to end trading (NY time)")
+trading_end_minute = input.int(45, "Trading End Minute", minval=0, maxval=59, group="Trading Window", tooltip="Minute to end trading (NY time)")
+
+// ============================================================================
+// INPUTS - TRADE SETTINGS
+// ============================================================================
+risk_per_trade = input.float(500.0, "Risk Per Trade ($)", minval=1.0, group="Trade Settings", tooltip="Dollar amount to risk per trade")
+max_setup_bars = input.int(100, "Max Setup Age (bars)", minval=1, group="Trade Settings", tooltip="Maximum number of bars before setup is invalidated")
+
+// ============================================================================
 // ZONE DETECTION
 // ============================================================================
 // Apply clear flags - if clear is checked, treat zone as not configured
@@ -27,45 +41,128 @@ bool in_supply = supply_configured and not (low > supply_top or high < supply_bo
 bool in_demand = demand_configured and not (low > demand_top or high < demand_bottom)
 
 // ============================================================================
-// HTF (1H) ZONE VALIDATION
+// TRADING WINDOW CHECK
 // ============================================================================
-// Request 1H data for HTF validation
-[htf_close, htf_open] = request.security(syminfo.tickerid, "60", [close, open], barmerge.gaps_off, barmerge.lookahead_on)
+// Convert current time to minutes since midnight for easier comparison
+int current_time_minutes = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+int trading_start_minutes = trading_start_hour * 60 + trading_start_minute
+int trading_end_minutes = trading_end_hour * 60 + trading_end_minute
 
-// Check if 1H candle shows rejection:
-// - Supply rejection: opened BELOW supply top, closed ABOVE supply top (bullish rejection)
-// - Demand rejection: opened ABOVE demand bottom, closed BELOW demand bottom (bearish rejection)
-bool htf_closes_above_supply = supply_configured and htf_open < supply_top and htf_close > supply_top
-bool htf_closes_below_demand = demand_configured and htf_open > demand_bottom and htf_close < demand_bottom
+// Check if we're within trading window
+bool in_trading_window = current_time_minutes >= trading_start_minutes and current_time_minutes <= trading_end_minutes
 
-// Visual indicators for HTF rejections
-// Track if this is a new HTF rejection (only show label once per rejection)
-var bool prev_htf_above_supply = false
-var bool prev_htf_below_demand = false
 
-if htf_closes_above_supply and not prev_htf_above_supply
-    // New bullish rejection of supply - show label
-    label.new(bar_index, high, "1H ↑ SUPPLY",
-             color=color.new(color.green, 20),
-             textcolor=color.white,
-             style=label.style_label_down,
-             size=size.small)
+// ============================================================================
+// SESSION HIGH/LOW TRACKING
+// ============================================================================
+// Session times (America/New_York):
+// - Asian: 20:00 - 00:00 (previous day 8pm to midnight)
+// - London: 03:00 - 12:00
+// - Previous Day: 00:00 - 00:00 (full previous trading day)
 
-if htf_closes_below_demand and not prev_htf_below_demand
-    // New bearish rejection of demand - show label
-    label.new(bar_index, low, "1H ↓ DEMAND",
-             color=color.new(color.red, 20),
-             textcolor=color.white,
-             style=label.style_label_up,
-             size=size.small)
+// Track session highs and lows
+var float asian_high = na
+var float asian_low = na
+var float london_high = na
+var float london_low = na
+var float prev_day_high = na
+var float prev_day_low = na
 
-// Update previous state
-prev_htf_above_supply := htf_closes_above_supply
-prev_htf_below_demand := htf_closes_below_demand
+// Track if sessions have been crossed (invalidated)
+var bool asian_high_crossed = false
+var bool asian_low_crossed = false
+var bool london_high_crossed = false
+var bool london_low_crossed = false
+var bool prev_day_high_crossed = false
+var bool prev_day_low_crossed = false
 
-// Background color for HTF rejection candles
-bgcolor(htf_closes_above_supply ? color.new(color.green, 90) : na, title="HTF Bullish Rejection BG")
-bgcolor(htf_closes_below_demand ? color.new(color.red, 90) : na, title="HTF Bearish Rejection BG")
+// Track lines for visual display
+var line asian_high_line = na
+var line asian_low_line = na
+var line london_high_line = na
+var line london_low_line = na
+var line prev_day_high_line = na
+var line prev_day_low_line = na
+
+// Get current time
+int hour_et = hour(time, "America/New_York")
+int day_of_month = dayofmonth(time, "America/New_York")
+
+// Track session high/low during their respective periods
+// Asian session: 20:00 - 00:00 (8pm to midnight)
+bool in_asian_session = hour_et >= 20 or hour_et < 0
+if in_asian_session
+    if na(asian_high) or high > asian_high
+        asian_high := high
+    if na(asian_low) or low < asian_low
+        asian_low := low
+
+        // do NOT reset asian hi/lo at NY midnight. instead of resetting at midnight, reset at next asian session
+else if hour_et == 0 and minute(time, "America/New_York") == 0
+    // Reset at midnight (start of new day)
+    asian_high := na
+    asian_low := na
+    asian_high_crossed := false
+    asian_low_crossed := false
+
+// London session: 03:00 - 12:00
+bool in_london_session = hour_et >= 3 and hour_et < 12
+if in_london_session
+    if na(london_high) or high > london_high
+        london_high := high
+    if na(london_low) or low < london_low
+        london_low := low
+else if hour_et == 3 and minute(time, "America/New_York") == 0
+    // Reset at London open
+    london_high := na
+    london_low := na
+    london_high_crossed := false
+    london_low_crossed := false
+
+// Previous Day high/low: track full previous day, reset at midnight
+var float temp_day_high = na
+var float temp_day_low = na
+var int last_tracked_day = na
+
+if barstate.isnew
+    int current_day = dayofmonth(time, "America/New_York")
+
+    // At start of new day (midnight ET), save yesterday's high/low as prev_day
+    if not na(last_tracked_day) and current_day != last_tracked_day
+        prev_day_high := temp_day_high
+        prev_day_low := temp_day_low
+        prev_day_high_crossed := false
+        prev_day_low_crossed := false
+
+        // Reset temp tracking for new day
+        temp_day_high := high
+        temp_day_low := low
+    else
+        // Continue tracking current day's high/low
+        if na(temp_day_high) or high > temp_day_high
+            temp_day_high := high
+        if na(temp_day_low) or low < temp_day_low
+            temp_day_low := low
+
+    last_tracked_day := current_day
+
+// Check for crosses and invalidate levels
+if not asian_high_crossed and not na(asian_high) and high >= asian_high
+    asian_high_crossed := true
+if not asian_low_crossed and not na(asian_low) and low <= asian_low
+    asian_low_crossed := true
+
+if not london_high_crossed and not na(london_high) and high >= london_high
+    london_high_crossed := true
+if not london_low_crossed and not na(london_low) and low <= london_low
+    london_low_crossed := true
+
+if not prev_day_high_crossed and not na(prev_day_high) and high >= prev_day_high
+    prev_day_high_crossed := true
+if not prev_day_low_crossed and not na(prev_day_low) and low <= prev_day_low
+    prev_day_low_crossed := true
+
+// Session level lines removed - keep it simple
 
 // ============================================================================
 // ZONE VISUALIZATION - Draw zones from 09:00 to 16:00 current day
@@ -157,6 +254,32 @@ var float mss_ob_entry = na  // Entry price (high of OB candle for bullish, low 
 var float mss_ob_tp = na     // Take profit level
 var float mss_ob_sl = na     // Stop loss level
 
+// Track TP/SL indicator boxes
+var box tp_box = na
+var box sl_box = na
+
+// Track if we've already entered a trade for this setup
+var bool trade_entered = false
+
+// ============================================================================
+// FORCE CLOSE AT TRADING WINDOW END - TOP LEVEL (runs every bar)
+// ============================================================================
+int check_hour = hour(time, "America/New_York")
+int check_minute = minute(time, "America/New_York")
+int check_time_mins = check_hour * 60 + check_minute
+int end_time_mins = trading_end_hour * 60 + trading_end_minute
+
+// Check if we're past trading end time and have an open position
+if check_time_mins >= end_time_mins and strategy.position_size != 0
+    // FIRST cancel all pending orders (including TP/SL exits)
+    strategy.cancel_all()
+
+    // THEN close the position
+    if strategy.position_size > 0
+        strategy.close("Long", comment="EOD Close")
+    else if strategy.position_size < 0
+        strategy.close("Short", comment="EOD Close")
+
 // Check if currently outside both zones
 bool outside_both_zones = not in_supply and not in_demand
 
@@ -222,8 +345,8 @@ if in_demand
 bool is_bullish_engulfing = false
 bool is_bearish_engulfing = false
 
-// Only check for engulfing when in an AOI
-if demand_triggered and bar_index > 0
+// Only check for engulfing when in an AOI AND within trading window
+if demand_triggered and bar_index > 0 and in_trading_window
     // Bullish engulfing: current candle close engulfs previous candle body
     bool current_bullish = close > open
     bool prev_bearish = close[1] < open[1]
@@ -234,7 +357,7 @@ if demand_triggered and bar_index > 0
 
     is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
 
-if supply_triggered and bar_index > 0
+if supply_triggered and bar_index > 0 and in_trading_window
     // Bearish engulfing: current candle close engulfs previous candle body
     bool current_bearish = close < open
     bool prev_bullish = close[1] > open[1]
@@ -247,6 +370,73 @@ if supply_triggered and bar_index > 0
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
+// NOTE: Trading window only prevents NEW setups from forming
+// Existing setups remain active even outside trading window
+// This allows setups to continue tracking but prevents new entries outside hours
+
+// INVALIDATION: Setup expires after max_setup_bars (only if not in trade) or at trading end time
+if eng_ob_active and not na(eng_ob_bar_index)
+    bool should_invalidate_timeout = false
+    string timeout_reason = ""
+
+    // Check if setup has exceeded max bars (ONLY if not in a trade)
+    if not trade_entered
+        int bars_since_setup = bar_index - eng_ob_bar_index
+        if bars_since_setup >= max_setup_bars
+            should_invalidate_timeout := true
+            timeout_reason := "Max bars (" + str.tostring(max_setup_bars) + ")"
+
+    // Check if it's past trading end time (applies to ALL setups, including active trades)
+    int current_hour = hour(time, "America/New_York")
+    int current_minute = minute(time, "America/New_York")
+    int current_time_mins = current_hour * 60 + current_minute
+    int end_time_mins = trading_end_hour * 60 + trading_end_minute
+
+    if current_time_mins >= end_time_mins
+        should_invalidate_timeout := true
+        string end_time_str = str.tostring(trading_end_hour) + ":" + (trading_end_minute < 10 ? "0" : "") + str.tostring(trading_end_minute)
+        timeout_reason := timeout_reason == "" ? end_time_str + " NY time" : timeout_reason + " + " + end_time_str
+
+    if should_invalidate_timeout
+        label.new(bar_index, eng_ob_is_bullish ? low : high, "❌ TIMEOUT\n" + timeout_reason,
+                 color=color.purple, textcolor=color.white,
+                 style=eng_ob_is_bullish ? label.style_label_up : label.style_label_down,
+                 size=size.small)
+
+        // Close any open positions and cancel pending orders
+        strategy.close_all()
+        strategy.cancel_all()
+
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level := na
+
+        // Clear MSS OB
+        mss_ob_active := false
+        mss_ob_entry := na
+        mss_ob_tp := na
+        mss_ob_sl := na
+
+        // Reset trade flag
+        trade_entered := false
+
+        // Delete yellow box
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
+
+        // Delete TP/SL boxes
+        if not na(tp_box)
+            box.delete(tp_box)
+            tp_box := na
+        if not na(sl_box)
+            box.delete(sl_box)
+            sl_box := na
+
 // INVALIDATION: Clear setup when zones are disabled
 // Only invalidate if the disabled zone MATCHES the setup's zone
 // Bullish setup (from demand) only invalidated by clear_demand
@@ -257,13 +447,9 @@ if eng_ob_active
     if eng_ob_is_bullish and clear_demand
         // Bullish setup invalidated by disabling demand zone
         should_invalidate := true
-        label.new(bar_index, high, "❌ ZONE DISABLED\nDemand zone",
-                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
     else if not eng_ob_is_bullish and clear_supply
         // Bearish setup invalidated by disabling supply zone
         should_invalidate := true
-        label.new(bar_index, high, "❌ ZONE DISABLED\nSupply zone",
-                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
 
     if should_invalidate
         eng_ob_active := false
@@ -285,15 +471,19 @@ if eng_ob_active
             box.delete(eng_ob_box)
             eng_ob_box := na
 
+        // Delete TP/SL boxes
+        if not na(tp_box)
+            box.delete(tp_box)
+            tp_box := na
+        if not na(sl_box)
+            box.delete(sl_box)
+            sl_box := na
+
 // INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
 // Bullish setup (from demand) invalidated by entering supply zone
 // Bearish setup (from supply) invalidated by entering demand zone
 if barstate.isnew and was_outside_zones
     if eng_ob_active and eng_ob_is_bullish and in_supply
-        // DEBUG: Show opposite zone entry invalidation
-        label.new(bar_index, high, "❌ OPPOSITE ZONE\nBullish setup → Supply",
-                 color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.small)
-
         // Bullish setup invalidated by entering supply zone
         eng_ob_active := false
         eng_ob_is_bullish := false
@@ -314,11 +504,15 @@ if barstate.isnew and was_outside_zones
             box.delete(eng_ob_box)
             eng_ob_box := na
 
-    else if eng_ob_active and not eng_ob_is_bullish and in_demand
-        // DEBUG: Show opposite zone entry invalidation
-        label.new(bar_index, low, "❌ OPPOSITE ZONE\nBearish setup → Demand",
-                 color=color.purple, textcolor=color.white, style=label.style_label_up, size=size.small)
+        // Delete TP/SL boxes
+        if not na(tp_box)
+            box.delete(tp_box)
+            tp_box := na
+        if not na(sl_box)
+            box.delete(sl_box)
+            sl_box := na
 
+    else if eng_ob_active and not eng_ob_is_bullish and in_demand
         // Bearish setup invalidated by entering demand zone
         eng_ob_active := false
         eng_ob_is_bullish := false
@@ -338,6 +532,14 @@ if barstate.isnew and was_outside_zones
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
             eng_ob_box := na
+
+        // Delete TP/SL boxes
+        if not na(tp_box)
+            box.delete(tp_box)
+            tp_box := na
+        if not na(sl_box)
+            box.delete(sl_box)
+            sl_box := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
 if is_bullish_engulfing
@@ -385,10 +587,6 @@ if eng_ob_active
     if eng_ob_is_bullish and demand_triggered and not na(eng_ob_candle_low)
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
         if low < eng_ob_candle_low
-            // DEBUG: Show invalidation reason
-            label.new(bar_index, low, "❌ INVAL\nlow:" + str.tostring(low, format.mintick) + "\nOB:" + str.tostring(eng_ob_candle_low, format.mintick),
-                     color=color.red, textcolor=color.white, style=label.style_label_up, size=size.small)
-
             eng_ob_active := false
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
@@ -407,14 +605,18 @@ if eng_ob_active
             if not na(eng_ob_box)
                 box.delete(eng_ob_box)
                 eng_ob_box := na
+
+            // Delete TP/SL boxes
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
 
     else if not eng_ob_is_bullish and supply_triggered and not na(eng_ob_candle_high)
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
         if high > eng_ob_candle_high
-            // DEBUG: Show invalidation reason
-            label.new(bar_index, high, "❌ INVAL\nhigh:" + str.tostring(high, format.mintick) + "\nOB:" + str.tostring(eng_ob_candle_high, format.mintick),
-                     color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
-
             eng_ob_active := false
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
@@ -433,6 +635,14 @@ if eng_ob_active
             if not na(eng_ob_box)
                 box.delete(eng_ob_box)
                 eng_ob_box := na
+
+            // Delete TP/SL boxes
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
 
 // INVALIDATION: MSS OB invalidated when price reaches opposite zone
 // This invalidation applies even if we haven't left both zones
@@ -444,13 +654,9 @@ if mss_ob_active
     if eng_ob_is_bullish and in_supply
         // Bullish MSS OB invalidated by reaching supply zone
         should_invalidate_mss := true
-        label.new(bar_index, high, "❌ MSS OB INVAL\nReached Supply",
-                 color=color.orange, textcolor=color.white, style=label.style_label_down, size=size.small)
     else if not eng_ob_is_bullish and in_demand
         // Bearish MSS OB invalidated by reaching demand zone
         should_invalidate_mss := true
-        label.new(bar_index, low, "❌ MSS OB INVAL\nReached Demand",
-                 color=color.orange, textcolor=color.white, style=label.style_label_up, size=size.small)
 
     if should_invalidate_mss
         // Clear the entire setup
@@ -472,6 +678,14 @@ if mss_ob_active
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
             eng_ob_box := na
+
+        // Delete TP/SL boxes
+        if not na(tp_box)
+            box.delete(tp_box)
+            tp_box := na
+        if not na(sl_box)
+            box.delete(sl_box)
+            sl_box := na
 
 // Track which candle made the deepest penetration (only show current)
 var label deepest_demand_label = na
@@ -513,8 +727,8 @@ if is_bullish_engulfing or is_bearish_engulfing
         float box_top = eng_ob_candle_high
         float box_bottom = eng_ob_candle_low
 
-        // Use green for bullish, red for bearish
-        color box_color = eng_ob_is_bullish ? color.green : color.red
+        // Use yellow for ENG OB (will turn blue when MSS OB is active)
+        color box_color = color.yellow
 
         eng_ob_box := box.new(box_left, box_top, box_right, box_bottom,
                               border_color=box_color,
@@ -523,8 +737,15 @@ if is_bullish_engulfing or is_bearish_engulfing
                               extend=extend.none)
 
 // Update the box to extend to current bar while setup is active (bar by bar, not infinite)
-if eng_ob_active and not na(eng_ob_box)
+// Continue extending while setup is active (ENG OB or MSS OB active)
+// Change color to blue when MSS OB is active
+if (eng_ob_active or mss_ob_active) and not na(eng_ob_box)
     box.set_right(eng_ob_box, bar_index + 1)
+
+    // Change box color to blue when MSS OB becomes active
+    if mss_ob_active
+        box.set_border_color(eng_ob_box, color.blue)
+        box.set_bgcolor(eng_ob_box, color.new(color.blue, 90))
 
 // ============================================================================
 // LTF FRACTAL DETECTION (only when in AOI or active setup)
@@ -550,27 +771,32 @@ plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, l
 // When ENG OB forms, search BACKWARD for the most recent opposite fractal
 // This runs once when target_fractal_level is na (right after ENG OB forms)
 if eng_ob_active and na(target_fractal_level) and bar_index >= 4
-    // Search backward up to 50 bars for the most recent opposite fractal
-    int lookback_limit = 50
+    // Search backward up to 20 bars for the most recent opposite fractal
+    // Limit to avoid historical buffer issues (max lookback is bar_index, but fractal needs i+2)
+    int lookback_limit = math.min(20, bar_index - 4)
 
     if eng_ob_is_bullish
         // Bullish setup: look for most recent bearish fractal (high point)
-        for i = 2 to math.min(lookback_limit, bar_index - 2)
+        for i = 2 to lookback_limit
             // Check if bar at offset i is a bearish fractal
-            bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
-            if is_bearish_frac
-                // Found the most recent bearish fractal
-                target_fractal_level := high[i]
-                break
+            // Only check if we have enough history (i+2 bars back)
+            if i + 2 <= bar_index
+                bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
+                if is_bearish_frac
+                    // Found the most recent bearish fractal
+                    target_fractal_level := high[i]
+                    break
     else
         // Bearish setup: look for most recent bullish fractal (low point)
-        for i = 2 to math.min(lookback_limit, bar_index - 2)
+        for i = 2 to lookback_limit
             // Check if bar at offset i is a bullish fractal
-            bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
-            if is_bullish_frac
-                // Found the most recent bullish fractal
-                target_fractal_level := low[i]
-                break
+            // Only check if we have enough history (i+2 bars back)
+            if i + 2 <= bar_index
+                bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
+                if is_bullish_frac
+                    // Found the most recent bullish fractal
+                    target_fractal_level := low[i]
+                    break
 
 // ============================================================================
 // MSS OB DETECTION - Price crosses fractal level
@@ -604,10 +830,104 @@ if eng_ob_active and not mss_ob_active and not na(target_fractal_level)
             float risk = mss_ob_sl - mss_ob_entry
             mss_ob_tp := mss_ob_entry - (risk * 2)  // 2:1 reward to risk
 
+        // Calculate position size based on risk
+        float risk_per_contract = math.abs(mss_ob_entry - mss_ob_sl)
+        float position_size = risk_per_trade / risk_per_contract
+
+        // Place limit order at entry level
+        if eng_ob_is_bullish
+            // Enter long position with limit order at entry level
+            strategy.entry("Long", strategy.long, qty=position_size, limit=mss_ob_entry)
+            strategy.exit("TP/SL Long", "Long", limit=mss_ob_tp, stop=mss_ob_sl)
+        else
+            // Enter short position with limit order at entry level
+            strategy.entry("Short", strategy.short, qty=position_size, limit=mss_ob_entry)
+            strategy.exit("TP/SL Short", "Short", limit=mss_ob_tp, stop=mss_ob_sl)
+
+        // Create TP and SL indicator boxes
+        // Delete old boxes first
+        if not na(tp_box)
+            box.delete(tp_box)
+        if not na(sl_box)
+            box.delete(sl_box)
+
+        // Create new TP box (green) and SL box (red)
+        if eng_ob_is_bullish
+            // Bullish: TP is above entry
+            tp_box := box.new(bar_index, mss_ob_tp, bar_index + 1, mss_ob_entry,
+                             border_color=color.green,
+                             bgcolor=color.new(color.green, 85),
+                             border_width=1,
+                             extend=extend.none)
+            // SL is below entry
+            sl_box := box.new(bar_index, mss_ob_entry, bar_index + 1, mss_ob_sl,
+                             border_color=color.red,
+                             bgcolor=color.new(color.red, 85),
+                             border_width=1,
+                             extend=extend.none)
+        else
+            // Bearish: TP is below entry
+            tp_box := box.new(bar_index, mss_ob_entry, bar_index + 1, mss_ob_tp,
+                             border_color=color.green,
+                             bgcolor=color.new(color.green, 85),
+                             border_width=1,
+                             extend=extend.none)
+            // SL is above entry
+            sl_box := box.new(bar_index, mss_ob_sl, bar_index + 1, mss_ob_entry,
+                             border_color=color.red,
+                             bgcolor=color.new(color.red, 85),
+                             border_width=1,
+                             extend=extend.none)
+
+// ============================================================================
+// TRADE EXECUTION - Track when limit order is filled
+// ============================================================================
+// Check if limit order has been filled
+if mss_ob_active and not trade_entered
+    // Check if we now have an open position (limit order was filled)
+    if strategy.position_size != 0
+        trade_entered := true
+
+// Check if trade has exited (TP or SL hit)
+if trade_entered and strategy.position_size == 0
+    // Trade has exited - clear all setup variables
+    eng_ob_active := false
+    eng_ob_is_bullish := false
+    eng_ob_deepest_level := na
+    eng_ob_bar_index := na
+    eng_ob_candle_high := na
+    eng_ob_candle_low := na
+    target_fractal_level := na
+
+    // Clear MSS OB
+    mss_ob_active := false
+    mss_ob_entry := na
+    mss_ob_tp := na
+    mss_ob_sl := na
+
+    // Reset trade flag
+    trade_entered := false
+
+    // Delete all boxes
+    if not na(eng_ob_box)
+        box.delete(eng_ob_box)
+        eng_ob_box := na
+    if not na(tp_box)
+        box.delete(tp_box)
+        tp_box := na
+    if not na(sl_box)
+        box.delete(sl_box)
+        sl_box := na
+
+// Update TP/SL boxes to extend one bar at a time while MSS OB is active (awaiting entry or in trade)
+if mss_ob_active and not na(tp_box) and not na(sl_box)
+    box.set_right(tp_box, bar_index + 1)
+    box.set_right(sl_box, bar_index + 1)
+
 // ============================================================================
 // DEBUG TABLE
 // ============================================================================
-var table debugTable = table.new(position.bottom_left, 2, 10, border_width=1)  // Increased to 10 rows for HTF validation
+var table debugTable = table.new(position.top_right, 2, 17, border_width=1)  // 17 rows: Position Size added
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
@@ -618,7 +938,11 @@ color value_bgcolor = color.new(color.gray, 30)   // Default background for valu
 bool is_supply_setup = supply_triggered or (eng_ob_active and not eng_ob_is_bullish)
 bool is_demand_setup = demand_triggered or (eng_ob_active and eng_ob_is_bullish)
 
-if mss_ob_active
+if trade_entered and strategy.position_size != 0
+    // Trade is active - in position
+    aoi_status := "IN TRADE"
+    value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
+else if mss_ob_active
     // MSS OB is active - awaiting entry
     aoi_status := "AWAITING ENTRY"
     value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
@@ -670,39 +994,38 @@ if eng_ob_active
 table.cell(debugTable, 0, 3, "Fractal Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, 3, fractal_level, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
+// Position Size - debug to see strategy.position_size
+string pos_size = str.tostring(strategy.position_size)
+table.cell(debugTable, 0, 4, "Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 4, pos_size, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+
 // Entry Price
 string entry_price = "-"
 if mss_ob_active and not na(mss_ob_entry)
     entry_price := str.tostring(mss_ob_entry, format.mintick)
-table.cell(debugTable, 0, 4, "Entry Price", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 4, entry_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 5, "Entry Price", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 5, entry_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Take Profit
 string tp_price = "-"
 if mss_ob_active and not na(mss_ob_tp)
     tp_price := str.tostring(mss_ob_tp, format.mintick)
-table.cell(debugTable, 0, 5, "TP", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 5, tp_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 6, "TP", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 6, tp_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Stop Loss
 string sl_price = "-"
 if mss_ob_active and not na(mss_ob_sl)
     sl_price := str.tostring(mss_ob_sl, format.mintick)
-table.cell(debugTable, 0, 6, "SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 6, sl_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 7, "SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 7, sl_price, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
-// HTF (1H) Validation - highlight if 1H closes above supply or below demand
-string htf_validation = "-"
-color htf_bgcolor = value_bgcolor
-if htf_closes_above_supply or htf_closes_below_demand
-    if htf_closes_above_supply
-        htf_validation := "✓ ABOVE SUPPLY"
-        htf_bgcolor := color.new(color.green, 50)  // Green highlight for bullish confirmation
-    else
-        htf_validation := "✓ BELOW DEMAND"
-        htf_bgcolor := color.new(color.red, 50)   // Red highlight for bearish confirmation
-table.cell(debugTable, 0, 7, "HTF (1H) Close", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 7, htf_validation, text_color=color.white, bgcolor=htf_bgcolor, text_size=size.small)
+// Bars Since Setup - show how many bars since ENG OB formed
+string bars_since_setup = "-"
+if eng_ob_active and not na(eng_ob_bar_index)
+    bars_since_setup := str.tostring(bar_index - eng_ob_bar_index)
+table.cell(debugTable, 0, 8, "Bars Since Setup", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 8, bars_since_setup, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Supply zone levels - show DISABLED if disabled
 string supply_zone = "-"
@@ -710,14 +1033,95 @@ if clear_supply
     supply_zone := "DISABLED"
 else if supply_configured
     supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, 8, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 8, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, 9, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 9, supply_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
 
 // Demand zone levels - show DISABLED if disabled
 string demand_zone = "-"
+color demand_zone_bgcolor = value_bgcolor
 if clear_demand
     demand_zone := "DISABLED"
 else if demand_configured
     demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
-table.cell(debugTable, 0, 9, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, 9, demand_zone, text_color=color.white, bgcolor=value_bgcolor, text_size=size.small)
+    demand_zone_bgcolor := color.new(color.blue, 50)  // Always blue/green for demand
+table.cell(debugTable, 0, 10, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 10, demand_zone, text_color=color.white, bgcolor=demand_zone_bgcolor, text_size=size.small)
+
+// Session levels - show level or "X" if crossed
+// Asian High
+string asian_high_text = "-"
+color asian_high_bg = label_bgcolor
+if not na(asian_high)
+    if asian_high_crossed
+        asian_high_text := "✗ CROSSED"
+        asian_high_bg := color.new(color.gray, 50)
+    else
+        asian_high_text := str.tostring(asian_high, format.mintick)
+        asian_high_bg := color.new(color.red, 70)
+table.cell(debugTable, 0, 11, "Asian High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 11, asian_high_text, text_color=color.white, bgcolor=asian_high_bg, text_size=size.small)
+
+// Asian Low
+string asian_low_text = "-"
+color asian_low_bg = label_bgcolor
+if not na(asian_low)
+    if asian_low_crossed
+        asian_low_text := "✗ CROSSED"
+        asian_low_bg := color.new(color.gray, 50)
+    else
+        asian_low_text := str.tostring(asian_low, format.mintick)
+        asian_low_bg := color.new(color.green, 70)
+table.cell(debugTable, 0, 12, "Asian Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 12, asian_low_text, text_color=color.white, bgcolor=asian_low_bg, text_size=size.small)
+
+// London High
+string london_high_text = "-"
+color london_high_bg = label_bgcolor
+if not na(london_high)
+    if london_high_crossed
+        london_high_text := "✗ CROSSED"
+        london_high_bg := color.new(color.gray, 50)
+    else
+        london_high_text := str.tostring(london_high, format.mintick)
+        london_high_bg := color.new(color.red, 70)
+table.cell(debugTable, 0, 13, "London High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 13, london_high_text, text_color=color.white, bgcolor=london_high_bg, text_size=size.small)
+
+// London Low
+string london_low_text = "-"
+color london_low_bg = label_bgcolor
+if not na(london_low)
+    if london_low_crossed
+        london_low_text := "✗ CROSSED"
+        london_low_bg := color.new(color.gray, 50)
+    else
+        london_low_text := str.tostring(london_low, format.mintick)
+        london_low_bg := color.new(color.green, 70)
+table.cell(debugTable, 0, 14, "London Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 14, london_low_text, text_color=color.white, bgcolor=london_low_bg, text_size=size.small)
+
+// Previous Day High
+string prev_high_text = "-"
+color prev_high_bg = label_bgcolor
+if not na(prev_day_high)
+    if prev_day_high_crossed
+        prev_high_text := "✗ CROSSED"
+        prev_high_bg := color.new(color.gray, 50)
+    else
+        prev_high_text := str.tostring(prev_day_high, format.mintick)
+        prev_high_bg := color.new(color.red, 70)
+table.cell(debugTable, 0, 15, "Prev Day High", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 15, prev_high_text, text_color=color.white, bgcolor=prev_high_bg, text_size=size.small)
+
+// Previous Day Low
+string prev_low_text = "-"
+color prev_low_bg = label_bgcolor
+if not na(prev_day_low)
+    if prev_day_low_crossed
+        prev_low_text := "✗ CROSSED"
+        prev_low_bg := color.new(color.gray, 50)
+    else
+        prev_low_text := str.tostring(prev_day_low, format.mintick)
+        prev_low_bg := color.new(color.green, 70)
+table.cell(debugTable, 0, 16, "Prev Day Low", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 16, prev_low_text, text_color=color.white, bgcolor=prev_low_bg, text_size=size.small)
