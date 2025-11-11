@@ -1738,7 +1738,10 @@ else if eng_ob_active
     value_bgcolor := eng_ob_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if bpr_fvg_active or inv_fvg_active
     aoi_status := "ACTIVE"
-    value_bgcolor := (bpr_fvg_active ? bpr_fvg_is_bullish : inv_fvg_is_bullish) ? color.new(color.blue, 50) : color.new(color.red, 50)
+    // For BPR FVG, trade direction is INVERTED from FVG direction
+    // Bullish FVG = bearish trade (red), Bearish FVG = bullish trade (blue)
+    // For Inverted FVG, trade direction matches the variable
+    value_bgcolor := (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish) ? color.new(color.blue, 50) : color.new(color.red, 50)
 else if supply_triggered or demand_triggered
     aoi_status := "IN AOI"
     value_bgcolor := supply_triggered ? color.new(color.red, 50) : color.new(color.blue, 50)
