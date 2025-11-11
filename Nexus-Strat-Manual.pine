@@ -1813,13 +1813,6 @@ table.cell(debugTable, 0, row, "Entry Strategy", text_color=color.black, bgcolor
 table.cell(debugTable, 1, row, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
 row := row + 1
 
-// Combined: Order Placed + Trade Entered
-string status_text = "Order: " + (order_placed ? "✓" : "✗") + " | Trade: " + (trade_entered ? "✓" : "✗")
-color status_bg = trade_entered ? color.new(color.green, 70) : (order_placed ? color.new(color.yellow, 70) : color.new(color.red, 70))
-table.cell(debugTable, 0, row, "Status", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, status_text, text_color=color.black, bgcolor=status_bg, text_size=size.small)
-row := row + 1
-
 // Combined: Entry + TP + SL
 string entry_tp_sl_text = "-"
 if entry_signal_active and not na(entry_price) and not na(entry_tp) and not na(entry_sl)
