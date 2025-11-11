@@ -188,7 +188,11 @@ var box demand_zone_box = na
 var int zone_start_bar = na
 
 // At trading window start, create new zone boxes for the day
-if current_hour == trading_start_hour and current_minute == trading_start_minute and is_new_day
+// Create boxes when entering trading window on a new day OR if boxes don't exist yet
+bool at_trading_start = current_hour == trading_start_hour and current_minute == trading_start_minute
+bool should_create_boxes = at_trading_start and (is_new_day or na(supply_zone_box) or na(demand_zone_box))
+
+if should_create_boxes
     zone_start_bar := bar_index
 
     // Delete old boxes
