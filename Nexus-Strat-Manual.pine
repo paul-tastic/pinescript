@@ -1164,14 +1164,13 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
 
-// Visualize BPR FVG with colored outline (red for bearish, green for bullish) and yellow fill
+// Visualize BPR FVG with dotted blue outline and yellow fill
 if bpr_fvg_active
     // Create box on first detection
     if na(bpr_fvg_box)
-        // Red outline for bullish FVG (bearish trade), green outline for bearish FVG (bullish trade)
-        color outline_color = bpr_fvg_is_bullish ? color.red : color.green
         bpr_fvg_box := box.new(bpr_fvg_bar_index, bpr_fvg_top, bpr_fvg_bar_index + 1, bpr_fvg_bottom,
-                               border_color=outline_color,
+                               border_color=color.blue,
+                               border_style=line.style_dotted,
                                bgcolor=color.new(color.yellow, 90),
                                border_width=1,
                                extend=extend.none)
@@ -1312,14 +1311,15 @@ if barstate.isnew and was_outside_zones and inv_fvg_active
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
 
-// Visualize Inverted FVG overlap with purple box
+// Visualize Inverted FVG overlap with dotted blue outline and purple fill
 if inv_fvg_active
     // Create overlap box on first detection
     if na(inv_fvg_overlap_box)
         inv_fvg_overlap_box := box.new(inv_fvg_bar_index, inv_fvg_overlap_top, inv_fvg_bar_index + 1, inv_fvg_overlap_bottom,
-                                       border_color=color.purple,
+                                       border_color=color.blue,
+                                       border_style=line.style_dotted,
                                        bgcolor=color.new(color.purple, 85),
-                                       border_width=2,
+                                       border_width=1,
                                        extend=extend.none)
     else
         // Extend overlap box to current bar
@@ -1333,7 +1333,7 @@ if inv_fvg_active
 // 2. BLUE box = Entry signal active (limit order placed, awaiting fill)
 // 3. GREEN/RED boxes = Trade entered (TP/SL shown when position is open)
 
-// STEP 1: Create YELLOW box when ENG OB forms
+// STEP 1: Create YELLOW box with dotted blue outline when ENG OB forms
 if is_bullish_engulfing or is_bearish_engulfing
     // Delete old box
     if not na(eng_ob_box)
@@ -1346,40 +1346,39 @@ if is_bullish_engulfing or is_bearish_engulfing
         float box_top = eng_ob_candle_high
         float box_bottom = eng_ob_candle_low
 
-        // Use yellow for ENG OB (entry zone)
-        color box_color = color.yellow
-
+        // Use yellow fill with dotted blue outline for ENG OB (entry zone)
         eng_ob_box := box.new(box_left, box_top, box_right, box_bottom,
-                              border_color=box_color,
-                              bgcolor=color.new(box_color, 90),
+                              border_color=color.blue,
+                              border_style=line.style_dotted,
+                              bgcolor=color.new(color.yellow, 90),
                               border_width=1,
                               extend=extend.none)
 
-// STEP 2: Extend box and change to BLUE when entry signal activates
+// STEP 2: Extend box and change fill to BLUE when entry signal activates
 if (eng_ob_active or entry_signal_active) and not na(eng_ob_box)
     box.set_right(eng_ob_box, bar_index + 1)
 
-    // Change to blue ONLY when MSS OB or other ENG OB-based strategies activate (not BPR FVG)
+    // Change fill to blue ONLY when MSS OB or other ENG OB-based strategies activate (not BPR FVG)
+    // Border stays dotted blue throughout
     if entry_signal_active and active_entry_strategy != "BPR FVG"
-        box.set_border_color(eng_ob_box, color.blue)
         box.set_bgcolor(eng_ob_box, color.new(color.blue, 90))
 
-// STEP 2: Extend BPR FVG box and change to BLUE when entry signal activates
+// STEP 2: Extend BPR FVG box and change fill to BLUE when entry signal activates
 if bpr_fvg_active and not na(bpr_fvg_box)
     box.set_right(bpr_fvg_box, bar_index + 1)
 
-    // Change to blue when BPR FVG entry strategy activates (limit order placed)
+    // Change fill to blue when BPR FVG entry strategy activates (limit order placed)
+    // Border stays dotted blue throughout
     if entry_signal_active and active_entry_strategy == "BPR FVG"
-        box.set_border_color(bpr_fvg_box, color.blue)
         box.set_bgcolor(bpr_fvg_box, color.new(color.blue, 90))
 
-// STEP 2: Extend Inverted FVG overlap box and change to BLUE when entry signal activates
+// STEP 2: Extend Inverted FVG overlap box and change fill to BLUE when entry signal activates
 if inv_fvg_active and not na(inv_fvg_overlap_box)
     box.set_right(inv_fvg_overlap_box, bar_index + 1)
 
-    // Change to blue when Inverted FVG entry strategy activates (limit order placed)
+    // Change fill to blue when Inverted FVG entry strategy activates (limit order placed)
+    // Border stays dotted blue throughout
     if entry_signal_active and active_entry_strategy == "Inverted FVG"
-        box.set_border_color(inv_fvg_overlap_box, color.blue)
         box.set_bgcolor(inv_fvg_overlap_box, color.new(color.blue, 90))
 
 // ============================================================================
