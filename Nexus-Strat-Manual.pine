@@ -283,7 +283,15 @@ var box bpr_fvg_box = na  // Yellow box around FVG
 var string bpr_fvg_invalidation_reason = ""  // Track why BPR FVG was cleared (for debugging)
 
 // Track Inverted FVG specific state
-// TODO: Add Inverted FVG variables when implementing
+var bool inv_fvg_active = false  // Inverted FVG has been detected (overlap found)
+var bool inv_fvg_is_bullish = false  // Trade direction: true = long, false = short
+var float inv_fvg_overlap_top = na  // Top of overlap zone (entry for bearish)
+var float inv_fvg_overlap_bottom = na  // Bottom of overlap zone (entry for bullish)
+var float inv_fvg_reversal_candle_high = na  // High of reversal FVG candle (for SL in bearish)
+var float inv_fvg_reversal_candle_low = na  // Low of reversal FVG candle (for SL in bullish)
+var int inv_fvg_bar_index = na  // Bar index where Inverted FVG was detected
+var box inv_fvg_overlap_box = na  // Purple box for overlap visualization
+var string inv_fvg_invalidation_reason = ""  // Track why Inverted FVG was cleared (for debugging)
 
 // Track Breaker Block specific state
 // TODO: Add Breaker Block variables when implementing
@@ -386,6 +394,19 @@ if barstate.isnew
             bpr_fvg_invalidation_level := na
             bpr_fvg_bar_index := na
             bpr_fvg_invalidation_reason := "9 AM reset"
+
+            // Clear Inverted FVG state
+            if not na(inv_fvg_overlap_box)
+                box.delete(inv_fvg_overlap_box)
+                inv_fvg_overlap_box := na
+            inv_fvg_active := false
+            inv_fvg_is_bullish := false
+            inv_fvg_overlap_top := na
+            inv_fvg_overlap_bottom := na
+            inv_fvg_reversal_candle_high := na
+            inv_fvg_reversal_candle_low := na
+            inv_fvg_bar_index := na
+            inv_fvg_invalidation_reason := "9 AM reset"
 
     // At 20:00 (start of Asian session), clear all persisted boxes from the day
     if current_hour == 20
@@ -854,8 +875,8 @@ if entry_signal_active
 
     if should_invalidate_entry
         // Clear strategy-specific state based on which strategy placed the order
-        if active_entry_strategy == "MSS OB" or active_entry_strategy == "Inverted FVG" or active_entry_strategy == "Breaker Block"
-            // ENG OB-based strategies - clear ENG OB state
+        if active_entry_strategy == "MSS OB"
+            // MSS OB strategy - clear ENG OB state
             eng_ob_active := false
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
@@ -883,6 +904,48 @@ if entry_signal_active
             if not na(bpr_fvg_box)
                 box.delete(bpr_fvg_box)
                 bpr_fvg_box := na
+
+        else if active_entry_strategy == "Inverted FVG"
+            // Inverted FVG strategy - clear both BPR FVG and Inverted FVG state
+            bpr_fvg_active := false
+            bpr_fvg_is_bullish := false
+            bpr_fvg_top := na
+            bpr_fvg_bottom := na
+            bpr_fvg_invalidation_level := na
+            bpr_fvg_bar_index := na
+            bpr_fvg_invalidation_reason := "Opposite zone reached"
+
+            inv_fvg_active := false
+            inv_fvg_is_bullish := false
+            inv_fvg_overlap_top := na
+            inv_fvg_overlap_bottom := na
+            inv_fvg_reversal_candle_high := na
+            inv_fvg_reversal_candle_low := na
+            inv_fvg_bar_index := na
+            inv_fvg_invalidation_reason := "Opposite zone reached"
+
+            // Delete the BPR FVG box and Inverted FVG overlap box
+            if not na(bpr_fvg_box)
+                box.delete(bpr_fvg_box)
+                bpr_fvg_box := na
+            if not na(inv_fvg_overlap_box)
+                box.delete(inv_fvg_overlap_box)
+                inv_fvg_overlap_box := na
+
+        else if active_entry_strategy == "Breaker Block"
+            // Breaker Block strategy - clear ENG OB state
+            eng_ob_active := false
+            eng_ob_is_bullish := false
+            eng_ob_deepest_level := na
+            eng_ob_bar_index := na
+            eng_ob_candle_high := na
+            eng_ob_candle_low := na
+            target_fractal_level_mss := na
+
+            // Delete the ENG OB box
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
 
         // Clear entry signals (all strategies)
         entry_signal_active := false
@@ -1095,6 +1158,152 @@ if bpr_fvg_active
         box.set_right(bpr_fvg_box, bar_index + 1)
 
 // ============================================================================
+// INVERTED FVG DETECTION
+// ============================================================================
+// Inverted FVG = BPR FVG + opposite direction FVG that overlaps
+// Entry is at the overlap zone, not at the FVG breach
+// Every Inverted FVG starts as a BPR FVG, but not every BPR FVG becomes Inverted
+
+// Detect Inverted FVG when we have an active BPR FVG (not yet triggered entry)
+// Look for opposite direction FVG that overlaps the initial BPR FVG
+// Don't detect when entry signal is already active or trade is entered
+if use_inverted_fvg and bpr_fvg_active and not inv_fvg_active and not entry_signal_active and not trade_entered and bar_index >= 2
+    // Check for opposite direction FVG
+    if bpr_fvg_is_bullish
+        // Initial FVG is bullish (gap up) - look for bearish FVG (gap down) that overlaps
+        // Bearish FVG: current high < low of 2 bars ago
+        bool has_bearish_reversal_fvg = high < low[2]
+
+        if has_bearish_reversal_fvg
+            // Check if reversal FVG overlaps initial FVG
+            float reversal_fvg_top = low[2]
+            float reversal_fvg_bottom = high
+
+            // Overlap exists if reversal bottom < initial top AND reversal top > initial bottom
+            bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
+
+            if has_overlap
+                // Calculate overlap zone
+                float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
+                float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
+
+                // Activate Inverted FVG
+                inv_fvg_active := true
+                inv_fvg_is_bullish := false  // Bearish trade (reversal FVG is bearish)
+                inv_fvg_overlap_top := overlap_top
+                inv_fvg_overlap_bottom := overlap_bottom
+                inv_fvg_bar_index := bar_index
+
+                // Track reversal candle for SL - whichever of the 3 candles made the highest high
+                if high >= high[1] and high >= high[2]
+                    inv_fvg_reversal_candle_high := high
+                    inv_fvg_reversal_candle_low := low
+                else if high[1] >= high[2]
+                    inv_fvg_reversal_candle_high := high[1]
+                    inv_fvg_reversal_candle_low := low[1]
+                else
+                    inv_fvg_reversal_candle_high := high[2]
+                    inv_fvg_reversal_candle_low := low[2]
+    else
+        // Initial FVG is bearish (gap down) - look for bullish FVG (gap up) that overlaps
+        // Bullish FVG: current low > high of 2 bars ago
+        bool has_bullish_reversal_fvg = low > high[2]
+
+        if has_bullish_reversal_fvg
+            // Check if reversal FVG overlaps initial FVG
+            float reversal_fvg_top = low
+            float reversal_fvg_bottom = high[2]
+
+            // Overlap exists if reversal bottom < initial top AND reversal top > initial bottom
+            bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
+
+            if has_overlap
+                // Calculate overlap zone
+                float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
+                float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
+
+                // Activate Inverted FVG
+                inv_fvg_active := true
+                inv_fvg_is_bullish := true  // Bullish trade (reversal FVG is bullish)
+                inv_fvg_overlap_top := overlap_top
+                inv_fvg_overlap_bottom := overlap_bottom
+                inv_fvg_bar_index := bar_index
+
+                // Track reversal candle for SL - whichever of the 3 candles made the lowest low
+                if low <= low[1] and low <= low[2]
+                    inv_fvg_reversal_candle_high := high
+                    inv_fvg_reversal_candle_low := low
+                else if low[1] <= low[2]
+                    inv_fvg_reversal_candle_high := high[1]
+                    inv_fvg_reversal_candle_low := low[1]
+                else
+                    inv_fvg_reversal_candle_high := high[2]
+                    inv_fvg_reversal_candle_low := low[2]
+
+// INVALIDATION: Clear Inverted FVG when zones are disabled
+if inv_fvg_active
+    bool should_invalidate_inv_fvg_zone = false
+
+    if inv_fvg_is_bullish and clear_demand
+        should_invalidate_inv_fvg_zone := true
+        inv_fvg_invalidation_reason := "Demand zone disabled"
+    else if not inv_fvg_is_bullish and clear_supply
+        should_invalidate_inv_fvg_zone := true
+        inv_fvg_invalidation_reason := "Supply zone disabled"
+
+    if should_invalidate_inv_fvg_zone
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+
+        // Delete overlap box
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+// INVALIDATION: Clear Inverted FVG when entering opposite zone
+if barstate.isnew and was_outside_zones and inv_fvg_active
+    bool should_invalidate_inv_opposite = false
+
+    if inv_fvg_is_bullish and in_supply
+        should_invalidate_inv_opposite := true
+        inv_fvg_invalidation_reason := "Entered opposite zone (supply)"
+    else if not inv_fvg_is_bullish and in_demand
+        should_invalidate_inv_opposite := true
+        inv_fvg_invalidation_reason := "Entered opposite zone (demand)"
+
+    if should_invalidate_inv_opposite
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+
+        // Delete overlap box
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+// Visualize Inverted FVG overlap with purple box
+if inv_fvg_active
+    // Create overlap box on first detection
+    if na(inv_fvg_overlap_box)
+        inv_fvg_overlap_box := box.new(inv_fvg_bar_index, inv_fvg_overlap_top, inv_fvg_bar_index + 1, inv_fvg_overlap_bottom,
+                                       border_color=color.purple,
+                                       bgcolor=color.new(color.purple, 85),
+                                       border_width=2,
+                                       extend=extend.none)
+    else
+        // Extend overlap box to current bar
+        box.set_right(inv_fvg_overlap_box, bar_index + 1)
+
+// ============================================================================
 // ENTRY ZONE VISUALIZATION - Works for ALL entry strategies
 // ============================================================================
 // Standard visual flow for all 4 entry strategies:
@@ -1141,6 +1350,15 @@ if bpr_fvg_active and not na(bpr_fvg_box)
     if entry_signal_active and active_entry_strategy == "BPR FVG"
         box.set_border_color(bpr_fvg_box, color.blue)
         box.set_bgcolor(bpr_fvg_box, color.new(color.blue, 90))
+
+// STEP 2: Extend Inverted FVG overlap box and change to BLUE when entry signal activates
+if inv_fvg_active and not na(inv_fvg_overlap_box)
+    box.set_right(inv_fvg_overlap_box, bar_index + 1)
+
+    // Change to blue when Inverted FVG entry strategy activates (limit order placed)
+    if entry_signal_active and active_entry_strategy == "Inverted FVG"
+        box.set_border_color(inv_fvg_overlap_box, color.blue)
+        box.set_bgcolor(inv_fvg_overlap_box, color.new(color.blue, 90))
 
 // ============================================================================
 // LTF FRACTAL DETECTION (only when in AOI or active setup)
@@ -1273,15 +1491,27 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
 // ============================================================================
 // INVERTED FVG STRATEGY - Entry Signal Detection
 // ============================================================================
-// TODO: Implement Inverted FVG detection
-if use_inverted_fvg and eng_ob_active and not entry_signal_active
-    // Placeholder for Inverted FVG strategy
-    bool inv_fvg_triggered = false  // TODO: Add actual detection logic
+// Entry triggered when Inverted FVG is detected (overlap found)
+// Entry is at top of overlap (bearish) or bottom of overlap (bullish)
+// SL is at high/low of reversal FVG candle, TP is 2:1 RR
+if use_inverted_fvg and inv_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown
+    // Inverted FVG entry triggers immediately when overlap is detected
+    entry_signal_active := true
+    active_entry_strategy := "Inverted FVG"
+    entry_is_bullish := inv_fvg_is_bullish
 
-    if inv_fvg_triggered
-        entry_signal_active := true
-        active_entry_strategy := "Inverted FVG"
-        // TODO: Set entry_price, entry_tp, entry_sl
+    if inv_fvg_is_bullish
+        // Bullish setup: Entry at TOP of overlap, SL at LOW of reversal candle
+        entry_price := inv_fvg_overlap_top
+        entry_sl := inv_fvg_reversal_candle_low - grace_ticks
+        float risk = entry_price - entry_sl
+        entry_tp := entry_price + (risk * 2)  // 2:1 RR
+    else
+        // Bearish setup: Entry at BOTTOM of overlap, SL at HIGH of reversal candle
+        entry_price := inv_fvg_overlap_bottom
+        entry_sl := inv_fvg_reversal_candle_high + grace_ticks
+        float risk = entry_sl - entry_price
+        entry_tp := entry_price - (risk * 2)  // 2:1 RR
 
 // ============================================================================
 // BREAKER BLOCK STRATEGY - Entry Signal Detection
@@ -1421,6 +1651,21 @@ if trade_entered and strategy.position_size == 0
     bpr_fvg_invalidation_level := na
     bpr_fvg_bar_index := na
     bpr_fvg_invalidation_reason := "Trade exited"
+
+    // Delete inv_fvg_overlap_box since it's just for active setup
+    if not na(inv_fvg_overlap_box)
+        box.delete(inv_fvg_overlap_box)
+        inv_fvg_overlap_box := na
+
+    // Clear Inverted FVG state
+    inv_fvg_active := false
+    inv_fvg_is_bullish := false
+    inv_fvg_overlap_top := na
+    inv_fvg_overlap_bottom := na
+    inv_fvg_reversal_candle_high := na
+    inv_fvg_reversal_candle_low := na
+    inv_fvg_bar_index := na
+    inv_fvg_invalidation_reason := "Trade exited"
 
 // ============================================================================
 // INTRABAR TRADE CLEANUP - REMOVED
