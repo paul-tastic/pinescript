@@ -279,6 +279,8 @@ var float bpr_fvg_top = na  // Top of the FVG
 var float bpr_fvg_bottom = na  // Bottom of the FVG
 var float bpr_fvg_invalidation_level = na  // Highest/lowest of 3-candle pattern for invalidation
 var int bpr_fvg_bar_index = na  // Bar index where FVG was detected
+var float bpr_fvg_candle_high = na  // High of the candle that created the FVG (for SL)
+var float bpr_fvg_candle_low = na  // Low of the candle that created the FVG (for SL)
 var box bpr_fvg_box = na  // Yellow box around FVG
 var string bpr_fvg_invalidation_reason = ""  // Track why BPR FVG was cleared (for debugging)
 
@@ -393,6 +395,8 @@ if barstate.isnew
             bpr_fvg_bottom := na
             bpr_fvg_invalidation_level := na
             bpr_fvg_bar_index := na
+            bpr_fvg_candle_high := na
+            bpr_fvg_candle_low := na
             bpr_fvg_invalidation_reason := "9 AM reset"
 
             // Clear Inverted FVG state
@@ -898,6 +902,8 @@ if entry_signal_active
             bpr_fvg_bottom := na
             bpr_fvg_invalidation_level := na
             bpr_fvg_bar_index := na
+            bpr_fvg_candle_high := na
+            bpr_fvg_candle_low := na
             bpr_fvg_invalidation_reason := "Opposite zone reached"
 
             // Delete the BPR FVG box
@@ -913,6 +919,8 @@ if entry_signal_active
             bpr_fvg_bottom := na
             bpr_fvg_invalidation_level := na
             bpr_fvg_bar_index := na
+            bpr_fvg_candle_high := na
+            bpr_fvg_candle_low := na
             bpr_fvg_invalidation_reason := "Opposite zone reached"
 
             inv_fvg_active := false
@@ -1028,6 +1036,10 @@ if not bpr_fvg_active and not entry_signal_active and not trade_entered and not 
                 bpr_fvg_top := low  // Top of gap
                 bpr_fvg_bar_index := bar_index
 
+                // Capture the FVG candle (current candle) high/low for SL
+                bpr_fvg_candle_high := high
+                bpr_fvg_candle_low := low
+
                 // Invalidation level: highest high of the 3 candles involved
                 bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
 
@@ -1061,6 +1073,10 @@ if not bpr_fvg_active and not entry_signal_active and not trade_entered and not 
                 bpr_fvg_bottom := high  // Bottom of gap
                 bpr_fvg_bar_index := bar_index
 
+                // Capture the FVG candle (current candle) high/low for SL
+                bpr_fvg_candle_high := high
+                bpr_fvg_candle_low := low
+
                 // Invalidation level: lowest low of the 3 candles involved
                 bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
 
@@ -1088,6 +1104,8 @@ if bpr_fvg_active and not entry_signal_active
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
         bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
 
         // Delete FVG box
         if not na(bpr_fvg_box)
@@ -1112,6 +1130,8 @@ if bpr_fvg_active
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
         bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
 
         // Delete FVG box
         if not na(bpr_fvg_box)
@@ -1136,6 +1156,8 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
         bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
 
         // Delete FVG box
         if not na(bpr_fvg_box)
@@ -1473,15 +1495,15 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
         entry_is_bullish := not bpr_fvg_is_bullish  // Inverse: bullish FVG = bearish trade
 
         if bpr_fvg_is_bullish
-            // Bearish setup: Entry at bottom of FVG, SL at top (with grace ticks), TP at 2:1 RR
+            // Bearish setup: Entry at bottom of FVG, SL at HIGH of FVG candle (with grace ticks), TP at 2:1 RR
             entry_price := bpr_fvg_bottom
-            entry_sl := bpr_fvg_top + grace_ticks  // Pad SL above the top
+            entry_sl := bpr_fvg_candle_high + grace_ticks  // Pad SL above the candle high
             float risk = entry_sl - entry_price
             entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
         else
-            // Bullish setup: Entry at top of FVG, SL at bottom (with grace ticks), TP at 2:1 RR
+            // Bullish setup: Entry at top of FVG, SL at LOW of FVG candle (with grace ticks), TP at 2:1 RR
             entry_price := bpr_fvg_top
-            entry_sl := bpr_fvg_bottom - grace_ticks  // Pad SL below the bottom
+            entry_sl := bpr_fvg_candle_low - grace_ticks  // Pad SL below the candle low
             float risk = entry_price - entry_sl
             entry_tp := entry_price + (risk * 2)  // 2:1 reward to risk
 
@@ -1650,6 +1672,8 @@ if trade_entered and strategy.position_size == 0
     bpr_fvg_bottom := na
     bpr_fvg_invalidation_level := na
     bpr_fvg_bar_index := na
+    bpr_fvg_candle_high := na
+    bpr_fvg_candle_low := na
     bpr_fvg_invalidation_reason := "Trade exited"
 
     // Delete inv_fvg_overlap_box since it's just for active setup
