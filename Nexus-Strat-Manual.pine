@@ -175,7 +175,7 @@ if not prev_day_low_crossed and not na(prev_day_low) and low <= prev_day_low
 // Session level lines removed - keep it simple
 
 // ============================================================================
-// ZONE VISUALIZATION - Draw zones from 09:00 to 16:00 current day
+// ZONE VISUALIZATION - Draw zones during trading window on current day
 // ============================================================================
 // Get current time info
 int current_hour = hour(time, "America/New_York")
@@ -187,8 +187,8 @@ var box supply_zone_box = na
 var box demand_zone_box = na
 var int zone_start_bar = na
 
-// At 09:00, create new zone boxes for the day
-if current_hour == 9 and current_minute == 0 and is_new_day
+// At trading window start, create new zone boxes for the day
+if current_hour == trading_start_hour and current_minute == trading_start_minute and is_new_day
     zone_start_bar := bar_index
 
     // Delete old boxes
@@ -213,14 +213,14 @@ if current_hour == 9 and current_minute == 0 and is_new_day
                                    border_width=1,
                                    extend=extend.none)
 
-// Update zone boxes to extend to current bar (between 09:00 and 16:00)
-if show_zones and current_hour >= 9 and current_hour < 16
+// Update zone boxes to extend to current bar (within trading window)
+if show_zones and in_trading_window
     if supply_configured and not na(supply_zone_box)
         box.set_right(supply_zone_box, bar_index + 1)
     if demand_configured and not na(demand_zone_box)
         box.set_right(demand_zone_box, bar_index + 1)
-else if show_zones and current_hour == 16 and current_minute == 0
-    // Stop extending at 16:00
+else if show_zones and current_hour == trading_end_hour and current_minute == trading_end_minute
+    // Stop extending at trading window end
     if supply_configured and not na(supply_zone_box)
         box.set_right(supply_zone_box, bar_index)
     if demand_configured and not na(demand_zone_box)
