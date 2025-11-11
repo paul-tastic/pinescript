@@ -1731,11 +1731,25 @@ if eng_ob_active and active_entry_strategy != "BPR FVG"
 table.cell(debugTable, 0, 1, "Engulfing OB", text_color=color.black, bgcolor=label_bgcolor, text_size=size.normal)
 table.cell(debugTable, 1, 1, eng_status, text_color=color.black, bgcolor=eng_bgcolor, text_size=size.normal)
 
-// Entry Strategy - show which strategy triggered
+// Entry Strategy - show which strategy is active (detected or triggered)
 string entry_strategy_text = "-"
 color entry_strategy_bgcolor = value_bgcolor
 if entry_signal_active
+    // Entry signal has triggered (blue box / limit order placed)
     entry_strategy_text := active_entry_strategy
+    entry_strategy_bgcolor := entry_is_bullish ? color.new(color.blue, 50) : color.new(color.red, 50)
+else if inv_fvg_active
+    // Inverted FVG detected (purple overlap box showing)
+    entry_strategy_text := "Inverted FVG (detected)"
+    entry_strategy_bgcolor := color.new(color.purple, 60)
+else if bpr_fvg_active
+    // BPR FVG detected (yellow box showing)
+    entry_strategy_text := "BPR FVG (detected)"
+    entry_strategy_bgcolor := color.new(color.yellow, 60)
+else if eng_ob_active
+    // ENG OB detected (yellow box showing)
+    entry_strategy_text := "MSS OB (detected)"
+    entry_strategy_bgcolor := color.new(color.yellow, 60)
 table.cell(debugTable, 0, 2, "Entry Strategy", text_color=color.black, bgcolor=label_bgcolor, text_size=size.normal)
 table.cell(debugTable, 1, 2, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
 
