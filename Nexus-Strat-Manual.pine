@@ -2091,25 +2091,47 @@ if bpr_fvg_active or inv_fvg_active
     table.cell(debugTable, 1, row, bool_debug, text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
     row := row + 1
 
-    // 0b. BAR INDEX DEBUG - Shows when FVG was detected and how many bars ago
-    string bar_debug = "-"
+    // 0b. SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress
+    string setup_timeout_debug = "-"
+    color setup_timeout_bg = color.new(color.orange, 30)
     if bpr_fvg_active and not na(bpr_fvg_bar_index)
-        int bars_ago = bar_index - bpr_fvg_bar_index
-        bar_debug := "Detected at bar " + str.tostring(bpr_fvg_bar_index) + " (" + str.tostring(bars_ago) + " bars ago) | Current bar: " + str.tostring(bar_index)
+        int bars_since_detection = bar_index - bpr_fvg_bar_index
+        setup_timeout_debug := "Setup: " + str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+        // Color code: green if far from timeout, yellow if getting close, red if very close
+        if bars_since_detection >= setup_timeout_bars * 0.8
+            setup_timeout_bg := color.new(color.red, 30)
+        else if bars_since_detection >= setup_timeout_bars * 0.6
+            setup_timeout_bg := color.new(color.yellow, 30)
+        else
+            setup_timeout_bg := color.new(color.green, 30)
     else if inv_fvg_active and not na(inv_fvg_bar_index)
-        int bars_ago = bar_index - inv_fvg_bar_index
-        bar_debug := "Detected at bar " + str.tostring(inv_fvg_bar_index) + " (" + str.tostring(bars_ago) + " bars ago) | Current bar: " + str.tostring(bar_index)
-    table.cell(debugTable, 0, row, "0b. BAR INDEX", text_color=color.white, bgcolor=color.new(color.orange, 20), text_size=size.small)
-    table.cell(debugTable, 1, row, bar_debug, text_color=color.white, bgcolor=color.new(color.orange, 30), text_size=size.small)
+        int bars_since_detection = bar_index - inv_fvg_bar_index
+        setup_timeout_debug := "Setup: " + str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+        if bars_since_detection >= setup_timeout_bars * 0.8
+            setup_timeout_bg := color.new(color.red, 30)
+        else if bars_since_detection >= setup_timeout_bars * 0.6
+            setup_timeout_bg := color.new(color.yellow, 30)
+        else
+            setup_timeout_bg := color.new(color.green, 30)
+    table.cell(debugTable, 0, row, "0b. SETUP TIMEOUT", text_color=color.white, bgcolor=color.new(color.orange, 20), text_size=size.small)
+    table.cell(debugTable, 1, row, setup_timeout_debug, text_color=color.white, bgcolor=setup_timeout_bg, text_size=size.small)
     row := row + 1
 
-    // 0c. ENTRY SIGNAL BAR INDEX - Shows when entry signal triggered and how many bars ago
-    string entry_bar_debug = "-"
+    // 0c. ENTRY TIMEOUT COUNTER - Shows bars since entry signal and timeout progress
+    string entry_timeout_debug = "-"
+    color entry_timeout_bg = color.new(color.purple, 30)
     if entry_signal_active and not na(entry_signal_bar_index)
         int bars_since_entry = bar_index - entry_signal_bar_index
-        entry_bar_debug := "Entry signal at bar " + str.tostring(entry_signal_bar_index) + " (" + str.tostring(bars_since_entry) + " bars ago, timeout at " + str.tostring(entry_timeout_bars) + ")"
-    table.cell(debugTable, 0, row, "0c. ENTRY SIGNAL", text_color=color.white, bgcolor=color.new(color.purple, 20), text_size=size.small)
-    table.cell(debugTable, 1, row, entry_bar_debug, text_color=color.white, bgcolor=color.new(color.purple, 30), text_size=size.small)
+        entry_timeout_debug := "Entry: " + str.tostring(bars_since_entry) + " / " + str.tostring(entry_timeout_bars) + " bars"
+        // Color code: green if far from timeout, yellow if getting close, red if very close
+        if bars_since_entry >= entry_timeout_bars * 0.8
+            entry_timeout_bg := color.new(color.red, 30)
+        else if bars_since_entry >= entry_timeout_bars * 0.6
+            entry_timeout_bg := color.new(color.yellow, 30)
+        else
+            entry_timeout_bg := color.new(color.green, 30)
+    table.cell(debugTable, 0, row, "0c. ENTRY TIMEOUT", text_color=color.white, bgcolor=color.new(color.purple, 20), text_size=size.small)
+    table.cell(debugTable, 1, row, entry_timeout_debug, text_color=color.white, bgcolor=entry_timeout_bg, text_size=size.small)
     row := row + 1
 
     // 1. FVG/Overlap Active
