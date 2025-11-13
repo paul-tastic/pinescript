@@ -1070,6 +1070,13 @@ if supply_triggered and not na(supply_highest_high) and high == supply_highest_h
 plotshape(is_bullish_engulfing, title="Bullish Engulfing OB", style=shape.diamond, location=location.belowbar, color=color.black, size=size.tiny)
 plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamond, location=location.abovebar, color=color.black, size=size.tiny)
 
+// DEBUG: Plot bar index counter for BPR FVG (helps diagnose replay mode issues)
+// This appears as a label on the chart so you can see it update in real-time
+if bpr_fvg_active and not na(bpr_fvg_bar_index)
+    int bars_since_fvg = bar_index - bpr_fvg_bar_index
+    string debug_text = "FVG: " + str.tostring(bars_since_fvg) + "/" + str.tostring(setup_timeout_bars)
+    label.new(bar_index, high, debug_text, style=label.style_label_down, color=color.yellow, textcolor=color.black, size=size.small)
+
 // ============================================================================
 // BPR FVG DETECTION
 // ============================================================================
@@ -1188,6 +1195,20 @@ if bpr_fvg_active and not entry_signal_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
+
+// SAFETY: Clear zombie BPR FVG state (active but bar_index is na)
+if bpr_fvg_active and na(bpr_fvg_bar_index)
+    bpr_fvg_active := false
+    bpr_fvg_is_bullish := false
+    bpr_fvg_top := na
+    bpr_fvg_bottom := na
+    bpr_fvg_invalidation_level := na
+    bpr_fvg_candle_high := na
+    bpr_fvg_candle_low := na
+    bpr_fvg_invalidation_reason := "Zombie state cleared (bar_index was na)"
+    if not na(bpr_fvg_box)
+        box.delete(bpr_fvg_box)
+        bpr_fvg_box := na
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
@@ -1382,6 +1403,19 @@ if inv_fvg_active
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
+
+// SAFETY: Clear zombie Inverted FVG state (active but bar_index is na)
+if inv_fvg_active and na(inv_fvg_bar_index)
+    inv_fvg_active := false
+    inv_fvg_is_bullish := false
+    inv_fvg_overlap_top := na
+    inv_fvg_overlap_bottom := na
+    inv_fvg_reversal_candle_high := na
+    inv_fvg_reversal_candle_low := na
+    inv_fvg_invalidation_reason := "Zombie state cleared (bar_index was na)"
+    if not na(inv_fvg_overlap_box)
+        box.delete(inv_fvg_overlap_box)
+        inv_fvg_overlap_box := na
 
 // INVALIDATION: Inverted FVG timeout after N bars without entry signal
 if inv_fvg_active and not entry_signal_active and not na(inv_fvg_bar_index)
