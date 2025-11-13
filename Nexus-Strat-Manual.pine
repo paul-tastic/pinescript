@@ -41,6 +41,11 @@ use_inverted_fvg = input.bool(false, "Inverted FVG", group="Entry Strategies", t
 use_breaker_block = input.bool(false, "Breaker Block", group="Entry Strategies", tooltip="Breaker Block entry pattern")
 
 // ============================================================================
+// INPUTS - DEBUG
+// ============================================================================
+debug_mode = input.bool(false, "Debug Mode", group="Debug", tooltip="Show debug labels on chart (FVG counters, etc.)")
+
+// ============================================================================
 // ZONE DETECTION
 // ============================================================================
 // Apply clear flags - if clear is checked, treat zone as not configured
@@ -232,8 +237,8 @@ else if show_zones and current_hour == trading_end_hour and current_minute == tr
     if demand_configured and not na(demand_zone_box)
         box.set_right(demand_zone_box, bar_index)
 
-// If show_zones is disabled, delete any existing boxes
-if not show_zones
+// If show_zones is disabled OR outside trading window, delete any existing boxes
+if not show_zones or not in_trading_window
     if not na(supply_zone_box)
         box.delete(supply_zone_box)
         supply_zone_box := na
@@ -347,163 +352,87 @@ if barstate.isnew
         today_losses := 0
         today_pnl := 0.0
 
-    // At 09:00 NY time, reset deepest zone penetration tracking for the new trading day
-    // Also invalidate any active setups from previous day
-    if current_hour == 9 and current_minute == 0
-        demand_deepest_ever := na
-        supply_deepest_ever := na
-
-        // Invalidate any active setups from previous day
-        if eng_ob_active or entry_signal_active
-            // Close any open positions and cancel pending orders
-            strategy.close_all()
-            strategy.cancel_all()
-
-            eng_ob_active := false
-            eng_ob_is_bullish := false
-            eng_ob_deepest_level := na
-            eng_ob_bar_index := na
-            eng_ob_candle_high := na
-            eng_ob_candle_low := na
-            target_fractal_level_mss := na
-
-            // Clear entry signals (all strategies)
-            entry_signal_active := false
-            active_entry_strategy := ""
-            entry_price := na
-            entry_tp := na
-            entry_sl := na
-
-            // Reset trade flags
-            trade_entered := false
-            order_placed := false
-            order_placed_bar := -1
-
-            // Delete yellow box
-            if not na(eng_ob_box)
-                box.delete(eng_ob_box)
-                eng_ob_box := na
-
-            // Delete TP/SL boxes
-            if not na(tp_box)
-                box.delete(tp_box)
-                tp_box := na
-            if not na(sl_box)
-                box.delete(sl_box)
-                sl_box := na
-
-            // Clear BPR FVG state
-            if not na(bpr_fvg_box)
-                box.delete(bpr_fvg_box)
-                bpr_fvg_box := na
-            bpr_fvg_active := false
-            bpr_fvg_is_bullish := false
-            bpr_fvg_top := na
-            bpr_fvg_bottom := na
-            bpr_fvg_invalidation_level := na
-            bpr_fvg_bar_index := na
-            bpr_fvg_candle_high := na
-            bpr_fvg_candle_low := na
-            bpr_fvg_invalidation_reason := "9 AM reset"
-
-            // Clear Inverted FVG state
-            if not na(inv_fvg_overlap_box)
-                box.delete(inv_fvg_overlap_box)
-                inv_fvg_overlap_box := na
-            inv_fvg_active := false
-            inv_fvg_is_bullish := false
-            inv_fvg_overlap_top := na
-            inv_fvg_overlap_bottom := na
-            inv_fvg_reversal_candle_high := na
-            inv_fvg_reversal_candle_low := na
-            inv_fvg_bar_index := na
-            inv_fvg_invalidation_reason := "9 AM reset"
-
-    // At trading window start time (default 09:30 NY time), reset all setup state for clean start
-    // This ensures no stale setups from pre-market or previous sessions persist into trading window
-    if at_trading_start
-        // Invalidate any active setups from before trading window
-        if eng_ob_active or entry_signal_active or bpr_fvg_active or inv_fvg_active
-            // Close any open positions and cancel pending orders
-            strategy.close_all()
-            strategy.cancel_all()
-
-            eng_ob_active := false
-            eng_ob_is_bullish := false
-            eng_ob_deepest_level := na
-            eng_ob_bar_index := na
-            eng_ob_candle_high := na
-            eng_ob_candle_low := na
-            target_fractal_level_mss := na
-
-            // Clear entry signals (all strategies)
-            entry_signal_active := false
-            active_entry_strategy := ""
-            entry_price := na
-            entry_tp := na
-            entry_sl := na
-            entry_signal_bar_index := na
-
-            // Reset trade flags
-            trade_entered := false
-            order_placed := false
-            order_placed_bar := -1
-
-            // Delete yellow box
-            if not na(eng_ob_box)
-                box.delete(eng_ob_box)
-                eng_ob_box := na
-
-            // Delete TP/SL boxes
-            if not na(tp_box)
-                box.delete(tp_box)
-                tp_box := na
-            if not na(sl_box)
-                box.delete(sl_box)
-                sl_box := na
-
-            // Clear BPR FVG state
-            if not na(bpr_fvg_box)
-                box.delete(bpr_fvg_box)
-                bpr_fvg_box := na
-            bpr_fvg_active := false
-            bpr_fvg_is_bullish := false
-            bpr_fvg_top := na
-            bpr_fvg_bottom := na
-            bpr_fvg_invalidation_level := na
-            bpr_fvg_bar_index := na
-            bpr_fvg_candle_high := na
-            bpr_fvg_candle_low := na
-            bpr_fvg_invalidation_reason := "Trading start reset"
-
-            // Clear Inverted FVG state
-            if not na(inv_fvg_overlap_box)
-                box.delete(inv_fvg_overlap_box)
-                inv_fvg_overlap_box := na
-            inv_fvg_active := false
-            inv_fvg_is_bullish := false
-            inv_fvg_overlap_top := na
-            inv_fvg_overlap_bottom := na
-            inv_fvg_reversal_candle_high := na
-            inv_fvg_reversal_candle_low := na
-            inv_fvg_bar_index := na
-            inv_fvg_invalidation_reason := "Trading start reset"
-
-    // At 20:00 (start of Asian session), clear all persisted boxes from the day
-    if current_hour == 20
-        // Delete all TP boxes - only if array has elements
-        if array.size(daily_tp_boxes) > 0
-            for i = 0 to array.size(daily_tp_boxes) - 1
-                box.delete(array.get(daily_tp_boxes, i))
-        array.clear(daily_tp_boxes)
-
-        // Delete all SL boxes - only if array has elements
-        if array.size(daily_sl_boxes) > 0
-            for i = 0 to array.size(daily_sl_boxes) - 1
-                box.delete(array.get(daily_sl_boxes, i))
-        array.clear(daily_sl_boxes)
-
     last_trade_day := current_day
+
+// DEBUG: Track if clearing logic actually executes
+// Reset to NO on every tick, then set to YES only when clearing runs
+var string clearing_logic_ran = "NO - not executed"
+clearing_logic_ran := "NO - not executed"
+
+// CLEAR ALL SETUPS OUTSIDE TRADING WINDOW
+// SIMPLIFIED: If we're outside trading hours, nuke EVERYTHING unconditionally
+// No checks, no conditions - just clear it all
+// IMPORTANT: This runs on EVERY TICK (not just barstate.isnew) for replay mode compatibility
+if not in_trading_window
+    // DEBUG: Mark that clearing logic is running
+    clearing_logic_ran := "YES - EXECUTED!"
+
+    // Close any open positions and cancel pending orders
+    strategy.close_all()
+    strategy.cancel_all()
+
+    // Clear ENG OB state
+    eng_ob_active := false
+    eng_ob_is_bullish := false
+    eng_ob_deepest_level := na
+    eng_ob_bar_index := na
+    eng_ob_candle_high := na
+    eng_ob_candle_low := na
+    target_fractal_level_mss := na
+
+    // Clear entry signals (all strategies)
+    entry_signal_active := false
+    active_entry_strategy := ""
+    entry_is_bullish := false
+    entry_price := na
+    entry_tp := na
+    entry_sl := na
+    entry_signal_bar_index := na
+
+    // Reset trade flags
+    trade_entered := false
+    order_placed := false
+    order_placed_bar := -1
+
+    // Delete yellow box
+    if not na(eng_ob_box)
+        box.delete(eng_ob_box)
+        eng_ob_box := na
+
+    // Delete TP/SL boxes
+    if not na(tp_box)
+        box.delete(tp_box)
+        tp_box := na
+    if not na(sl_box)
+        box.delete(sl_box)
+        sl_box := na
+
+    // Clear BPR FVG state
+    if not na(bpr_fvg_box)
+        box.delete(bpr_fvg_box)
+        bpr_fvg_box := na
+    bpr_fvg_active := false
+    bpr_fvg_is_bullish := false
+    bpr_fvg_top := na
+    bpr_fvg_bottom := na
+    bpr_fvg_invalidation_level := na
+    bpr_fvg_bar_index := na
+    bpr_fvg_candle_high := na
+    bpr_fvg_candle_low := na
+    bpr_fvg_invalidation_reason := "Outside trading window"
+
+    // Clear Inverted FVG state
+    if not na(inv_fvg_overlap_box)
+        box.delete(inv_fvg_overlap_box)
+        inv_fvg_overlap_box := na
+    inv_fvg_active := false
+    inv_fvg_is_bullish := false
+    inv_fvg_overlap_top := na
+    inv_fvg_overlap_bottom := na
+    inv_fvg_reversal_candle_high := na
+    inv_fvg_reversal_candle_low := na
+    inv_fvg_bar_index := na
+    inv_fvg_invalidation_reason := "Outside trading window"
 
 // Track when trade enters
 if entry_signal_active and not trade_entered and strategy.position_size != 0
@@ -714,6 +643,31 @@ if eng_ob_active and not na(eng_ob_bar_index)
         // Reset trade flag
         trade_entered := false
 
+        // Clear BPR FVG state (may be active alongside ENG OB)
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // Clear Inverted FVG state (may be active alongside ENG OB)
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
         // Delete yellow box
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
@@ -757,6 +711,31 @@ if eng_ob_active
         entry_tp := na
         entry_sl := na
 
+        // Clear BPR FVG state (may be active alongside ENG OB)
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // Clear Inverted FVG state (may be active alongside ENG OB)
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
         // Delete yellow box
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
@@ -769,6 +748,89 @@ if eng_ob_active
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+
+// INVALIDATION: Clear BPR FVG when zones are disabled (INDEPENDENT of ENG OB)
+if bpr_fvg_active
+    bool should_invalidate_bpr = false
+
+    if bpr_fvg_is_bullish and clear_supply
+        // Bullish FVG (bearish trade) invalidated by disabling supply zone
+        should_invalidate_bpr := true
+    else if not bpr_fvg_is_bullish and clear_demand
+        // Bearish FVG (bullish trade) invalidated by disabling demand zone
+        should_invalidate_bpr := true
+
+    if should_invalidate_bpr
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        bpr_fvg_invalidation_reason := "Zone disabled"
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // If BPR FVG had an active entry signal, clear it
+        if entry_signal_active and active_entry_strategy == "BPR FVG"
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+            order_placed := false
+
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
+
+// INVALIDATION: Clear Inverted FVG when zones are disabled (INDEPENDENT of ENG OB)
+if inv_fvg_active
+    bool should_invalidate_inv = false
+
+    if inv_fvg_is_bullish and clear_demand
+        // Bullish Inverted FVG invalidated by disabling demand zone
+        should_invalidate_inv := true
+    else if not inv_fvg_is_bullish and clear_supply
+        // Bearish Inverted FVG invalidated by disabling supply zone
+        should_invalidate_inv := true
+
+    if should_invalidate_inv
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        inv_fvg_invalidation_reason := "Zone disabled"
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+        // If Inverted FVG had an active entry signal, clear it
+        if entry_signal_active and active_entry_strategy == "Inverted FVG"
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+            order_placed := false
+
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
 
 // INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
 // Bullish setup (from demand) invalidated by entering supply zone
@@ -790,6 +852,31 @@ if barstate.isnew and was_outside_zones
         entry_price := na
         entry_tp := na
         entry_sl := na
+
+        // Clear BPR FVG state (may be active alongside ENG OB)
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // Clear Inverted FVG state (may be active alongside ENG OB)
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
 
         // Delete yellow box
         if not na(eng_ob_box)
@@ -821,6 +908,31 @@ if barstate.isnew and was_outside_zones
         entry_tp := na
         entry_sl := na
 
+        // Clear BPR FVG state (may be active alongside ENG OB)
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // Clear Inverted FVG state (may be active alongside ENG OB)
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
         // Delete yellow box
         if not na(eng_ob_box)
             box.delete(eng_ob_box)
@@ -834,8 +946,92 @@ if barstate.isnew and was_outside_zones
             box.delete(sl_box)
             sl_box := na
 
+// INVALIDATION: Clear BPR FVG when entering OPPOSITE zone (INDEPENDENT of ENG OB)
+if barstate.isnew and was_outside_zones and bpr_fvg_active
+    bool should_invalidate_bpr_zone = false
+
+    if bpr_fvg_is_bullish and in_demand
+        // Bullish FVG (bearish trade) invalidated by entering demand zone
+        should_invalidate_bpr_zone := true
+    else if not bpr_fvg_is_bullish and in_supply
+        // Bearish FVG (bullish trade) invalidated by entering supply zone
+        should_invalidate_bpr_zone := true
+
+    if should_invalidate_bpr_zone
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        bpr_fvg_invalidation_reason := "Entered opposite zone"
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // If BPR FVG had an active entry signal, clear it
+        if entry_signal_active and active_entry_strategy == "BPR FVG"
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+            order_placed := false
+
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
+
+// INVALIDATION: Clear Inverted FVG when entering OPPOSITE zone (INDEPENDENT of ENG OB)
+if barstate.isnew and was_outside_zones and inv_fvg_active
+    bool should_invalidate_inv_zone = false
+
+    if inv_fvg_is_bullish and in_supply
+        // Bullish Inverted FVG invalidated by entering supply zone
+        should_invalidate_inv_zone := true
+    else if not inv_fvg_is_bullish and in_demand
+        // Bearish Inverted FVG invalidated by entering demand zone
+        should_invalidate_inv_zone := true
+
+    if should_invalidate_inv_zone
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        inv_fvg_invalidation_reason := "Entered opposite zone"
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+        // If Inverted FVG had an active entry signal, clear it
+        if entry_signal_active and active_entry_strategy == "Inverted FVG"
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+            order_placed := false
+
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
+
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
-if is_bullish_engulfing
+// IMPORTANT: Only activate if within trading window (prevents zombie states in replay mode)
+if is_bullish_engulfing and in_trading_window
     eng_ob_active := true
     eng_ob_is_bullish := true
     eng_ob_deepest_level := demand_lowest_low
@@ -854,7 +1050,7 @@ if is_bullish_engulfing
         eng_ob_candle_high := high[1]
         eng_ob_candle_low := low[1]
 
-else if is_bearish_engulfing
+else if is_bearish_engulfing and in_trading_window
     eng_ob_active := true
     eng_ob_is_bullish := false
     eng_ob_deepest_level := supply_highest_high
@@ -1072,13 +1268,13 @@ plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamon
 
 // DEBUG: Plot bar index counter for BPR FVG (helps diagnose replay mode issues)
 // This appears as a label on the chart so you can see it update in real-time
-if bpr_fvg_active and not na(bpr_fvg_bar_index)
+if debug_mode and bpr_fvg_active and not na(bpr_fvg_bar_index)
     int bars_since_fvg = bar_index - bpr_fvg_bar_index
     string debug_text = "FVG: " + str.tostring(bars_since_fvg) + "/" + str.tostring(setup_timeout_bars) + "\nbar=" + str.tostring(bar_index) + " fvg_bar=" + str.tostring(bpr_fvg_bar_index)
     label.new(bar_index, high, debug_text, style=label.style_label_down, color=color.yellow, textcolor=color.black, size=size.small)
 
 // DEBUG: Show when NEW FVG is detected
-if not bpr_fvg_active[1] and bpr_fvg_active
+if debug_mode and not bpr_fvg_active[1] and bpr_fvg_active
     label.new(bar_index, low, "NEW FVG", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
 
 // ============================================================================
@@ -1093,7 +1289,7 @@ if not bpr_fvg_active[1] and bpr_fvg_active
 // Check if ANY of the 3 FVG candles touched the zone
 // Don't detect new FVGs when we already have an active entry signal, active trade, or within cooldown
 bool in_cooldown = last_exit_bar >= 0 and (bar_index - last_exit_bar) < cooldown_bars
-if not bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and bar_index >= 2 and in_trading_window and (in_supply or in_demand)
+if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and bar_index >= 2 and in_trading_window and (in_supply or in_demand)
     // Bearish setup: detect bullish FVG in supply zone
     // Check if current candle OR previous 2 candles touched supply zone
     bool supply_touched_by_fvg_candles = false
@@ -1199,20 +1395,6 @@ if bpr_fvg_active and not entry_signal_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
-
-// SAFETY: Clear zombie BPR FVG state (active but bar_index is na)
-if bpr_fvg_active and na(bpr_fvg_bar_index)
-    bpr_fvg_active := false
-    bpr_fvg_is_bullish := false
-    bpr_fvg_top := na
-    bpr_fvg_bottom := na
-    bpr_fvg_invalidation_level := na
-    bpr_fvg_candle_high := na
-    bpr_fvg_candle_low := na
-    bpr_fvg_invalidation_reason := "Zombie state cleared (bar_index was na)"
-    if not na(bpr_fvg_box)
-        box.delete(bpr_fvg_box)
-        bpr_fvg_box := na
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
@@ -1407,19 +1589,6 @@ if inv_fvg_active
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
-
-// SAFETY: Clear zombie Inverted FVG state (active but bar_index is na)
-if inv_fvg_active and na(inv_fvg_bar_index)
-    inv_fvg_active := false
-    inv_fvg_is_bullish := false
-    inv_fvg_overlap_top := na
-    inv_fvg_overlap_bottom := na
-    inv_fvg_reversal_candle_high := na
-    inv_fvg_reversal_candle_low := na
-    inv_fvg_invalidation_reason := "Zombie state cleared (bar_index was na)"
-    if not na(inv_fvg_overlap_box)
-        box.delete(inv_fvg_overlap_box)
-        inv_fvg_overlap_box := na
 
 // INVALIDATION: Inverted FVG timeout after N bars without entry signal
 if inv_fvg_active and not entry_signal_active and not na(inv_fvg_bar_index)
@@ -1933,11 +2102,129 @@ if trade_entered and not na(tp_box) and not na(sl_box)
     box.set_right(sl_box, bar_index + 1)
 
 // ============================================================================
+// COMPREHENSIVE ZOMBIE STATE DETECTION - Run right before debug table
+// ============================================================================
+// This catches any inconsistent state where bpr_fvg_active is TRUE but should be FALSE
+// Common zombie causes:
+// 1. bpr_fvg_active = TRUE but not in supply/demand zone AND not in trading window
+// 2. bpr_fvg_active = TRUE but zone was disabled (clear_supply or clear_demand)
+// 3. bpr_fvg_active = TRUE but bpr_fvg_bar_index is na
+// 4. bpr_fvg_active = TRUE but exceeded timeout
+
+if bpr_fvg_active
+    bool should_clear_zombie = false
+    string zombie_reason = ""
+
+    // Check 6: Inconsistent state - bpr_fvg_active = TRUE but conditions don't support it
+    // This catches replay mode zombies where the state is stuck from a previous bar
+    // CRITICAL: Run this check FIRST before timeout/zone checks, as it's the most specific zombie detector
+    if not entry_signal_active and not trade_entered
+        // BPR FVG should only be active if we're CURRENTLY IN the zone that spawned it
+        // in_supply/in_demand check if current bar's high/low actually touch the zone range
+        bool in_correct_zone = (bpr_fvg_is_bullish and in_supply) or (not bpr_fvg_is_bullish and in_demand)
+        if not in_correct_zone
+            should_clear_zombie := true
+            zombie_reason := "not in spawning zone"
+
+    // Check 1: bar_index is na (already caught by safety check, but double-check)
+    if not should_clear_zombie and na(bpr_fvg_bar_index)
+        should_clear_zombie := true
+        zombie_reason := "bar_index is na"
+
+    // Check 2: Zone disabled
+    if not should_clear_zombie and ((bpr_fvg_is_bullish and clear_supply) or (not bpr_fvg_is_bullish and clear_demand))
+        should_clear_zombie := true
+        zombie_reason := "zone disabled"
+
+    // Check 3: Timeout exceeded
+    if not should_clear_zombie and not entry_signal_active and not na(bpr_fvg_bar_index)
+        int bars_since_detect = bar_index - bpr_fvg_bar_index
+        if bars_since_detect >= setup_timeout_bars
+            should_clear_zombie := true
+            zombie_reason := "timeout (" + str.tostring(bars_since_detect) + " bars)"
+
+    // Check 4: Not in zone AND not in trading window (stale state from previous session)
+    if not should_clear_zombie and not in_supply and not in_demand and not in_trading_window
+        should_clear_zombie := true
+        zombie_reason := "not in zone and not in window"
+
+    // Check 5: Entered opposite zone (fresh entry after being outside both zones)
+    if not should_clear_zombie and barstate.isnew and was_outside_zones
+        if (bpr_fvg_is_bullish and in_demand) or (not bpr_fvg_is_bullish and in_supply)
+            should_clear_zombie := true
+            zombie_reason := "entered opposite zone"
+
+    if should_clear_zombie
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        bpr_fvg_invalidation_reason := "ZOMBIE CLEARED: " + zombie_reason
+
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+// Same zombie detection for Inverted FVG
+if inv_fvg_active
+    bool should_clear_inv_zombie = false
+    string inv_zombie_reason = ""
+
+    // Check 1: bar_index is na
+    if na(inv_fvg_bar_index)
+        should_clear_inv_zombie := true
+        inv_zombie_reason := "bar_index is na"
+
+    // Check 2: Zone disabled
+    else if (inv_fvg_is_bullish and clear_demand) or (not inv_fvg_is_bullish and clear_supply)
+        should_clear_inv_zombie := true
+        inv_zombie_reason := "zone disabled"
+
+    // Check 3: Timeout exceeded
+    else if not entry_signal_active and not na(inv_fvg_bar_index)
+        int bars_since_inv_detect = bar_index - inv_fvg_bar_index
+        if bars_since_inv_detect >= setup_timeout_bars
+            should_clear_inv_zombie := true
+            inv_zombie_reason := "timeout (" + str.tostring(bars_since_inv_detect) + " bars)"
+
+    // Check 4: Not in zone AND not in trading window
+    else if not in_supply and not in_demand and not in_trading_window
+        should_clear_inv_zombie := true
+        inv_zombie_reason := "not in zone and not in window"
+
+    // Check 5: Entered opposite zone
+    else if barstate.isnew and was_outside_zones
+        if (inv_fvg_is_bullish and in_supply) or (not inv_fvg_is_bullish and in_demand)
+            should_clear_inv_zombie := true
+            inv_zombie_reason := "entered opposite zone"
+
+    if should_clear_inv_zombie
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        inv_fvg_bar_index := na
+        inv_fvg_invalidation_reason := "ZOMBIE CLEARED: " + inv_zombie_reason
+
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+// ============================================================================
 // DEBUG TABLE - DYNAMIC (expands based on active setup)
 // ============================================================================
 // Calculate max rows needed (will adjust dynamically)
 var int MAX_DEBUG_ROWS = 50
 var table debugTable = table.new(position.top_right, 2, MAX_DEBUG_ROWS, border_width=1)
+
+// Clear the table on each bar to remove stale data
+table.clear(debugTable, 0, 0, 1, MAX_DEBUG_ROWS - 1)
 
 // Initialize row counter for dynamic table
 var int row = 0
@@ -1950,6 +2237,12 @@ color value_bgcolor = color.new(color.white, 0)   // Pure white background for v
 // ============================================================================
 // BASE TABLE (ALWAYS VISIBLE)
 // ============================================================================
+
+// CLEARING LOGIC DEBUG - Show if clearing logic actually executed (AT THE TOP for visibility)
+color clearing_ran_bg = clearing_logic_ran == "YES - EXECUTED!" ? color.new(color.red, 0) : color.new(color.green, 30)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Clearing Ran?", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, clearing_logic_ran, text_color=color.white, bgcolor=clearing_ran_bg, text_size=size.small)
+row := row + 1
 
 // Determine AOI status based on flow rules
 string aoi_status = "-"
@@ -1976,7 +2269,7 @@ else
     value_bgcolor := color.new(color.gray, 80)
 
 string padded_status = aoi_status == "-" ? "  -   " : aoi_status
-table.cell(debugTable, 0, row, "AOI Status", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". AOI Status", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
 table.cell(debugTable, 1, row, padded_status, text_color=color.black, bgcolor=value_bgcolor, text_size=size.normal)
 row := row + 1
 
@@ -1995,7 +2288,7 @@ else if bpr_fvg_active
 else if eng_ob_active
     entry_strategy_text := "MSS OB (detected)"
     entry_strategy_bgcolor := color.new(color.yellow, 60)
-table.cell(debugTable, 0, row, "Entry Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
 table.cell(debugTable, 1, row, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
 row := row + 1
 
@@ -2003,14 +2296,54 @@ row := row + 1
 string entry_tp_sl_text = "-"
 if entry_signal_active and not na(entry_price) and not na(entry_tp) and not na(entry_sl)
     entry_tp_sl_text := "Entry: " + str.tostring(entry_price, format.mintick) + " | TP: " + str.tostring(entry_tp, format.mintick) + " | SL: " + str.tostring(entry_sl, format.mintick)
-table.cell(debugTable, 0, row, "Entry/TP/SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry/TP/SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, entry_tp_sl_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
 // Position Size
 string pos_size = str.tostring(strategy.position_size)
-table.cell(debugTable, 0, row, "Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, pos_size, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Current bar_index (helps diagnose if bar_index is incrementing)
+string bar_index_text = str.tostring(bar_index)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Current bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, bar_index_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Current price
+string current_price_text = str.tostring(close, format.mintick)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Current Price", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, current_price_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Trading Window status
+string trading_window_text = in_trading_window ? "✓ IN" : "✗ OUT"
+color trading_window_bg = in_trading_window ? color.new(color.green, 0) : color.new(color.red, 0)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trading Window", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, trading_window_text, text_color=color.white, bgcolor=trading_window_bg, text_size=size.small)
+row := row + 1
+
+// ENG OB Active (raw boolean debug)
+string eng_active_text = str.tostring(eng_ob_active)
+color eng_active_bg = eng_ob_active ? color.new(color.red, 0) : color.new(color.green, 30)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". eng_ob_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, eng_active_text, text_color=color.white, bgcolor=eng_active_bg, text_size=size.small)
+row := row + 1
+
+// is_bullish_engulfing (raw boolean debug)
+string bullish_eng_text = str.tostring(is_bullish_engulfing)
+color bullish_eng_bg = is_bullish_engulfing ? color.new(color.red, 0) : color.new(color.green, 30)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". is_bullish_engulfing", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.white, bgcolor=bullish_eng_bg, text_size=size.small)
+row := row + 1
+
+// is_bearish_engulfing (raw boolean debug)
+string bearish_eng_text = str.tostring(is_bearish_engulfing)
+color bearish_eng_bg = is_bearish_engulfing ? color.new(color.red, 0) : color.new(color.green, 30)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". is_bearish_engulfing", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.white, bgcolor=bearish_eng_bg, text_size=size.small)
 row := row + 1
 
 // Cooldown status
@@ -2019,7 +2352,7 @@ if last_exit_bar >= 0
     int bars_since_exit = bar_index - last_exit_bar
     cooldown_text := cooldown_text + " (" + str.tostring(bars_since_exit) + " bars)"
 color cooldown_bg = in_cooldown ? color.new(color.red, 0) : color.new(color.green, 0)
-table.cell(debugTable, 0, row, "Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, cooldown_text, text_color=color.white, bgcolor=cooldown_bg, text_size=size.small)
 row := row + 1
 
@@ -2029,7 +2362,7 @@ if clear_supply
     supply_zone := "DISABLED"
 else if supply_configured
     supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, row, "Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, supply_zone, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
@@ -2040,7 +2373,7 @@ if clear_demand
 else if demand_configured
     demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
     demand_zone_bgcolor := color.new(color.blue, 0)
-table.cell(debugTable, 0, row, "Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, demand_zone, text_color=color.white, bgcolor=demand_zone_bgcolor, text_size=size.small)
 row := row + 1
 
@@ -2048,14 +2381,14 @@ row := row + 1
 string supply_deepest = "-"
 if not na(supply_deepest_ever)
     supply_deepest := str.tostring(supply_deepest_ever, format.mintick)
-table.cell(debugTable, 0, row, "Supply Deepest", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Supply Deepest", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, supply_deepest, text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 row := row + 1
 
 string demand_deepest = "-"
 if not na(demand_deepest_ever)
     demand_deepest := str.tostring(demand_deepest_ever, format.mintick)
-table.cell(debugTable, 0, row, "Demand Deepest", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Deepest", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, demand_deepest, text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 row := row + 1
 
@@ -2139,19 +2472,30 @@ row := row + 1
 // row := row + 1
 
 // ============================================================================
-// MSS OB SPECIFIC (only when eng_ob_active)
+// MSS OB SPECIFIC (only when eng_ob_active AND bar_index is valid)
 // ============================================================================
-if eng_ob_active
+if eng_ob_active and not na(eng_ob_bar_index)
     // Divider
     color eng_divider_color = color.new(color.orange, 0)
-    table.cell(debugTable, 0, row, "MSS OB DEBUG", text_color=color.black, bgcolor=eng_divider_color, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS OB DEBUG", text_color=color.black, bgcolor=eng_divider_color, text_size=size.small)
     table.cell(debugTable, 1, row, "", text_color=color.black, bgcolor=eng_divider_color, text_size=size.small)
+    row := row + 1
+
+    // DIAGNOSTIC: What are the ACTUAL values when this section renders?
+    string diagnostic_active = "active=" + str.tostring(eng_ob_active)
+    string diagnostic_bar = "ob_bar=" + (na(eng_ob_bar_index) ? "na" : str.tostring(eng_ob_bar_index))
+    string diagnostic_current = "cur=" + str.tostring(bar_index)
+    string diagnostic_window = "in_window=" + str.tostring(in_trading_window)
+    string diagnostic_new = "new=" + str.tostring(barstate.isnew)
+    string diagnostic_all = diagnostic_active + " | " + diagnostic_bar + " | " + diagnostic_current + " | " + diagnostic_window + " | " + diagnostic_new
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.purple, 0), text_size=size.small)
+    table.cell(debugTable, 1, row, diagnostic_all, text_color=color.white, bgcolor=color.new(color.purple, 0), text_size=size.small)
     row := row + 1
 
     // Engulfing OB Status
     string eng_status = "✓"
     color eng_bgcolor = value_bgcolor
-    table.cell(debugTable, 0, row, "Engulfing OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Engulfing OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, eng_status, text_color=color.black, bgcolor=eng_bgcolor, text_size=size.small)
     row := row + 1
 
@@ -2162,8 +2506,45 @@ if eng_ob_active
             fractal_level := str.tostring(target_fractal_level_mss, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
         else
             fractal_level := "SEARCHING"
-    table.cell(debugTable, 0, row, "MSS Fractal", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS Fractal", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, fractal_level, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+    row := row + 1
+
+    // ENG OB Bar Index (shows where the ENG OB candle is)
+    string eng_bar_text = na(eng_ob_bar_index) ? "na" : str.tostring(eng_ob_bar_index)
+    if not na(eng_ob_bar_index)
+        int bars_ago = bar_index - eng_ob_bar_index
+        // EXPLICIT DEBUG: Show the actual calculation
+        eng_bar_text := eng_bar_text + " | cur=" + str.tostring(bar_index) + " | diff=" + str.tostring(bars_ago)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB Bar", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, eng_bar_text, text_color=color.black, bgcolor=color.new(color.yellow, 0), text_size=size.small)
+    row := row + 1
+
+    // Should Invalidate Timeout (shows if timeout logic would fire)
+    // Recalculate the timeout logic here for display
+    bool should_invalidate_timeout_display = false
+    string timeout_reason_display = "-"
+    if not na(eng_ob_bar_index)
+        if not trade_entered
+            int bars_since_setup = bar_index - eng_ob_bar_index
+            if bars_since_setup >= max_setup_bars
+                should_invalidate_timeout_display := true
+                timeout_reason_display := "Max bars (" + str.tostring(bars_since_setup) + "/" + str.tostring(max_setup_bars) + ")"
+
+        int current_hour = hour(time, "America/New_York")
+        int current_minute = minute(time, "America/New_York")
+        int current_time_mins = current_hour * 60 + current_minute
+        int end_time_mins = trading_end_hour * 60 + trading_end_minute
+
+        if current_time_mins >= end_time_mins
+            should_invalidate_timeout_display := true
+            string end_time_str = str.tostring(trading_end_hour) + ":" + (trading_end_minute < 10 ? "0" : "") + str.tostring(trading_end_minute)
+            timeout_reason_display := timeout_reason_display == "-" ? end_time_str + " NY time" : timeout_reason_display + " + " + end_time_str
+
+    string timeout_text = should_invalidate_timeout_display ? "YES: " + timeout_reason_display : "NO"
+    color timeout_bg = should_invalidate_timeout_display ? color.new(color.red, 0) : color.new(color.green, 30)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Should Timeout", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, timeout_text, text_color=color.white, bgcolor=timeout_bg, text_size=size.small)
     row := row + 1
 
 // ============================================================================
@@ -2173,7 +2554,7 @@ if bpr_fvg_active or inv_fvg_active
     // Divider
     color fvg_divider_color = bpr_fvg_active ? color.new(color.yellow, 0) : color.new(color.purple, 0)
     string fvg_title = bpr_fvg_active ? "BPR FVG DEBUG" : "INVERTED FVG DEBUG"
-    table.cell(debugTable, 0, row, fvg_title, text_color=color.black, bgcolor=fvg_divider_color, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". " + fvg_title, text_color=color.black, bgcolor=fvg_divider_color, text_size=size.small)
     table.cell(debugTable, 1, row, "", text_color=color.black, bgcolor=fvg_divider_color, text_size=size.small)
     row := row + 1
 
@@ -2188,63 +2569,131 @@ if bpr_fvg_active or inv_fvg_active
     color invalid_color = fvg_trade_is_bullish ? color.new(color.red, 0) : color.new(color.green, 0)
     color neutral_color = color.new(color.gray, 30)
 
-    // 0. RAW BOOLEAN DEBUG - Shows the actual variable states
-    string fvg_bar_index_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
-    string bool_debug = "bpr_fvg_active=" + str.tostring(bpr_fvg_active) + " | entry_signal_active=" + str.tostring(entry_signal_active) + " | trade_entered=" + str.tostring(trade_entered) + " | order_placed=" + str.tostring(order_placed) + " | bpr_fvg_bar_index=" + fvg_bar_index_str + " | bar_index=" + str.tostring(bar_index)
-    table.cell(debugTable, 0, row, "0. BOOL DEBUG", text_color=color.white, bgcolor=color.new(color.red, 20), text_size=size.small)
-    table.cell(debugTable, 1, row, bool_debug, text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    // RAW BOOLEAN DEBUG - Shows the actual variable states (ALWAYS VISIBLE for zombie diagnosis)
+    // Header row
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BOOL DEBUG", text_color=color.white, bgcolor=color.new(color.red, 20), text_size=size.small)
+    table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.red, 20), text_size=size.small)
     row := row + 1
 
-    // 0b. SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress
+    // bpr_fvg_active
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    color bpr_active_bg = bpr_fvg_active ? color.new(color.red, 0) : color.new(color.green, 30)
+    table.cell(debugTable, 1, row, str.tostring(bpr_fvg_active), text_color=color.white, bgcolor=bpr_active_bg, text_size=size.small)
+    row := row + 1
+
+    // inv_fvg_active
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". inv_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    color inv_active_bg = inv_fvg_active ? color.new(color.red, 0) : color.new(color.green, 30)
+    table.cell(debugTable, 1, row, str.tostring(inv_fvg_active), text_color=color.white, bgcolor=inv_active_bg, text_size=size.small)
+    row := row + 1
+
+    // entry_signal_active
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". entry_signal_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, str.tostring(entry_signal_active), text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // trade_entered
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". trade_entered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, str.tostring(trade_entered), text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // order_placed
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". order_placed", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, str.tostring(order_placed), text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // bpr_fvg_bar_index
+    string fvg_bar_index_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, fvg_bar_index_str, text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // bar_index
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, str.tostring(bar_index), text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // Bars since BPR FVG was last set to true (helps debug zombie states)
+    string bars_since_active = "never"
+    if not na(bpr_fvg_bar_index)
+        int bars_ago = bar_index - bpr_fvg_bar_index
+        bars_since_active := str.tostring(bars_ago) + " bars ago"
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bars since detect", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, bars_since_active, text_color=color.white, bgcolor=color.new(color.red, 30), text_size=size.small)
+    row := row + 1
+
+    // BARS BACK - Shows how long ago FVG was detected
+    string bars_back_text = "NEVER"
+    color bars_back_bg = color.new(color.gray, 30)
+    if not na(bpr_fvg_bar_index)
+        int bars_back = bar_index - bpr_fvg_bar_index
+        bars_back_text := str.tostring(bars_back) + " bars ago"
+        // Red if zombie (bar_index set but not active)
+        bars_back_bg := bpr_fvg_active ? color.new(color.orange, 30) : color.new(color.red, 0)
+    else if not na(inv_fvg_bar_index)
+        int bars_back = bar_index - inv_fvg_bar_index
+        bars_back_text := str.tostring(bars_back) + " bars ago"
+        bars_back_bg := inv_fvg_active ? color.new(color.orange, 30) : color.new(color.red, 0)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BARS BACK", text_color=color.white, bgcolor=color.new(color.gray, 20), text_size=size.small)
+    table.cell(debugTable, 1, row, bars_back_text, text_color=color.white, bgcolor=bars_back_bg, text_size=size.small)
+    row := row + 1
+
+    // SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress
     string setup_timeout_debug = "-"
     color setup_timeout_bg = color.new(color.orange, 30)
-    if bpr_fvg_active and not na(bpr_fvg_bar_index)
+    if not na(bpr_fvg_bar_index)
         int bars_since_detection = bar_index - bpr_fvg_bar_index
-        setup_timeout_debug := "Setup: " + str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
-        // Color code: green if far from timeout, yellow if getting close, red if very close
-        if bars_since_detection >= setup_timeout_bars * 0.8
+        setup_timeout_debug := str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+        // Solid red if past timeout, otherwise color code by proximity
+        if bars_since_detection >= setup_timeout_bars
+            setup_timeout_bg := color.new(color.red, 0)
+        else if bars_since_detection >= setup_timeout_bars * 0.8
             setup_timeout_bg := color.new(color.red, 30)
         else if bars_since_detection >= setup_timeout_bars * 0.6
             setup_timeout_bg := color.new(color.yellow, 30)
         else
             setup_timeout_bg := color.new(color.green, 30)
-    else if inv_fvg_active and not na(inv_fvg_bar_index)
+    else if not na(inv_fvg_bar_index)
         int bars_since_detection = bar_index - inv_fvg_bar_index
-        setup_timeout_debug := "Setup: " + str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
-        if bars_since_detection >= setup_timeout_bars * 0.8
+        setup_timeout_debug := str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+        if bars_since_detection >= setup_timeout_bars
+            setup_timeout_bg := color.new(color.red, 0)
+        else if bars_since_detection >= setup_timeout_bars * 0.8
             setup_timeout_bg := color.new(color.red, 30)
         else if bars_since_detection >= setup_timeout_bars * 0.6
             setup_timeout_bg := color.new(color.yellow, 30)
         else
             setup_timeout_bg := color.new(color.green, 30)
-    table.cell(debugTable, 0, row, "0b. SETUP TIMEOUT", text_color=color.white, bgcolor=color.new(color.orange, 20), text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". SETUP TIMEOUT", text_color=color.white, bgcolor=color.new(color.orange, 20), text_size=size.small)
     table.cell(debugTable, 1, row, setup_timeout_debug, text_color=color.white, bgcolor=setup_timeout_bg, text_size=size.small)
     row := row + 1
 
-    // 0c. ENTRY TIMEOUT COUNTER - Shows bars since entry signal and timeout progress
+    // ENTRY TIMEOUT COUNTER - Shows bars since entry signal and timeout progress
     string entry_timeout_debug = "-"
     color entry_timeout_bg = color.new(color.purple, 30)
     if entry_signal_active and not na(entry_signal_bar_index)
         int bars_since_entry = bar_index - entry_signal_bar_index
-        entry_timeout_debug := "Entry: " + str.tostring(bars_since_entry) + " / " + str.tostring(entry_timeout_bars) + " bars"
+        entry_timeout_debug := str.tostring(bars_since_entry) + " / " + str.tostring(entry_timeout_bars) + " bars"
         // Color code: green if far from timeout, yellow if getting close, red if very close
-        if bars_since_entry >= entry_timeout_bars * 0.8
+        if bars_since_entry >= entry_timeout_bars
+            entry_timeout_bg := color.new(color.red, 0)
+        else if bars_since_entry >= entry_timeout_bars * 0.8
             entry_timeout_bg := color.new(color.red, 30)
         else if bars_since_entry >= entry_timeout_bars * 0.6
             entry_timeout_bg := color.new(color.yellow, 30)
         else
             entry_timeout_bg := color.new(color.green, 30)
-    table.cell(debugTable, 0, row, "0c. ENTRY TIMEOUT", text_color=color.white, bgcolor=color.new(color.purple, 20), text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENTRY TIMEOUT", text_color=color.white, bgcolor=color.new(color.purple, 20), text_size=size.small)
     table.cell(debugTable, 1, row, entry_timeout_debug, text_color=color.white, bgcolor=entry_timeout_bg, text_size=size.small)
     row := row + 1
 
-    // 1. FVG/Overlap Active
+    // FVG/Overlap Active
     string fvg_type_text = bpr_fvg_active ? "BPR FVG" : "Inverted FVG"
-    table.cell(debugTable, 0, row, "1. Type", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Type", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, fvg_type_text, text_color=color.white, bgcolor=valid_color, text_size=size.small)
     row := row + 1
 
-    // 2. Size in ticks
+    // Size in ticks
     string fvg_size_text = "-"
     bool size_valid = false
     if bpr_fvg_active and not na(bpr_fvg_top) and not na(bpr_fvg_bottom)
@@ -2257,11 +2706,11 @@ if bpr_fvg_active or inv_fvg_active
         float overlap_ticks = overlap_size / syminfo.mintick
         fvg_size_text := str.tostring(overlap_ticks, "#.#") + " ticks"
         size_valid := true  // Inverted FVG always valid once formed
-    table.cell(debugTable, 0, row, "2. Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, fvg_size_text, text_color=color.white, bgcolor=size_valid ? valid_color : neutral_color, text_size=size.small)
     row := row + 1
 
-    // 3. FVG/Overlap Levels
+    // FVG/Overlap Levels
     string fvg_levels = "-"
     bool levels_valid = false
     if bpr_fvg_active and not na(bpr_fvg_top) and not na(bpr_fvg_bottom)
@@ -2270,11 +2719,11 @@ if bpr_fvg_active or inv_fvg_active
     else if inv_fvg_active and not na(inv_fvg_overlap_top) and not na(inv_fvg_overlap_bottom)
         fvg_levels := str.tostring(inv_fvg_overlap_bottom, format.mintick) + " - " + str.tostring(inv_fvg_overlap_top, format.mintick)
         levels_valid := true
-    table.cell(debugTable, 0, row, "3. Levels", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Levels", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, fvg_levels, text_color=color.white, bgcolor=levels_valid ? valid_color : neutral_color, text_size=size.small)
     row := row + 1
 
-    // 4. Breach Status
+    // Breach Status
     string breach_text = "-"
     bool is_breached = false
     if bpr_fvg_active
@@ -2286,11 +2735,11 @@ if bpr_fvg_active or inv_fvg_active
         bool inv_breach = inv_fvg_is_bullish ? (close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top) : (close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top)
         is_breached := inv_breach or fvg_entry_active
         breach_text := is_breached ? "In Zone" : "Awaiting"
-    table.cell(debugTable, 0, row, "4. Breach", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Breach", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, breach_text, text_color=color.black, bgcolor=is_breached ? valid_color : color.new(color.yellow, 0), text_size=size.small)
     row := row + 1
 
-    // 5. Invalidation Level
+    // Invalidation Level
     string inval_level = "-"
     bool inval_valid = false
     if bpr_fvg_active and not na(bpr_fvg_invalidation_level)
@@ -2304,11 +2753,11 @@ if bpr_fvg_active or inv_fvg_active
         else if not inv_fvg_is_bullish and not na(inv_fvg_reversal_candle_high)
             inval_level := str.tostring(inv_fvg_reversal_candle_high, format.mintick) + " (high)"
             inval_valid := true
-    table.cell(debugTable, 0, row, "5. Inval Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Inval Level", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, inval_level, text_color=color.white, bgcolor=inval_valid ? valid_color : neutral_color, text_size=size.small)
     row := row + 1
 
-    // 6. Last Clear Reason
+    // Last Clear Reason
     string clear_reason = "-"
     color clear_bg = neutral_color
     if bpr_fvg_active
@@ -2317,11 +2766,11 @@ if bpr_fvg_active or inv_fvg_active
     else if inv_fvg_active
         clear_reason := inv_fvg_invalidation_reason == "" ? "-" : inv_fvg_invalidation_reason
         clear_bg := inv_fvg_invalidation_reason == "" ? neutral_color : color.new(color.yellow, 0)
-    table.cell(debugTable, 0, row, "6. Last Clear", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Last Clear", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, clear_reason, text_color=color.black, bgcolor=clear_bg, text_size=size.small)
     row := row + 1
 
-    // 7. Close Price Check
+    // Close Price Check
     string close_check_text = "-"
     bool close_check_valid = false
     if bpr_fvg_active
@@ -2339,11 +2788,11 @@ if bpr_fvg_active or inv_fvg_active
         bool in_overlap = close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top
         close_check_text := (in_overlap ? "✓ " : "✗ ") + "In Overlap"
         close_check_valid := in_overlap
-    table.cell(debugTable, 0, row, "7. Close Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Close Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, close_check_text, text_color=color.white, bgcolor=close_check_valid ? valid_color : invalid_color, text_size=size.small)
     row := row + 1
 
-    // 8. Zone Trigger Check
+    // Zone Trigger Check
     string zone_trig_text = "-"
     bool zone_check_valid = false
     if bpr_fvg_active
@@ -2360,17 +2809,17 @@ if bpr_fvg_active or inv_fvg_active
         else
             zone_trig_text := supply_triggered ? "✓ Supply" : "✗ Supply"
             zone_check_valid := supply_triggered
-    table.cell(debugTable, 0, row, "8. Zone Trig", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Trig", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, zone_trig_text, text_color=color.white, bgcolor=zone_check_valid ? valid_color : invalid_color, text_size=size.small)
     row := row + 1
 
-    // 9. Trading Window Check
+    // Trading Window Check
     string window_text = in_trading_window ? "✓ YES" : "✗ NO"
-    table.cell(debugTable, 0, row, "9. Trade Window", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trade Window", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, window_text, text_color=color.white, bgcolor=in_trading_window ? valid_color : invalid_color, text_size=size.small)
     row := row + 1
 
-    // 10. Strategy Enabled Check
+    // Strategy Enabled Check
     string enabled_text = "-"
     bool strategy_enabled = false
     if bpr_fvg_active
@@ -2379,7 +2828,7 @@ if bpr_fvg_active or inv_fvg_active
     else if inv_fvg_active
         enabled_text := use_inverted_fvg ? "✓ Enabled" : "✗ Disabled"
         strategy_enabled := use_inverted_fvg
-    table.cell(debugTable, 0, row, "10. Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, enabled_text, text_color=color.white, bgcolor=strategy_enabled ? valid_color : invalid_color, text_size=size.small)
     row := row + 1
 
