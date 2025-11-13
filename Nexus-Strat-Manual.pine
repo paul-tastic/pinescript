@@ -419,6 +419,76 @@ if barstate.isnew
             inv_fvg_bar_index := na
             inv_fvg_invalidation_reason := "9 AM reset"
 
+    // At trading window start time (default 09:30 NY time), reset all setup state for clean start
+    // This ensures no stale setups from pre-market or previous sessions persist into trading window
+    if at_trading_start
+        // Invalidate any active setups from before trading window
+        if eng_ob_active or entry_signal_active or bpr_fvg_active or inv_fvg_active
+            // Close any open positions and cancel pending orders
+            strategy.close_all()
+            strategy.cancel_all()
+
+            eng_ob_active := false
+            eng_ob_is_bullish := false
+            eng_ob_deepest_level := na
+            eng_ob_bar_index := na
+            eng_ob_candle_high := na
+            eng_ob_candle_low := na
+            target_fractal_level_mss := na
+
+            // Clear entry signals (all strategies)
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+
+            // Reset trade flags
+            trade_entered := false
+            order_placed := false
+            order_placed_bar := -1
+
+            // Delete yellow box
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
+
+            // Delete TP/SL boxes
+            if not na(tp_box)
+                box.delete(tp_box)
+                tp_box := na
+            if not na(sl_box)
+                box.delete(sl_box)
+                sl_box := na
+
+            // Clear BPR FVG state
+            if not na(bpr_fvg_box)
+                box.delete(bpr_fvg_box)
+                bpr_fvg_box := na
+            bpr_fvg_active := false
+            bpr_fvg_is_bullish := false
+            bpr_fvg_top := na
+            bpr_fvg_bottom := na
+            bpr_fvg_invalidation_level := na
+            bpr_fvg_bar_index := na
+            bpr_fvg_candle_high := na
+            bpr_fvg_candle_low := na
+            bpr_fvg_invalidation_reason := "Trading start reset"
+
+            // Clear Inverted FVG state
+            if not na(inv_fvg_overlap_box)
+                box.delete(inv_fvg_overlap_box)
+                inv_fvg_overlap_box := na
+            inv_fvg_active := false
+            inv_fvg_is_bullish := false
+            inv_fvg_overlap_top := na
+            inv_fvg_overlap_bottom := na
+            inv_fvg_reversal_candle_high := na
+            inv_fvg_reversal_candle_low := na
+            inv_fvg_bar_index := na
+            inv_fvg_invalidation_reason := "Trading start reset"
+
     // At 20:00 (start of Asian session), clear all persisted boxes from the day
     if current_hour == 20
         // Delete all TP boxes - only if array has elements
