@@ -1074,8 +1074,12 @@ plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamon
 // This appears as a label on the chart so you can see it update in real-time
 if bpr_fvg_active and not na(bpr_fvg_bar_index)
     int bars_since_fvg = bar_index - bpr_fvg_bar_index
-    string debug_text = "FVG: " + str.tostring(bars_since_fvg) + "/" + str.tostring(setup_timeout_bars)
+    string debug_text = "FVG: " + str.tostring(bars_since_fvg) + "/" + str.tostring(setup_timeout_bars) + "\nbar=" + str.tostring(bar_index) + " fvg_bar=" + str.tostring(bpr_fvg_bar_index)
     label.new(bar_index, high, debug_text, style=label.style_label_down, color=color.yellow, textcolor=color.black, size=size.small)
+
+// DEBUG: Show when NEW FVG is detected
+if not bpr_fvg_active[1] and bpr_fvg_active
+    label.new(bar_index, low, "NEW FVG", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
 
 // ============================================================================
 // BPR FVG DETECTION
