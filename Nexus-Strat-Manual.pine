@@ -1302,24 +1302,24 @@ if show_mss_bullish
 if show_mss_bearish
     label.new(bar_index, high + mss_offset, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.red, size=size.normal, style=label.style_none, textalign=text.align_center)
 
-// BPR FVG Detection: Square when BPR FVG detected
-// Maroon = bearish FVG in supply (leads to bullish trade)
-// Blue = bullish FVG in demand (leads to bearish trade)
-// Note: BPR icons continue showing even when INV FVG detected (stacked effect)
-bool show_bpr_fvg_bullish_trade = bpr_fvg_active and not bpr_fvg_is_bullish  // Bearish FVG = bullish trade
-bool show_bpr_fvg_bearish_trade = bpr_fvg_active and bpr_fvg_is_bullish  // Bullish FVG = bearish trade
+// BPR FVG Detection: Square when BPR FVG detected (ONLY on detection bar)
+// Maroon = bullish FVG in supply (leads to bearish trade)
+// Blue = bearish FVG in demand (leads to bullish trade)
+// Show icon ONLY on the bar where BPR FVG was detected
+bool show_bpr_fvg_bullish_trade = not na(bpr_fvg_bar_index) and bar_index == bpr_fvg_bar_index and not bpr_fvg_is_bullish  // Bearish FVG = bullish trade
+bool show_bpr_fvg_bearish_trade = not na(bpr_fvg_bar_index) and bar_index == bpr_fvg_bar_index and bpr_fvg_is_bullish  // Bullish FVG = bearish trade
 
-// Inverted FVG: Purple square stacked on BPR FVG when overlap detected
+// Inverted FVG: Purple square stacked on BPR FVG when overlap detected (ONLY on detection bar)
 // Shows both the original BPR color and purple to indicate the inversion
-// Uses labels with vertical offset so both BPR and INV icons are visible
-bool show_inv_fvg_bullish_trade = inv_fvg_active and inv_fvg_is_bullish  // Bullish inverted trade
-bool show_inv_fvg_bearish_trade = inv_fvg_active and not inv_fvg_is_bullish  // Bearish inverted trade
+// Show icon ONLY on the bar where Inverted FVG was detected
+bool show_inv_fvg_bullish_trade = not na(inv_fvg_bar_index) and bar_index == inv_fvg_bar_index and inv_fvg_is_bullish  // Bullish inverted trade
+bool show_inv_fvg_bearish_trade = not na(inv_fvg_bar_index) and bar_index == inv_fvg_bar_index and not inv_fvg_is_bullish  // Bearish inverted trade
 
 // Calculate offset: Use ATR or fixed tick offset for consistent vertical spacing
 // Base offset: 2x the candle range (more spacing than before)
 float base_icon_offset = (high - low) * 2.0
 
-// BULLISH TRADE ICONS (stacked below candle)
+// BULLISH TRADE ICONS (stacked below candle) - shown on detection bar only
 if show_bpr_fvg_bullish_trade or show_inv_fvg_bullish_trade
     // BPR FVG icon (maroon square) - closest to candle
     if show_bpr_fvg_bullish_trade
@@ -1329,7 +1329,7 @@ if show_bpr_fvg_bullish_trade or show_inv_fvg_bullish_trade
     if show_inv_fvg_bullish_trade
         label.new(bar_index, low - base_icon_offset, "■", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.purple, size=size.normal, style=label.style_none, textalign=text.align_center)
 
-// BEARISH TRADE ICONS (stacked above candle)
+// BEARISH TRADE ICONS (stacked above candle) - shown on detection bar only
 if show_bpr_fvg_bearish_trade or show_inv_fvg_bearish_trade
     // BPR FVG icon (blue square) - closest to candle
     if show_bpr_fvg_bearish_trade
@@ -2415,8 +2415,10 @@ table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Position Size", text
 table.cell(debugTable, 1, row, pos_size, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
-// Trading Window status
+// Trading Window status - DETAILED
 string trading_window_text = in_trading_window ? "✓ IN" : "✗ OUT"
+string time_details = " | " + str.tostring(current_time_minutes) + " mins (start:" + str.tostring(trading_start_minutes) + " end:" + str.tostring(trading_end_minutes) + ")"
+trading_window_text := trading_window_text + time_details
 color trading_window_bg = in_trading_window ? color.new(color.green, 85) : color.new(color.red, 85)
 table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trading Window", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, trading_window_text, text_color=color.black, bgcolor=trading_window_bg, text_size=size.small)
@@ -2431,6 +2433,65 @@ color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.gre
 table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
 row := row + 1
+
+// ENGULFING DETECTION DIAGNOSTIC (ALWAYS VISIBLE)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+row := row + 1
+
+// Zone triggered status
+string zone_triggered_text = "-"
+if supply_triggered
+    zone_triggered_text := "✓ SUPPLY"
+else if demand_triggered
+    zone_triggered_text := "✓ DEMAND"
+else
+    zone_triggered_text := "✗ NONE"
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Triggered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, zone_triggered_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Engulfing pattern conditions (bullish)
+if demand_triggered and bar_index > 0
+    bool current_bullish = close > open
+    bool prev_bearish = close[1] < open[1]
+    bool engulfs_body = close >= open[1]
+    bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
+    float deepest_candle_close = low <= low[1] ? close : close[1]
+    bool is_deeper_than_previous = na(demand_deepest_ever) or deepest_candle_close <= demand_deepest_ever
+
+    string bullish_eng_text = ""
+    bullish_eng_text := bullish_eng_text + (current_bullish ? "✓" : "✗") + "cur_bull "
+    bullish_eng_text := bullish_eng_text + (prev_bearish ? "✓" : "✗") + "prv_bear "
+    bullish_eng_text := bullish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
+    bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep "
+    bullish_eng_text := bullish_eng_text + (is_deeper_than_previous ? "✓" : "✗") + "deeper "
+    bullish_eng_text := bullish_eng_text + (in_trading_window ? "✓" : "✗") + "window"
+
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bullish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+    row := row + 1
+
+// Engulfing pattern conditions (bearish)
+if supply_triggered and bar_index > 0
+    bool current_bearish = close < open
+    bool prev_bullish = close[1] > open[1]
+    bool engulfs_body = close <= open[1]
+    bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
+    float deepest_candle_close = high >= high[1] ? close : close[1]
+    bool is_deeper_than_previous = na(supply_deepest_ever) or deepest_candle_close >= supply_deepest_ever
+
+    string bearish_eng_text = ""
+    bearish_eng_text := bearish_eng_text + (current_bearish ? "✓" : "✗") + "cur_bear "
+    bearish_eng_text := bearish_eng_text + (prev_bullish ? "✓" : "✗") + "prv_bull "
+    bearish_eng_text := bearish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
+    bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep "
+    bearish_eng_text := bearish_eng_text + (is_deeper_than_previous ? "✓" : "✗") + "deeper "
+    bearish_eng_text := bearish_eng_text + (in_trading_window ? "✓" : "✗") + "window"
+
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bearish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+    row := row + 1
 
 // BPR FVG Active Status (ALWAYS VISIBLE for zombie diagnosis)
 string bpr_fvg_active_text = bpr_fvg_active ? "✓ TRUE" : "✗ FALSE"
