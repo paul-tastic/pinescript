@@ -1868,12 +1868,14 @@ plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, l
 // Continue checking on every bar until a fractal is found
 if use_mss_ob and eng_ob_active and na(target_fractal_level_mss)
     if eng_ob_is_bullish
-        // Bullish setup: use most recent bearish fractal (high point)
-        if not na(latest_bearish_fractal)
+        // Bullish setup: use bearish fractal ONLY if it's ABOVE the engulfing candle high
+        // This ensures we're breaking structure upward (bullish MSS)
+        if not na(latest_bearish_fractal) and not na(eng_ob_candle_high) and latest_bearish_fractal > eng_ob_candle_high
             target_fractal_level_mss := latest_bearish_fractal
     else
-        // Bearish setup: use most recent bullish fractal (low point)
-        if not na(latest_bullish_fractal)
+        // Bearish setup: use bullish fractal ONLY if it's BELOW the engulfing candle low
+        // This ensures we're breaking structure downward (bearish MSS)
+        if not na(latest_bullish_fractal) and not na(eng_ob_candle_low) and latest_bullish_fractal < eng_ob_candle_low
             target_fractal_level_mss := latest_bullish_fractal
 
 // ============================================================================
