@@ -2597,6 +2597,17 @@ table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". INV FVG Active", tex
 table.cell(debugTable, 1, row, inv_fvg_active_text, text_color=color.black, bgcolor=inv_fvg_active_bg, text_size=size.small)
 row := row + 1
 
+// Trade Entry Bar (ALWAYS VISIBLE for stuck trade diagnosis)
+string entry_bar_text = "-"
+color entry_bar_bg = value_bgcolor
+if order_placed_bar >= 0
+    int bars_ago = bar_index - order_placed_bar
+    entry_bar_text := str.tostring(order_placed_bar) + " (" + str.tostring(bars_ago) + " bars ago)"
+    entry_bar_bg := bars_ago > 20 ? color.new(color.orange, 85) : value_bgcolor  // Highlight if old
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trade Entry Bar", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, entry_bar_text, text_color=color.black, bgcolor=entry_bar_bg, text_size=size.small)
+row := row + 1
+
 // S&D Zone Levels
 string supply_zone = "-"
 if clear_supply
