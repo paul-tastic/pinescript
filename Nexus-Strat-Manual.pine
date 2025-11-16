@@ -285,6 +285,10 @@ var int entry_signal_bar_index = na  // Bar index when entry signal triggered (f
 var float target_fractal_level_mss = na  // Fractal level for MSS OB strategy
 var int mss_ob_confirmed_bar = na  // Bar index when MSS OB was confirmed (for icon plotting)
 
+// Track latest fractals in real-time (for MSS OB strategy)
+var float latest_bullish_fractal = na  // Most recent bullish fractal low
+var float latest_bearish_fractal = na  // Most recent bearish fractal high
+
 // Track BPR FVG specific state
 var bool bpr_fvg_active = false  // BPR FVG has been detected
 var bool bpr_fvg_is_bullish = false  // True = bullish FVG (in supply), False = bearish FVG (in demand)
@@ -1300,10 +1304,10 @@ else if is_bearish_engulfing
     eng_ob_diamond := label.new(bar_index, high, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.black, size=size.normal, style=label.style_none, textalign=text.align_center)
 
 // MSS OB Confirmation: Red/green diamond stacked on ENG OB when MSS fractal broken
-// Show on the bar where MSS OB was confirmed AND on the original ENG OB bar
+// Show ONLY on the bar where MSS OB was confirmed (not every bar after)
 // Uses labels with vertical offset so both ENG OB and MSS OB diamonds are visible
-bool show_mss_bullish = not na(mss_ob_confirmed_bar) and entry_is_bullish and active_entry_strategy == "MSS OB"
-bool show_mss_bearish = not na(mss_ob_confirmed_bar) and not entry_is_bullish and active_entry_strategy == "MSS OB"
+bool show_mss_bullish = not na(mss_ob_confirmed_bar) and bar_index == mss_ob_confirmed_bar and entry_is_bullish and active_entry_strategy == "MSS OB"
+bool show_mss_bearish = not na(mss_ob_confirmed_bar) and bar_index == mss_ob_confirmed_bar and not entry_is_bullish and active_entry_strategy == "MSS OB"
 
 // Calculate offset for MSS diamond positioning
 float mss_offset = (high - low) * 1.5
@@ -1847,6 +1851,12 @@ if should_detect_fractals and bar_index >= 2
     // Bullish fractal: low is lower than 2 candles before and 2 candles after
     is_bullish_fractal := low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low[0]
 
+    // Store latest fractals in real-time (for MSS OB strategy)
+    if is_bearish_fractal
+        latest_bearish_fractal := high[2]
+    if is_bullish_fractal
+        latest_bullish_fractal := low[2]
+
 // Plot fractals for debugging (only when actively detecting)
 plotshape(is_bearish_fractal, title="Bearish Fractal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, offset=-2)
 plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, offset=-2)
@@ -1854,32 +1864,17 @@ plotshape(is_bullish_fractal, title="Bullish Fractal", style=shape.triangleup, l
 // ============================================================================
 // MSS OB STRATEGY - Fractal Detection
 // ============================================================================
-// When ENG OB forms, search BACKWARD for the most recent opposite fractal
-// This runs once when target_fractal_level_mss is na (right after ENG OB forms)
-if use_mss_ob and eng_ob_active and na(target_fractal_level_mss) and bar_index >= 6
-    // Search backward up to 15 bars for the most recent opposite fractal
-    // Fractal pattern needs i-2, i-1, i, i+1, i+2 so we can only look back where i+2 is valid
-    // Limit to 15 to stay within PineScript's historical buffer (max offset ~20)
-    int lookback_limit = 15
-
+// Use the latest opposite fractal that was detected in real-time
+// Continue checking on every bar until a fractal is found
+if use_mss_ob and eng_ob_active and na(target_fractal_level_mss)
     if eng_ob_is_bullish
-        // Bullish setup: look for most recent bearish fractal (high point)
-        for i = 2 to lookback_limit
-            if not na(high[i+2]) and not na(high[i+1]) and not na(high[i-1]) and not na(high[i-2])
-                bool is_bearish_frac = high[i] > high[i+2] and high[i] > high[i+1] and high[i] > high[i-1] and high[i] > high[i-2]
-                if is_bearish_frac
-                    // Found the most recent bearish fractal
-                    target_fractal_level_mss := high[i]
-                    break
+        // Bullish setup: use most recent bearish fractal (high point)
+        if not na(latest_bearish_fractal)
+            target_fractal_level_mss := latest_bearish_fractal
     else
-        // Bearish setup: look for most recent bullish fractal (low point)
-        for i = 2 to lookback_limit
-            if not na(low[i+2]) and not na(low[i+1]) and not na(low[i-1]) and not na(low[i-2])
-                bool is_bullish_frac = low[i] < low[i+2] and low[i] < low[i+1] and low[i] < low[i-1] and low[i] < low[i-2]
-                if is_bullish_frac
-                    // Found the most recent bullish fractal
-                    target_fractal_level_mss := low[i]
-                    break
+        // Bearish setup: use most recent bullish fractal (low point)
+        if not na(latest_bullish_fractal)
+            target_fractal_level_mss := latest_bullish_fractal
 
 // ============================================================================
 // MSS OB STRATEGY - Entry Signal Detection
