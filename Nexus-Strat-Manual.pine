@@ -2122,10 +2122,10 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     float tp_qty = use_trailing_stop ? position_size / 2 : 0.0
     float trail_qty = use_trailing_stop ? position_size / 2 : 0.0
 
-    // Place stop order at entry level (only enters if price retraces back)
+    // Place limit order at entry level
     if entry_is_bullish
-        // Enter long position with stop order at entry level
-        strategy.entry("Long", strategy.long, qty=position_size, stop=entry_price)
+        // Enter long position with limit order at entry level
+        strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
             // Trailing stop mode:
@@ -2136,8 +2136,8 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
     else
-        // Enter short position with stop order at entry level
-        strategy.entry("Short", strategy.short, qty=position_size, stop=entry_price)
+        // Enter short position with limit order at entry level
+        strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
             // Trailing stop mode:
