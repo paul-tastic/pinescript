@@ -2106,7 +2106,11 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
 if entry_signal_active and not trade_entered and not order_placed and not na(entry_price)
     // Calculate position size based on risk
     float risk_per_contract = math.abs(entry_price - entry_sl)
-    float position_size = risk_per_trade / risk_per_contract
+    float position_size_raw = risk_per_trade / risk_per_contract
+
+    // If trailing stop enabled, round to nearest even number to ensure clean 50/50 split
+    // Otherwise use raw calculated size
+    float position_size = use_trailing_stop ? math.floor(position_size_raw / 2) * 2 : position_size_raw
 
     // Calculate breakeven + 1 tick (direction-aware for commission coverage)
     if entry_is_bullish
@@ -2114,9 +2118,9 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     else
         breakeven_plus_tick := entry_price - syminfo.mintick
 
-    // Calculate quantities for trailing stop split
-    float tp_qty = use_trailing_stop ? position_size * 0.5 : 0.0
-    float trail_qty = use_trailing_stop ? position_size * 0.5 : 0.0
+    // Calculate quantities for trailing stop split (now guaranteed to be whole numbers)
+    float tp_qty = use_trailing_stop ? position_size / 2 : 0.0
+    float trail_qty = use_trailing_stop ? position_size / 2 : 0.0
 
     // Place limit order at entry level
     if entry_is_bullish
