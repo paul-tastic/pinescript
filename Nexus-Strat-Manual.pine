@@ -270,6 +270,7 @@ var int eng_ob_bar_index = na
 var float eng_ob_candle_high = na
 var float eng_ob_candle_low = na
 var box eng_ob_box = na  // Yellow box around ENG OB candle for visual debug
+var label eng_ob_diamond = na  // Black diamond marker for ENG OB detection
 
 // Track ENTRY SIGNALS - generic for all entry strategies
 var bool entry_signal_active = false  // Any entry strategy has triggered
@@ -373,12 +374,20 @@ if not in_trading_window
 
     // Clear ENG OB state
     eng_ob_active := false
+    if not na(eng_ob_diamond)
+        label.delete(eng_ob_diamond)
+        eng_ob_diamond := na
     eng_ob_is_bullish := false
     eng_ob_deepest_level := na
     eng_ob_bar_index := na
     eng_ob_candle_high := na
     eng_ob_candle_low := na
     target_fractal_level_mss := na
+
+    // Delete ENG OB diamond marker
+    if not na(eng_ob_diamond)
+        label.delete(eng_ob_diamond)
+        eng_ob_diamond := na
     mss_ob_confirmed_bar := na
 
     // Clear entry signals (all strategies)
@@ -610,6 +619,9 @@ if eng_ob_active and not na(eng_ob_bar_index)
         strategy.cancel_all()
 
         eng_ob_active := false
+        if not na(eng_ob_diamond)
+            label.delete(eng_ob_diamond)
+            eng_ob_diamond := na
         eng_ob_is_bullish := false
         eng_ob_deepest_level := na
         eng_ob_bar_index := na
@@ -682,6 +694,9 @@ if eng_ob_active
 
     if should_invalidate
         eng_ob_active := false
+        if not na(eng_ob_diamond)
+            label.delete(eng_ob_diamond)
+            eng_ob_diamond := na
         eng_ob_is_bullish := false
         eng_ob_deepest_level := na
         eng_ob_bar_index := na
@@ -825,6 +840,9 @@ if barstate.isnew and was_outside_zones
     if eng_ob_active and eng_ob_is_bullish and in_supply
         // Bullish setup invalidated by entering supply zone
         eng_ob_active := false
+        if not na(eng_ob_diamond)
+            label.delete(eng_ob_diamond)
+            eng_ob_diamond := na
         eng_ob_is_bullish := false
         eng_ob_deepest_level := na
         eng_ob_bar_index := na
@@ -881,6 +899,9 @@ if barstate.isnew and was_outside_zones
     else if eng_ob_active and not eng_ob_is_bullish and in_demand
         // Bearish setup invalidated by entering demand zone
         eng_ob_active := false
+        if not na(eng_ob_diamond)
+            label.delete(eng_ob_diamond)
+            eng_ob_diamond := na
         eng_ob_is_bullish := false
         eng_ob_deepest_level := na
         eng_ob_bar_index := na
@@ -1066,6 +1087,9 @@ if eng_ob_active
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
         if low < eng_ob_candle_low
             eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1098,6 +1122,9 @@ if eng_ob_active
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
         if high > eng_ob_candle_high
             eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1146,6 +1173,9 @@ if entry_signal_active
         if active_entry_strategy == "MSS OB"
             // MSS OB strategy - clear ENG OB state
             eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1208,6 +1238,9 @@ if entry_signal_active
         else if active_entry_strategy == "Breaker Block"
             // Breaker Block strategy - clear ENG OB state
             eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1260,8 +1293,11 @@ if supply_triggered and not na(supply_highest_high) and high == supply_highest_h
 // ============================================================================
 
 // ENG OB Detection: Black diamond when engulfing pattern detected
-plotshape(is_bullish_engulfing, title="Bullish Engulfing OB", style=shape.diamond, location=location.belowbar, color=color.black, size=size.tiny)
-plotshape(is_bearish_engulfing, title="Bearish Engulfing OB", style=shape.diamond, location=location.abovebar, color=color.black, size=size.tiny)
+// Using label instead of plotshape so it can be deleted when invalidated
+if is_bullish_engulfing
+    eng_ob_diamond := label.new(bar_index, low, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.black, size=size.normal, style=label.style_none, textalign=text.align_center)
+else if is_bearish_engulfing
+    eng_ob_diamond := label.new(bar_index, high, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.black, size=size.normal, style=label.style_none, textalign=text.align_center)
 
 // MSS OB Confirmation: Red/green diamond stacked on ENG OB when MSS fractal broken
 // Show on the bar where MSS OB was confirmed AND on the original ENG OB bar
@@ -1970,6 +2006,9 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
         if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
             // ENG OB-based strategies
             eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -2116,6 +2155,9 @@ if trade_entered and strategy.position_size == 0
 
     // Trade has exited - clear all setup variables
     eng_ob_active := false
+    if not na(eng_ob_diamond)
+        label.delete(eng_ob_diamond)
+        eng_ob_diamond := na
     eng_ob_is_bullish := false
     eng_ob_deepest_level := na
     eng_ob_bar_index := na
@@ -2497,90 +2539,26 @@ table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Zone", text_c
 table.cell(debugTable, 1, row, demand_zone, text_color=color.black, bgcolor=demand_zone_bgcolor, text_size=size.small)
 row := row + 1
 
-// Session Levels - REMOVED (commented out to simplify debug table)
-// Row 8: Asian High (reserved)
-// string asian_high_text = "-"
-// color asian_high_bg = label_bgcolor
-// if not na(asian_high)
-//     if asian_high_crossed
-//         asian_high_text := "✗ CROSSED"
-//         asian_high_bg := color.new(color.gray, 50)
-//     else
-//         asian_high_text := str.tostring(asian_high, format.mintick)
-//         asian_high_bg := color.new(color.red, 70)
-// table.cell(debugTable, 0, row, "#8. Asian High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, asian_high_text, text_color=color.black, bgcolor=asian_high_bg, text_size=size.small)
+// ENG OB Active Status (ALWAYS VISIBLE)
+string eng_ob_active_text = eng_ob_active ? "✓ TRUE" : "✗ FALSE"
+color eng_ob_active_bg = eng_ob_active ? color.new(color.green, 85) : value_bgcolor
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, eng_ob_active_text, text_color=color.black, bgcolor=eng_ob_active_bg, text_size=size.small)
 row := row + 1
 
-// Row 9: Asian Low (reserved)
-// string asian_low_text = "-"
-// color asian_low_bg = label_bgcolor
-// if not na(asian_low)
-//     if asian_low_crossed
-//         asian_low_text := "✗ CROSSED"
-//         asian_low_bg := color.new(color.gray, 50)
-//     else
-//         asian_low_text := str.tostring(asian_low, format.mintick)
-//         asian_low_bg := color.new(color.green, 70)
-// table.cell(debugTable, 0, row, "#9. Asian Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, asian_low_text, text_color=color.black, bgcolor=asian_low_bg, text_size=size.small)
+// MSS OB Active Status (ALWAYS VISIBLE) - shows if MSS entry logic is active
+bool mss_ob_looking_for_entry = eng_ob_active and use_mss_ob and not entry_signal_active
+string mss_ob_active_text = mss_ob_looking_for_entry ? "✓ TRUE" : "✗ FALSE"
+color mss_ob_active_bg = mss_ob_looking_for_entry ? color.new(color.green, 85) : value_bgcolor
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS OB Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, mss_ob_active_text, text_color=color.black, bgcolor=mss_ob_active_bg, text_size=size.small)
 row := row + 1
 
-// Row 10: London High (reserved)
-// string london_high_text = "-"
-// color london_high_bg = label_bgcolor
-// if not na(london_high)
-//     if london_high_crossed
-//         london_high_text := "✗ CROSSED"
-//         london_high_bg := color.new(color.gray, 50)
-//     else
-//         london_high_text := str.tostring(london_high, format.mintick)
-//         london_high_bg := color.new(color.red, 70)
-// table.cell(debugTable, 0, row, "#10. London High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, london_high_text, text_color=color.black, bgcolor=london_high_bg, text_size=size.small)
-row := row + 1
-
-// Row 11: London Low (reserved)
-// string london_low_text = "-"
-// color london_low_bg = label_bgcolor
-// if not na(london_low)
-//     if london_low_crossed
-//         london_low_text := "✗ CROSSED"
-//         london_low_bg := color.new(color.gray, 50)
-//     else
-//         london_low_text := str.tostring(london_low, format.mintick)
-//         london_low_bg := color.new(color.green, 70)
-// table.cell(debugTable, 0, row, "#11. London Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, london_low_text, text_color=color.black, bgcolor=london_low_bg, text_size=size.small)
-row := row + 1
-
-// Row 12: Prev Day High (reserved)
-// string prev_high_text = "-"
-// color prev_high_bg = label_bgcolor
-// if not na(prev_day_high)
-//     if prev_day_high_crossed
-//         prev_high_text := "✗ CROSSED"
-//         prev_high_bg := color.new(color.gray, 50)
-//     else
-//         prev_high_text := str.tostring(prev_day_high, format.mintick)
-//         prev_high_bg := color.new(color.red, 70)
-// table.cell(debugTable, 0, row, "#12. Prev Day High", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, prev_high_text, text_color=color.black, bgcolor=prev_high_bg, text_size=size.small)
-row := row + 1
-
-// Row 13: Prev Day Low (reserved)
-// string prev_low_text = "-"
-// color prev_low_bg = label_bgcolor
-// if not na(prev_day_low)
-//     if prev_day_low_crossed
-//         prev_low_text := "✗ CROSSED"
-//         prev_low_bg := color.new(color.gray, 50)
-//     else
-//         prev_low_text := str.tostring(prev_day_low, format.mintick)
-//         prev_low_bg := color.new(color.green, 70)
-// table.cell(debugTable, 0, row, "#13. Prev Day Low", text_color=color.black, bgcolor=label_bgcolor, text_size=size.small)
-// table.cell(debugTable, 1, row, prev_low_text, text_color=color.black, bgcolor=prev_low_bg, text_size=size.small)
-row := row + 1
+// Session Levels - REMOVED (rows 11-13 reserved for future use)
+// If re-enabled, use hardcoded row numbers like:
+// table.cell(debugTable, 0, 11, "#11. London Low", ...)
+// table.cell(debugTable, 0, 12, "#12. Prev Day High", ...)
+// table.cell(debugTable, 0, 13, "#13. Prev Day Low", ...)
 
 // ============================================================================
 // MSS OB SPECIFIC (only when eng_ob_active AND bar_index is valid)
