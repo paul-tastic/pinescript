@@ -2122,30 +2122,28 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     float tp_qty = use_trailing_stop ? position_size / 2 : 0.0
     float trail_qty = use_trailing_stop ? position_size / 2 : 0.0
 
-    // Place limit order at entry level
+    // Place stop order at entry level (only enters if price retraces back)
     if entry_is_bullish
-        // Enter long position with limit order at entry level
-        strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
+        // Enter long position with stop order at entry level
+        strategy.entry("Long", strategy.long, qty=position_size, stop=entry_price)
 
         if use_trailing_stop
             // Trailing stop mode:
             // 1. FULL SL covering all contracts (if SL hit, everything closes)
-            // 2. Separate TP limit order for half position
+            // 2. TP Order will be placed AFTER trade enters (see trade entry section below)
             strategy.exit("Full SL", "Long", stop=entry_sl)
-            strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
     else
-        // Enter short position with limit order at entry level
-        strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
+        // Enter short position with stop order at entry level
+        strategy.entry("Short", strategy.short, qty=position_size, stop=entry_price)
 
         if use_trailing_stop
             // Trailing stop mode:
             // 1. FULL SL covering all contracts (if SL hit, everything closes)
-            // 2. Separate TP limit order for half position
+            // 2. TP Order will be placed AFTER trade enters (see trade entry section below)
             strategy.exit("Full SL", "Short", stop=entry_sl)
-            strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
@@ -2159,9 +2157,21 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
 // ============================================================================
 // STEP 3: Create GREEN/RED boxes when trade is entered (generic for all strategies)
 if entry_signal_active and not trade_entered
-    // Check if we now have an open position (limit order was filled)
+    // Check if we now have an open position (stop order was filled)
     if strategy.position_size != 0
         trade_entered := true
+
+        // Place TP Order now that trade has entered (only for trailing stop mode)
+        if use_trailing_stop
+            // Calculate TP quantity (half of position)
+            float tp_qty = math.abs(strategy.position_size) / 2
+
+            if entry_is_bullish
+                // Long position: place SELL limit at TP
+                strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
+            else
+                // Short position: place BUY limit at TP
+                strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
 
         // Create TP and SL indicator boxes (only when trade is actually entered)
         // This completes the standard visual flow: YELLOW → BLUE → GREEN/RED
