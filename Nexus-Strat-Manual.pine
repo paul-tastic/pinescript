@@ -2120,9 +2120,9 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // TWO exit orders: 50% at TP, 50% at initial SL
+            // TWO exit orders: 50% at TP, 100% at initial SL (so full position closes if SL hit)
             strategy.exit("TP Half", "Long", qty_percent=50, limit=entry_tp)
-            strategy.exit("SL Half", "Long", qty_percent=50, stop=entry_sl)
+            strategy.exit("SL Full", "Long", stop=entry_sl)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
@@ -2131,9 +2131,9 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // TWO exit orders: 50% at TP, 50% at initial SL
+            // TWO exit orders: 50% at TP, 100% at initial SL (so full position closes if SL hit)
             strategy.exit("TP Half", "Short", qty_percent=50, limit=entry_tp)
-            strategy.exit("SL Half", "Short", qty_percent=50, stop=entry_sl)
+            strategy.exit("SL Full", "Short", stop=entry_sl)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
@@ -2209,8 +2209,8 @@ if use_trailing_stop and trade_entered and not tp_hit
         float atr_value = ta.atr(trailing_atr_length)
         float trail_offset = atr_value * trailing_atr_multiplier
 
-        // Cancel the "SL Half" order and replace with breakeven + trailing stop
-        strategy.cancel("SL Half")
+        // Cancel the "SL Full" order and replace with breakeven + trailing stop
+        strategy.cancel("SL Full")
 
         if entry_is_bullish
             // Long: trail stop below price, starting at breakeven + tick
