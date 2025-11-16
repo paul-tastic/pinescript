@@ -2128,11 +2128,11 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // TWO exit orders:
-            // 1. Half at TP (limit only)
-            // 2. FULL position SL protection (so if SL hit, all contracts close)
-            strategy.exit("TP Exit", "Long", qty=tp_qty, limit=entry_tp)
+            // Trailing stop mode:
+            // 1. FULL SL covering all contracts (if SL hit, everything closes)
+            // 2. Separate TP limit order for half position
             strategy.exit("Full SL", "Long", stop=entry_sl)
+            strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
@@ -2141,11 +2141,11 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // TWO exit orders:
-            // 1. Half at TP (limit only)
-            // 2. FULL position SL protection (so if SL hit, all contracts close)
-            strategy.exit("TP Exit", "Short", qty=tp_qty, limit=entry_tp)
+            // Trailing stop mode:
+            // 1. FULL SL covering all contracts (if SL hit, everything closes)
+            // 2. Separate TP limit order for half position
             strategy.exit("Full SL", "Short", stop=entry_sl)
+            strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
@@ -2214,18 +2214,19 @@ if use_trailing_stop and trade_entered and not tp_hit
         tp_reached := low <= entry_tp
 
     if tp_reached
-        // TP was hit - "TP Exit" order should have closed 50% automatically
-        // Now replace "Full SL" order with trailing stop at breakeven
+        // TP was hit - "TP Order" should have closed 50% automatically
+        // Now cancel "Full SL" and replace with trailing stop at breakeven for remaining 50%
         tp_hit := true
 
         // Calculate ATR for trailing stop
         float atr_value = ta.atr(trailing_atr_length)
         float trail_offset = atr_value * trailing_atr_multiplier
 
-        // Cancel the "Full SL" order (was protecting full position)
-        strategy.cancel("Full SL")
+        // Cancel the original orders
+        strategy.cancel("Full SL")      // Cancel full SL (was protecting all contracts)
+        strategy.cancel("TP Order")     // Cancel TP order (already filled, but cleanup)
 
-        // Replace with new trailing stop order for remaining 50% starting at breakeven + tick
+        // Place new trailing stop order for remaining 50% starting at breakeven + tick
         if entry_is_bullish
             strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_offset=trail_offset)
         else
