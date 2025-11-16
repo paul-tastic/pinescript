@@ -1400,9 +1400,16 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                 bpr_fvg_top := low  // Top of gap
                 bpr_fvg_bar_index := bar_index
 
-                // Capture the FVG candle (current candle) high/low for SL
-                bpr_fvg_candle_high := high
-                bpr_fvg_candle_low := low
+                // Track candle for SL - whichever of the 3 candles made the highest high
+                if high >= high[1] and high >= high[2]
+                    bpr_fvg_candle_high := high
+                    bpr_fvg_candle_low := low
+                else if high[1] >= high[2]
+                    bpr_fvg_candle_high := high[1]
+                    bpr_fvg_candle_low := low[1]
+                else
+                    bpr_fvg_candle_high := high[2]
+                    bpr_fvg_candle_low := low[2]
 
                 // Invalidation level: highest high of the 3 candles involved
                 bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
@@ -1437,9 +1444,16 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                 bpr_fvg_bottom := high  // Bottom of gap
                 bpr_fvg_bar_index := bar_index
 
-                // Capture the FVG candle (current candle) high/low for SL
-                bpr_fvg_candle_high := high
-                bpr_fvg_candle_low := low
+                // Track candle for SL - whichever of the 3 candles made the lowest low
+                if low <= low[1] and low <= low[2]
+                    bpr_fvg_candle_high := high
+                    bpr_fvg_candle_low := low
+                else if low[1] <= low[2]
+                    bpr_fvg_candle_high := high[1]
+                    bpr_fvg_candle_low := low[1]
+                else
+                    bpr_fvg_candle_high := high[2]
+                    bpr_fvg_candle_low := low[2]
 
                 // Invalidation level: lowest low of the 3 candles involved
                 bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
