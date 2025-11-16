@@ -30,6 +30,9 @@ max_setup_bars = input.int(100, "Max Setup Age (bars)", minval=1, group="Trade S
 setup_timeout_bars = input.int(30, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers")
 entry_timeout_bars = input.int(20, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
 grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
+use_trailing_stop = input.bool(true, "Enable Trailing Stop at TP", group="Trade Settings", tooltip="At TP: close 50%, move SL to breakeven+tick, trail remaining 50%")
+trailing_atr_multiplier = input.float(2.0, "Trailing Stop ATR Multiplier", minval=0.5, step=0.5, group="Trade Settings", tooltip="ATR multiplier for trailing stop distance")
+trailing_atr_length = input.int(14, "ATR Length for Trailing", minval=1, group="Trade Settings", tooltip="Period for ATR calculation")
 
 // ============================================================================
 // INPUTS - ENTRY STRATEGIES (can enable multiple)
@@ -324,6 +327,10 @@ var box sl_box = na  // Current active SL box
 // Track if we've already entered a trade for this setup
 var bool trade_entered = false
 
+// Track trailing stop state
+var bool tp_hit = false  // TP was hit, 50% closed, now trailing remaining 50%
+var float breakeven_plus_tick = na  // Breakeven + 1 tick level (direction-aware)
+
 // Track if limit order has been placed for current entry signal
 var bool order_placed = false
 var int order_placed_bar = -1  // Track which bar the order was placed on
@@ -407,6 +414,10 @@ if not in_trading_window
     trade_entered := false
     order_placed := false
     order_placed_bar := -1
+
+    // Reset trailing stop state
+    tp_hit := false
+    breakeven_plus_tick := na
 
     // Delete yellow box
     if not na(eng_ob_box)
@@ -2097,15 +2108,35 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     float risk_per_contract = math.abs(entry_price - entry_sl)
     float position_size = risk_per_trade / risk_per_contract
 
+    // Calculate breakeven + 1 tick (direction-aware for commission coverage)
+    if entry_is_bullish
+        breakeven_plus_tick := entry_price + syminfo.mintick
+    else
+        breakeven_plus_tick := entry_price - syminfo.mintick
+
     // Place limit order at entry level
     if entry_is_bullish
         // Enter long position with limit order at entry level
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
-        strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
+
+        if use_trailing_stop
+            // TWO exit orders: 50% at TP, 50% at initial SL
+            strategy.exit("TP Half", "Long", qty_percent=50, limit=entry_tp)
+            strategy.exit("SL Half", "Long", qty_percent=50, stop=entry_sl)
+        else
+            // Standard exit: full position at TP/SL
+            strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
     else
         // Enter short position with limit order at entry level
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
-        strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
+
+        if use_trailing_stop
+            // TWO exit orders: 50% at TP, 50% at initial SL
+            strategy.exit("TP Half", "Short", qty_percent=50, limit=entry_tp)
+            strategy.exit("SL Half", "Short", qty_percent=50, stop=entry_sl)
+        else
+            // Standard exit: full position at TP/SL
+            strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
 
     // Mark that order has been placed for this signal
     order_placed := true
@@ -2156,6 +2187,38 @@ if entry_signal_active and not trade_entered
                              border_width=1,
                              extend=extend.none)
 
+// ============================================================================
+// TRAILING STOP ACTIVATION - When TP is hit, switch to trailing stop
+// ============================================================================
+// Monitor if TP was hit (50% closed) and activate trailing stop for remaining 50%
+if use_trailing_stop and trade_entered and not tp_hit
+    bool tp_reached = false
+
+    if entry_is_bullish
+        // Bullish: check if price reached TP level
+        tp_reached := high >= entry_tp
+    else
+        // Bearish: check if price reached TP level
+        tp_reached := low <= entry_tp
+
+    if tp_reached
+        // TP was hit - 50% should have closed automatically
+        tp_hit := true
+
+        // Calculate ATR for trailing stop
+        float atr_value = ta.atr(trailing_atr_length)
+        float trail_offset = atr_value * trailing_atr_multiplier
+
+        // Cancel the "SL Half" order and replace with breakeven + trailing stop
+        strategy.cancel("SL Half")
+
+        if entry_is_bullish
+            // Long: trail stop below price, starting at breakeven + tick
+            strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_offset=trail_offset)
+        else
+            // Short: trail stop above price, starting at breakeven - tick
+            strategy.exit("Trail", "Short", stop=breakeven_plus_tick, trail_offset=trail_offset)
+
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
     // FIRST: Cancel all pending orders to prevent re-entry from lingering limit order
@@ -2189,6 +2252,10 @@ if trade_entered and strategy.position_size == 0
     trade_entered := false
     order_placed := false
     order_placed_bar := -1
+
+    // Reset trailing stop state
+    tp_hit := false
+    breakeven_plus_tick := na
 
     // Persist TP/SL boxes for the day (don't delete, just stop extending)
     // Add them to daily arrays so they stay visible until 20:00
