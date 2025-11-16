@@ -259,10 +259,6 @@ var int demand_trigger_bar = -1
 var float demand_lowest_low = na
 var float supply_highest_high = na
 
-// Track deepest HISTORICAL penetration (for validating new ENG OBs must be deeper)
-var float demand_deepest_ever = na  // Deepest low ever reached in demand zone
-var float supply_deepest_ever = na  // Highest high ever reached in supply zone
-
 // Track if we're completely outside both zones (ready to reset)
 var bool was_outside_zones = true
 
@@ -512,10 +508,6 @@ if in_supply
     else if na(supply_highest_high) or high > supply_highest_high
         supply_highest_high := high
 
-    // Track deepest EVER in supply zone (never resets, only gets deeper) - using CLOSE
-    if na(supply_deepest_ever) or close > supply_deepest_ever
-        supply_deepest_ever := close
-
 if in_demand
     demand_triggered := true
     demand_trigger_bar := bar_index
@@ -527,10 +519,6 @@ if in_demand
     // Otherwise, track lowest low in demand zone
     else if na(demand_lowest_low) or low < demand_lowest_low
         demand_lowest_low := low
-
-    // Track deepest EVER in demand zone (never resets, only gets deeper) - using CLOSE
-    if na(demand_deepest_ever) or close < demand_deepest_ever
-        demand_deepest_ever := close
 
 // ============================================================================
 // SETUP FLOW AND INVALIDATION RULES
@@ -558,8 +546,9 @@ if in_demand
 bool is_bullish_engulfing = false
 bool is_bearish_engulfing = false
 
-// Only check for engulfing when in an AOI AND within trading window
-if demand_triggered and bar_index > 0 and in_trading_window
+// Only check for engulfing when in an AOI, within trading window, and NO active ENG OB setup
+// This prevents the detection from running every bar and invalidating itself
+if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_active
     // Bullish engulfing: current candle close engulfs previous candle body
     bool current_bullish = close > open
     bool prev_bearish = close[1] < open[1]
@@ -568,14 +557,9 @@ if demand_triggered and bar_index > 0 and in_trading_window
     // Check if current or previous candle made the deepest low FOR THIS ZONE ENTRY
     bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
 
-    // VALIDATION: ENG OB must be deeper than or equal to any previous ENG OB
-    // The CLOSE of whichever candle made the deepest low must be lower than or equal to previous deepest close
-    float deepest_candle_close = low <= low[1] ? close : close[1]
-    bool is_deeper_than_previous = na(demand_deepest_ever) or deepest_candle_close <= demand_deepest_ever
+    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
 
-    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest and is_deeper_than_previous
-
-if supply_triggered and bar_index > 0 and in_trading_window
+if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_active
     // Bearish engulfing: current candle close engulfs previous candle body
     bool current_bearish = close < open
     bool prev_bullish = close[1] > open[1]
@@ -584,18 +568,13 @@ if supply_triggered and bar_index > 0 and in_trading_window
     // Check if current or previous candle made the highest high FOR THIS ZONE ENTRY
     bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
 
-    // VALIDATION: ENG OB must be deeper than or equal to any previous ENG OB
-    // The CLOSE of whichever candle made the highest high must be higher than or equal to previous deepest close
-    float deepest_candle_close = high >= high[1] ? close : close[1]
-    bool is_deeper_than_previous = na(supply_deepest_ever) or deepest_candle_close >= supply_deepest_ever
-
-    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest and is_deeper_than_previous
+    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
-// NOTE: Trading window only prevents NEW setups from forming
-// Existing setups remain active even outside trading window
-// This allows setups to continue tracking but prevents new entries outside hours
+// NOTE: Engulfing detection only runs when NO active ENG OB exists
+// This prevents the detection from running every bar and invalidating itself
+// Once ENG OB is detected, the setup remains active until invalidated or trade exits
 
 // INVALIDATION: Setup expires after max_setup_bars (only if not in trade) or at trading end time
 if eng_ob_active and not na(eng_ob_bar_index)
@@ -1039,8 +1018,7 @@ if barstate.isnew and was_outside_zones and inv_fvg_active
                 sl_box := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
-// IMPORTANT: Only activate if within trading window (prevents zombie states in replay mode)
-if is_bullish_engulfing and in_trading_window
+if is_bullish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := true
     eng_ob_deepest_level := demand_lowest_low
@@ -1060,7 +1038,7 @@ if is_bullish_engulfing and in_trading_window
         eng_ob_candle_high := high[1]
         eng_ob_candle_low := low[1]
 
-else if is_bearish_engulfing and in_trading_window
+else if is_bearish_engulfing
     eng_ob_active := true
     eng_ob_is_bullish := false
     eng_ob_deepest_level := supply_highest_high
@@ -2457,16 +2435,12 @@ if demand_triggered and bar_index > 0
     bool prev_bearish = close[1] < open[1]
     bool engulfs_body = close >= open[1]
     bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
-    float deepest_candle_close = low <= low[1] ? close : close[1]
-    bool is_deeper_than_previous = na(demand_deepest_ever) or deepest_candle_close <= demand_deepest_ever
 
     string bullish_eng_text = ""
     bullish_eng_text := bullish_eng_text + (current_bullish ? "✓" : "✗") + "cur_bull "
     bullish_eng_text := bullish_eng_text + (prev_bearish ? "✓" : "✗") + "prv_bear "
     bullish_eng_text := bullish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-    bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep "
-    bullish_eng_text := bullish_eng_text + (is_deeper_than_previous ? "✓" : "✗") + "deeper "
-    bullish_eng_text := bullish_eng_text + (in_trading_window ? "✓" : "✗") + "window"
+    bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
 
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bullish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
@@ -2478,16 +2452,12 @@ if supply_triggered and bar_index > 0
     bool prev_bullish = close[1] > open[1]
     bool engulfs_body = close <= open[1]
     bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
-    float deepest_candle_close = high >= high[1] ? close : close[1]
-    bool is_deeper_than_previous = na(supply_deepest_ever) or deepest_candle_close >= supply_deepest_ever
 
     string bearish_eng_text = ""
     bearish_eng_text := bearish_eng_text + (current_bearish ? "✓" : "✗") + "cur_bear "
     bearish_eng_text := bearish_eng_text + (prev_bullish ? "✓" : "✗") + "prv_bull "
     bearish_eng_text := bearish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-    bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep "
-    bearish_eng_text := bearish_eng_text + (is_deeper_than_previous ? "✓" : "✗") + "deeper "
-    bearish_eng_text := bearish_eng_text + (in_trading_window ? "✓" : "✗") + "window"
+    bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
 
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bearish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
