@@ -2338,6 +2338,12 @@ if trade_entered and not na(tp_box) and not na(sl_box)
     box.set_right(tp_box, bar_index + 1)
     box.set_right(sl_box, bar_index + 1)
 
+    // If trailing stop is active and TP was hit, update SL box to show breakeven+tick level
+    if use_trailing_stop and tp_hit and not na(breakeven_plus_tick)
+        // Move SL box to breakeven+tick level
+        box.set_top(sl_box, breakeven_plus_tick)
+        box.set_bottom(sl_box, breakeven_plus_tick)
+
 // ============================================================================
 // COMPREHENSIVE ZOMBIE STATE DETECTION - Run right before debug table
 // ============================================================================
@@ -2536,6 +2542,37 @@ string pos_size = str.tostring(strategy.position_size)
 table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, pos_size, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
+
+// Trailing Stop Status (only show when use_trailing_stop is enabled)
+if use_trailing_stop and trade_entered
+    // TP Hit status
+    string tp_hit_text = tp_hit ? "✓ YES" : "✗ NO"
+    color tp_hit_bg = tp_hit ? color.new(color.green, 85) : color.new(color.orange, 85)
+
+    // Current SL level (breakeven+tick if TP hit, otherwise entry_sl)
+    string current_sl = na(breakeven_plus_tick) ? str.tostring(entry_sl, format.mintick) : str.tostring(breakeven_plus_tick, format.mintick)
+
+    // Calculate trail offset for display
+    float atr_value = ta.atr(trailing_atr_length)
+    float trail_offset = atr_value * trailing_atr_multiplier
+    string trail_offset_text = str.tostring(trail_offset, format.mintick)
+
+    // Calculate price level where trailing will START to move
+    // This is: breakeven+tick + trail_offset (for long) or breakeven+tick - trail_offset (for short)
+    float trail_activation_level = na
+    if not na(breakeven_plus_tick)
+        if entry_is_bullish
+            trail_activation_level := breakeven_plus_tick + trail_offset
+        else
+            trail_activation_level := breakeven_plus_tick - trail_offset
+    string trail_activation = na(trail_activation_level) ? "-" : str.tostring(trail_activation_level, format.mintick)
+
+    // Combined text
+    string trailing_info = tp_hit_text + " | SL:" + current_sl + " | Trail:" + trail_offset_text + " | Activates@" + trail_activation
+
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trailing Stop", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, trailing_info, text_color=color.black, bgcolor=tp_hit_bg, text_size=size.small)
+    row := row + 1
 
 // Trading Window status - DETAILED
 string trading_window_text = in_trading_window ? "✓ IN" : "✗ OUT"
