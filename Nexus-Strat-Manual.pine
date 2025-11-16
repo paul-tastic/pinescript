@@ -2114,14 +2114,19 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     else
         breakeven_plus_tick := entry_price - syminfo.mintick
 
+    // Calculate quantities for trailing stop split
+    float tp_qty = use_trailing_stop ? position_size * 0.5 : 0.0
+    float trail_qty = use_trailing_stop ? position_size * 0.5 : 0.0
+
     // Place limit order at entry level
     if entry_is_bullish
         // Enter long position with limit order at entry level
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // Initial: full position with TP/SL until TP is hit
-            strategy.exit("Initial Exit", "Long", limit=entry_tp, stop=entry_sl)
+            // Split into two exits: 50% at TP, 50% with SL (will become trailing later)
+            strategy.exit("TP Exit", "Long", qty=tp_qty, limit=entry_tp)
+            strategy.exit("Trail Exit", "Long", qty=trail_qty, stop=entry_sl)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
@@ -2130,8 +2135,9 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
 
         if use_trailing_stop
-            // Initial: full position with TP/SL until TP is hit
-            strategy.exit("Initial Exit", "Short", limit=entry_tp, stop=entry_sl)
+            // Split into two exits: 50% at TP, 50% with SL (will become trailing later)
+            strategy.exit("TP Exit", "Short", qty=tp_qty, limit=entry_tp)
+            strategy.exit("Trail Exit", "Short", qty=trail_qty, stop=entry_sl)
         else
             // Standard exit: full position at TP/SL
             strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
@@ -2200,27 +2206,21 @@ if use_trailing_stop and trade_entered and not tp_hit
         tp_reached := low <= entry_tp
 
     if tp_reached
-        // TP was hit - now we need to:
-        // 1. Cancel the "Initial Exit" order
-        // 2. Close 50% at market
-        // 3. Set trailing stop for remaining 50%
+        // TP was hit - "TP Exit" order should have closed 50% automatically
+        // Now replace "Trail Exit" order with trailing stop at breakeven
         tp_hit := true
 
         // Calculate ATR for trailing stop
         float atr_value = ta.atr(trailing_atr_length)
         float trail_offset = atr_value * trailing_atr_multiplier
 
-        // Cancel the initial exit order
-        strategy.cancel("Initial Exit")
+        // Cancel the "Trail Exit" order (had initial SL)
+        strategy.cancel("Trail Exit")
 
-        // Close 50% at market
+        // Replace with new trailing stop order starting at breakeven + tick
         if entry_is_bullish
-            strategy.close("Long", qty_percent=50, comment="TP 50%")
-            // Set trailing stop for remaining 50%, starting at breakeven + tick
             strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_offset=trail_offset)
         else
-            strategy.close("Short", qty_percent=50, comment="TP 50%")
-            // Set trailing stop for remaining 50%, starting at breakeven - tick
             strategy.exit("Trail", "Short", stop=breakeven_plus_tick, trail_offset=trail_offset)
 
 // Check if trade has exited (TP or SL hit)
