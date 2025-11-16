@@ -2234,8 +2234,9 @@ if use_trailing_stop and trade_entered and not tp_hit
 
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
-    // FIRST: Cancel all pending orders to prevent re-entry from lingering limit order
-    strategy.cancel_all()
+    // FIRST: Close any remaining position and cancel all pending orders
+    strategy.close_all()    // Close any lingering positions (safety check)
+    strategy.cancel_all()   // Cancel all pending orders (prevent re-entry)
 
     // Record the exit bar to prevent same-bar re-entry
     last_exit_bar := bar_index
