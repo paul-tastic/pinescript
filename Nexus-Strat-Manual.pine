@@ -321,8 +321,10 @@ var string inv_fvg_invalidation_reason = ""  // Track why Inverted FVG was clear
 // Track TP/SL indicator boxes - use arrays to persist multiple boxes throughout the day
 var array<box> daily_tp_boxes = array.new<box>()
 var array<box> daily_sl_boxes = array.new<box>()
-var box tp_box = na  // Current active TP box
-var box sl_box = na  // Current active SL box
+var box tp_box = na  // Current active TP box (original - shows initial plan)
+var box sl_box = na  // Current active SL box (original - shows initial plan)
+var box live_tp_box = na  // Live TP box (updates in real-time as trailing stop moves)
+var box live_sl_box = na  // Live SL box (updates in real-time as trailing stop moves)
 
 // Track if we've already entered a trade for this setup
 var bool trade_entered = false
@@ -424,13 +426,19 @@ if not in_trading_window
         box.delete(eng_ob_box)
         eng_ob_box := na
 
-    // Delete TP/SL boxes
+    // Delete TP/SL boxes (both original and live)
     if not na(tp_box)
         box.delete(tp_box)
         tp_box := na
     if not na(sl_box)
         box.delete(sl_box)
         sl_box := na
+    if not na(live_tp_box)
+        box.delete(live_tp_box)
+        live_tp_box := na
+    if not na(live_sl_box)
+        box.delete(live_sl_box)
+        live_sl_box := na
 
     // Clear BPR FVG state
     if not na(bpr_fvg_box)
@@ -685,13 +693,19 @@ if eng_ob_active and not na(eng_ob_bar_index)
             box.delete(eng_ob_box)
             eng_ob_box := na
 
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
 // INVALIDATION: Clear setup when zones are disabled
 // Only invalidate if the disabled zone MATCHES the setup's zone
@@ -757,13 +771,19 @@ if eng_ob_active
             box.delete(eng_ob_box)
             eng_ob_box := na
 
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
 // INVALIDATION: Clear BPR FVG when zones are disabled (INDEPENDENT of ENG OB)
 if bpr_fvg_active
@@ -806,6 +826,12 @@ if bpr_fvg_active
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
 // INVALIDATION: Clear Inverted FVG when zones are disabled (INDEPENDENT of ENG OB)
 if inv_fvg_active
@@ -847,6 +873,12 @@ if inv_fvg_active
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
 // INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
 // Bullish setup (from demand) invalidated by entering supply zone
@@ -903,13 +935,19 @@ if barstate.isnew and was_outside_zones
             box.delete(eng_ob_box)
             eng_ob_box := na
 
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
     else if eng_ob_active and not eng_ob_is_bullish and in_demand
         // Bearish setup invalidated by entering demand zone
@@ -962,13 +1000,19 @@ if barstate.isnew and was_outside_zones
             box.delete(eng_ob_box)
             eng_ob_box := na
 
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
 // INVALIDATION: Clear BPR FVG when entering OPPOSITE zone (INDEPENDENT of ENG OB)
 if barstate.isnew and was_outside_zones and bpr_fvg_active
@@ -1011,6 +1055,12 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
 // INVALIDATION: Clear Inverted FVG when entering OPPOSITE zone (INDEPENDENT of ENG OB)
 if barstate.isnew and was_outside_zones and inv_fvg_active
@@ -1052,6 +1102,12 @@ if barstate.isnew and was_outside_zones and inv_fvg_active
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle
 if is_bullish_engulfing
@@ -1125,13 +1181,19 @@ if eng_ob_active
                 box.delete(eng_ob_box)
                 eng_ob_box := na
 
-            // Delete TP/SL boxes
+            // Delete TP/SL boxes (both original and live)
             if not na(tp_box)
                 box.delete(tp_box)
                 tp_box := na
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
     else if not eng_ob_is_bullish and supply_triggered and not na(eng_ob_candle_high)
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
@@ -1160,13 +1222,19 @@ if eng_ob_active
                 box.delete(eng_ob_box)
                 eng_ob_box := na
 
-            // Delete TP/SL boxes
+            // Delete TP/SL boxes (both original and live)
             if not na(tp_box)
                 box.delete(tp_box)
                 tp_box := na
             if not na(sl_box)
                 box.delete(sl_box)
                 sl_box := na
+            if not na(live_tp_box)
+                box.delete(live_tp_box)
+                live_tp_box := na
+            if not na(live_sl_box)
+                box.delete(live_sl_box)
+                live_sl_box := na
 
 // INVALIDATION: Entry signal invalidated when price reaches opposite zone
 // This invalidation applies even if we haven't left both zones
@@ -1276,13 +1344,19 @@ if entry_signal_active
         entry_tp := na
         entry_sl := na
 
-        // Delete TP/SL boxes (shared across all strategies)
+        // Delete TP/SL boxes (both original and live, shared across all strategies)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
 // Track which candle made the deepest penetration (only show current)
 var label deepest_demand_label = na
@@ -2091,13 +2165,19 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
         entry_sl := na
         order_placed := false
 
-        // Delete TP/SL boxes
+        // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
             tp_box := na
         if not na(sl_box)
             box.delete(sl_box)
             sl_box := na
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
 // ============================================================================
 // GENERIC ENTRY EXECUTION - Works for all strategies
@@ -2175,11 +2255,17 @@ if entry_signal_active and not trade_entered
 
         // Create TP and SL indicator boxes (only when trade is actually entered)
         // This completes the standard visual flow: YELLOW → BLUE → GREEN/RED
-        // Delete old boxes first
+        // Delete old boxes first (both original and live)
         if not na(tp_box)
             box.delete(tp_box)
         if not na(sl_box)
             box.delete(sl_box)
+        if not na(live_tp_box)
+            box.delete(live_tp_box)
+            live_tp_box := na
+        if not na(live_sl_box)
+            box.delete(live_sl_box)
+            live_sl_box := na
 
         // Create new TP box (green) and SL box (red)
         if entry_is_bullish
@@ -2237,10 +2323,15 @@ if use_trailing_stop and trade_entered and not tp_hit
         strategy.cancel("TP Order")     // Cancel TP order (already filled, but cleanup)
 
         // Place new trailing stop order for remaining 50% starting at breakeven + tick
+        // For trailing stops: use trail_points (in ticks) instead of trail_offset (in price)
+        float trail_points = trail_offset / syminfo.mintick
+
         if entry_is_bullish
-            strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_offset=trail_offset)
+            // Long: stop trails UP as price moves UP
+            strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_points=trail_points)
         else
-            strategy.exit("Trail", "Short", stop=breakeven_plus_tick, trail_offset=trail_offset)
+            // Short: stop trails DOWN as price moves DOWN
+            strategy.exit("Trail", "Short", stop=breakeven_plus_tick, trail_points=trail_points)
 
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
@@ -2289,6 +2380,13 @@ if trade_entered and strategy.position_size == 0
     if not na(sl_box)
         array.push(daily_sl_boxes, sl_box)
         sl_box := na
+    // Also persist live boxes if they exist
+    if not na(live_tp_box)
+        array.push(daily_tp_boxes, live_tp_box)
+        live_tp_box := na
+    if not na(live_sl_box)
+        array.push(daily_sl_boxes, live_sl_box)
+        live_sl_box := na
 
     // Delete eng_ob_box since it's just for active setup
     if not na(eng_ob_box)
@@ -2338,11 +2436,56 @@ if trade_entered and not na(tp_box) and not na(sl_box)
     box.set_right(tp_box, bar_index + 1)
     box.set_right(sl_box, bar_index + 1)
 
-    // If trailing stop is active and TP was hit, update SL box to show breakeven+tick level
+    // If trailing stop is active and TP was hit, create/update live boxes
     if use_trailing_stop and tp_hit and not na(breakeven_plus_tick)
-        // Move SL box to breakeven+tick level
-        box.set_top(sl_box, breakeven_plus_tick)
-        box.set_bottom(sl_box, breakeven_plus_tick)
+        // Create live boxes if they don't exist yet (dotted style to distinguish from originals)
+        if na(live_tp_box)
+            if entry_is_bullish
+                // Bullish: TP is above entry
+                live_tp_box := box.new(bar_index, entry_tp, bar_index + 1, entry_price,
+                                 border_color=color.new(color.green, 40),
+                                 bgcolor=color.new(color.green, 90),
+                                 border_width=2,
+                                 border_style=line.style_dotted,
+                                 extend=extend.none)
+            else
+                // Bearish: TP is below entry
+                live_tp_box := box.new(bar_index, entry_price, bar_index + 1, entry_tp,
+                                 border_color=color.new(color.green, 40),
+                                 bgcolor=color.new(color.green, 90),
+                                 border_width=2,
+                                 border_style=line.style_dotted,
+                                 extend=extend.none)
+
+        if na(live_sl_box)
+            if entry_is_bullish
+                // Bullish: SL is below entry, starts at breakeven+tick
+                live_sl_box := box.new(bar_index, entry_price, bar_index + 1, breakeven_plus_tick,
+                                 border_color=color.new(color.red, 40),
+                                 bgcolor=color.new(color.red, 90),
+                                 border_width=2,
+                                 border_style=line.style_dotted,
+                                 extend=extend.none)
+            else
+                // Bearish: SL is above entry, starts at breakeven+tick
+                live_sl_box := box.new(bar_index, breakeven_plus_tick, bar_index + 1, entry_price,
+                                 border_color=color.new(color.red, 40),
+                                 bgcolor=color.new(color.red, 90),
+                                 border_width=2,
+                                 border_style=line.style_dotted,
+                                 extend=extend.none)
+
+        // Update live boxes to extend and track current SL level (breakeven+tick for now, will trail with price)
+        if not na(live_tp_box)
+            box.set_right(live_tp_box, bar_index + 1)
+
+        if not na(live_sl_box)
+            box.set_right(live_sl_box, bar_index + 1)
+            // Update SL position to current trailing stop level (breakeven+tick initially, trails with price)
+            if entry_is_bullish
+                box.set_bottom(live_sl_box, breakeven_plus_tick)
+            else
+                box.set_top(live_sl_box, breakeven_plus_tick)
 
 // ============================================================================
 // COMPREHENSIVE ZOMBIE STATE DETECTION - Run right before debug table
@@ -2558,12 +2701,16 @@ if use_trailing_stop and trade_entered
     string trail_offset_text = str.tostring(trail_offset, format.mintick)
 
     // Calculate price level where trailing will START to move
-    // This is: breakeven+tick + trail_offset (for long) or breakeven+tick - trail_offset (for short)
+    // For LONG: price must move UP beyond breakeven+tick + trail_offset before stop trails up
+    // For SHORT: price must move DOWN beyond breakeven+tick - trail_offset before stop trails down
+    // The activation threshold is the distance price must travel favorably from breakeven
     float trail_activation_level = na
     if not na(breakeven_plus_tick)
         if entry_is_bullish
+            // Long: price must exceed breakeven+tick + trail_offset (move UP)
             trail_activation_level := breakeven_plus_tick + trail_offset
         else
+            // Short: price must exceed breakeven+tick - trail_offset (move DOWN)
             trail_activation_level := breakeven_plus_tick - trail_offset
     string trail_activation = na(trail_activation_level) ? "-" : str.tostring(trail_activation_level, format.mintick)
 
