@@ -2694,16 +2694,16 @@ else if entry_signal_active
     aoi_status := "AWAITING ENTRY"
     value_bgcolor := entry_is_bullish ? color.new(color.green, 80) : color.new(color.red, 80)
 else if eng_ob_active
-    aoi_status := "ACTIVE"
+    aoi_status := "AWAITING ENTRY"
     value_bgcolor := eng_ob_is_bullish ? color.new(color.green, 85) : color.new(color.red, 85)
 else if bpr_fvg_active or inv_fvg_active
-    aoi_status := "ACTIVE"
+    aoi_status := "AWAITING ENTRY"
     // For BPR FVG, trade direction is INVERTED from FVG direction
     // Bullish FVG = bearish trade (red), Bearish FVG = bullish trade (blue)
     // For Inverted FVG, trade direction matches the variable
     value_bgcolor := (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish) ? color.new(color.green, 85) : color.new(color.red, 85)
 else if supply_triggered or demand_triggered
-    aoi_status := "IN AOI"
+    aoi_status := supply_triggered ? "IN SUPPLY" : "IN DEMAND"
     value_bgcolor := supply_triggered ? color.new(color.red, 85) : color.new(color.green, 85)
 else
     aoi_status := "-"
@@ -2780,17 +2780,17 @@ table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trading Window", tex
 table.cell(debugTable, 1, row, trading_window_text, text_color=color.black, bgcolor=trading_window_bg, text_size=size.small)
 row := row + 1
 
-// Cooldown status
-string cooldown_text = in_cooldown ? "✗ YES (blocked)" : "✓ NO"
+// Cooldown status (only show if there's meaningful data)
 if last_exit_bar >= 0
+    string cooldown_text = in_cooldown ? "✗ YES (blocked)" : "✓ NO"
     int bars_since_exit = bar_index - last_exit_bar
     cooldown_text := cooldown_text + " (" + str.tostring(bars_since_exit) + " bars)"
-color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.green, 85)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
-row := row + 1
+    color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.green, 85)
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
+    row := row + 1
 
-// Invalidation parameters - show timeout settings with active counts
+// Timeout Counters (only show when there's an active setup)
 string setup_count = "-"
 string entry_count = "-"
 color timeout_bg = value_bgcolor
@@ -2811,121 +2811,86 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
     entry_count := str.tostring(bars_since_entry) + "/" + str.tostring(entry_timeout_bars)
     timeout_bg := bars_since_entry >= entry_timeout_bars ? color.new(color.red, 85) : (bars_since_entry >= entry_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
 
-string invalidation_params = "Setup: " + setup_count + " | Entry: " + entry_count
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Timeout Counters", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, invalidation_params, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
-row := row + 1
-
-// ENGULFING DETECTION DIAGNOSTIC (ALWAYS VISIBLE)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-row := row + 1
-
-// Zone triggered status
-string zone_triggered_text = "-"
-if supply_triggered
-    zone_triggered_text := "✓ SUPPLY"
-else if demand_triggered
-    zone_triggered_text := "✓ DEMAND"
-else
-    zone_triggered_text := "✗ NONE"
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Triggered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, zone_triggered_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
-
-// Engulfing pattern conditions (bullish)
-if demand_triggered and bar_index > 0
-    bool current_bullish = close > open
-    bool prev_bearish = close[1] < open[1]
-    bool engulfs_body = close >= open[1]
-    bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
-
-    string bullish_eng_text = ""
-    bullish_eng_text := bullish_eng_text + (current_bullish ? "✓" : "✗") + "cur_bull "
-    bullish_eng_text := bullish_eng_text + (prev_bearish ? "✓" : "✗") + "prv_bear "
-    bullish_eng_text := bullish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-    bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
-
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bullish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+// Only show row if there's actual timeout data
+if setup_count != "-" or entry_count != "-"
+    string invalidation_params = "Setup: " + setup_count + " | Entry: " + entry_count
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Timeout Counters", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, invalidation_params, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
     row := row + 1
 
-// Engulfing pattern conditions (bearish)
-if supply_triggered and bar_index > 0
-    bool current_bearish = close < open
-    bool prev_bullish = close[1] > open[1]
-    bool engulfs_body = close <= open[1]
-    bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
-
-    string bearish_eng_text = ""
-    bearish_eng_text := bearish_eng_text + (current_bearish ? "✓" : "✗") + "cur_bear "
-    bearish_eng_text := bearish_eng_text + (prev_bullish ? "✓" : "✗") + "prv_bull "
-    bearish_eng_text := bearish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-    bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
-
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bearish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
-
-// BPR FVG Active Status (ALWAYS VISIBLE for zombie diagnosis)
-string bpr_fvg_active_text = bpr_fvg_active ? "✓ TRUE" : "✗ FALSE"
-color bpr_fvg_active_bg = bpr_fvg_active ? color.new(color.red, 85) : value_bgcolor
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BPR FVG Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, bpr_fvg_active_text, text_color=color.black, bgcolor=bpr_fvg_active_bg, text_size=size.small)
-row := row + 1
-
-// INV FVG Active Status (ALWAYS VISIBLE for zombie diagnosis)
-string inv_fvg_active_text = inv_fvg_active ? "✓ TRUE" : "✗ FALSE"
-color inv_fvg_active_bg = inv_fvg_active ? color.new(color.red, 85) : value_bgcolor
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". INV FVG Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, inv_fvg_active_text, text_color=color.black, bgcolor=inv_fvg_active_bg, text_size=size.small)
-row := row + 1
-
-// Trade Entry Bar (ALWAYS VISIBLE for stuck trade diagnosis)
-string entry_bar_text = "-"
-color entry_bar_bg = value_bgcolor
-if order_placed_bar >= 0
-    int bars_ago = bar_index - order_placed_bar
-    entry_bar_text := str.tostring(order_placed_bar) + " (" + str.tostring(bars_ago) + " bars ago)"
-    entry_bar_bg := bars_ago > 20 ? color.new(color.orange, 85) : value_bgcolor  // Highlight if old
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trade Entry Bar", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, entry_bar_text, text_color=color.black, bgcolor=entry_bar_bg, text_size=size.small)
-row := row + 1
-
-// S&D Zone Levels
-string supply_zone = "-"
+// Consolidated S&D Zones (always show)
+string sd_zones_text = ""
 if clear_supply
-    supply_zone := "DISABLED"
+    sd_zones_text := "S: DISABLED"
 else if supply_configured
-    supply_zone := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, supply_zone, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+    sd_zones_text := "S: " + str.tostring(supply_bottom, format.mintick) + "-" + str.tostring(supply_top, format.mintick)
+else
+    sd_zones_text := "S: -"
 
-string demand_zone = "-"
-color demand_zone_bgcolor = value_bgcolor
+sd_zones_text := sd_zones_text + " | "
+
 if clear_demand
-    demand_zone := "DISABLED"
+    sd_zones_text := sd_zones_text + "D: DISABLED"
 else if demand_configured
-    demand_zone := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, demand_zone, text_color=color.black, bgcolor=demand_zone_bgcolor, text_size=size.small)
+    sd_zones_text := sd_zones_text + "D: " + str.tostring(demand_bottom, format.mintick) + "-" + str.tostring(demand_top, format.mintick)
+else
+    sd_zones_text := sd_zones_text + "D: -"
+
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". S&D Zones", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, sd_zones_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
-// ENG OB Active Status (ALWAYS VISIBLE)
-string eng_ob_active_text = eng_ob_active ? "✓ TRUE" : "✗ FALSE"
-color eng_ob_active_bg = eng_ob_active ? color.new(color.green, 85) : value_bgcolor
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, eng_ob_active_text, text_color=color.black, bgcolor=eng_ob_active_bg, text_size=size.small)
-row := row + 1
+// ENGULFING DETECTION DIAGNOSTIC (only show in debug mode)
+if debug_mode
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+    table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+    row := row + 1
 
-// MSS OB Active Status (ALWAYS VISIBLE) - shows if MSS entry logic is active
-bool mss_ob_looking_for_entry = eng_ob_active and use_mss_ob and not entry_signal_active
-string mss_ob_active_text = mss_ob_looking_for_entry ? "✓ TRUE" : "✗ FALSE"
-color mss_ob_active_bg = mss_ob_looking_for_entry ? color.new(color.green, 85) : value_bgcolor
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS OB Active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, mss_ob_active_text, text_color=color.black, bgcolor=mss_ob_active_bg, text_size=size.small)
-row := row + 1
+    // Zone triggered status
+    string zone_triggered_text = "-"
+    if supply_triggered
+        zone_triggered_text := "✓ SUPPLY"
+    else if demand_triggered
+        zone_triggered_text := "✓ DEMAND"
+    else
+        zone_triggered_text := "✗ NONE"
+    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Triggered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, row, zone_triggered_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+    row := row + 1
+
+    // Engulfing pattern conditions (bullish)
+    if demand_triggered and bar_index > 0
+        bool current_bullish = close > open
+        bool prev_bearish = close[1] < open[1]
+        bool engulfs_body = close >= open[1]
+        bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
+
+        string bullish_eng_text = ""
+        bullish_eng_text := bullish_eng_text + (current_bullish ? "✓" : "✗") + "cur_bull "
+        bullish_eng_text := bullish_eng_text + (prev_bearish ? "✓" : "✗") + "prv_bear "
+        bullish_eng_text := bullish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
+        bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
+
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bullish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
+
+    // Engulfing pattern conditions (bearish)
+    if supply_triggered and bar_index > 0
+        bool current_bearish = close < open
+        bool prev_bullish = close[1] > open[1]
+        bool engulfs_body = close <= open[1]
+        bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
+
+        string bearish_eng_text = ""
+        bearish_eng_text := bearish_eng_text + (current_bearish ? "✓" : "✗") + "cur_bear "
+        bearish_eng_text := bearish_eng_text + (prev_bullish ? "✓" : "✗") + "prv_bull "
+        bearish_eng_text := bearish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
+        bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
+
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bearish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
 // Session Levels - REMOVED (rows 11-13 reserved for future use)
 // If re-enabled, use hardcoded row numbers like:
@@ -2987,11 +2952,11 @@ if eng_ob_active and not na(eng_ob_bar_index)
     bool should_invalidate_timeout_display = false
     string timeout_reason_display = "-"
     if not na(eng_ob_bar_index)
-        if not trade_entered
+        if not entry_signal_active and not trade_entered
             int bars_since_setup = bar_index - eng_ob_bar_index
-            if bars_since_setup >= max_setup_bars
+            if bars_since_setup >= setup_timeout_bars
                 should_invalidate_timeout_display := true
-                timeout_reason_display := "Max bars (" + str.tostring(bars_since_setup) + "/" + str.tostring(max_setup_bars) + ")"
+                timeout_reason_display := "Setup timeout (" + str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars) + ")"
 
         int current_hour = hour(time, "America/New_York")
         int current_minute = minute(time, "America/New_York")
@@ -3031,74 +2996,59 @@ if bpr_fvg_active or inv_fvg_active
     color invalid_color = fvg_trade_is_bullish ? color.new(color.red, 85) : color.new(color.green, 85)
     color neutral_color = value_bgcolor
 
-    // RAW BOOLEAN DEBUG - Shows the actual variable states (ALWAYS VISIBLE for zombie diagnosis)
-    // Header row
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BOOL DEBUG", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-    table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-    row := row + 1
+    // RAW BOOLEAN DEBUG - Only show in debug mode for zombie diagnosis
+    if debug_mode
+        // Header row
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BOOL DEBUG", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+        table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
+        row := row + 1
 
-    // bpr_fvg_active
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    color bpr_active_bg = bpr_fvg_active ? color.new(color.red, 85) : value_bgcolor
-    table.cell(debugTable, 1, row, str.tostring(bpr_fvg_active), text_color=color.black, bgcolor=bpr_active_bg, text_size=size.small)
-    row := row + 1
+        // bpr_fvg_active
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        color bpr_active_bg = bpr_fvg_active ? color.new(color.red, 85) : value_bgcolor
+        table.cell(debugTable, 1, row, str.tostring(bpr_fvg_active), text_color=color.black, bgcolor=bpr_active_bg, text_size=size.small)
+        row := row + 1
 
-    // inv_fvg_active
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". inv_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    color inv_active_bg = inv_fvg_active ? color.new(color.red, 85) : value_bgcolor
-    table.cell(debugTable, 1, row, str.tostring(inv_fvg_active), text_color=color.black, bgcolor=inv_active_bg, text_size=size.small)
-    row := row + 1
+        // inv_fvg_active
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". inv_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        color inv_active_bg = inv_fvg_active ? color.new(color.red, 85) : value_bgcolor
+        table.cell(debugTable, 1, row, str.tostring(inv_fvg_active), text_color=color.black, bgcolor=inv_active_bg, text_size=size.small)
+        row := row + 1
 
-    // entry_signal_active
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". entry_signal_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, str.tostring(entry_signal_active), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+        // entry_signal_active
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". entry_signal_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, str.tostring(entry_signal_active), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
-    // trade_entered
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". trade_entered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, str.tostring(trade_entered), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+        // trade_entered
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". trade_entered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, str.tostring(trade_entered), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
-    // order_placed
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". order_placed", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, str.tostring(order_placed), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+        // order_placed
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". order_placed", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, str.tostring(order_placed), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
-    // bpr_fvg_bar_index
-    string fvg_bar_index_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, fvg_bar_index_str, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+        // bpr_fvg_bar_index
+        string fvg_bar_index_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, fvg_bar_index_str, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
-    // bar_index
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, str.tostring(bar_index), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+        // bar_index
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, str.tostring(bar_index), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
-    // Bars since BPR FVG was last set to true (helps debug zombie states)
-    string bars_since_active = "never"
-    if not na(bpr_fvg_bar_index)
-        int bars_ago = bar_index - bpr_fvg_bar_index
-        bars_since_active := str.tostring(bars_ago) + " bars ago"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bars since detect", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, bars_since_active, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
-
-    // BARS BACK - Shows how long ago FVG was detected
-    string bars_back_text = "NEVER"
-    color bars_back_bg = value_bgcolor
-    if not na(bpr_fvg_bar_index)
-        int bars_back = bar_index - bpr_fvg_bar_index
-        bars_back_text := str.tostring(bars_back) + " bars ago"
-        // Red if zombie (bar_index set but not active)
-        bars_back_bg := bpr_fvg_active ? value_bgcolor : color.new(color.red, 85)
-    else if not na(inv_fvg_bar_index)
-        int bars_back = bar_index - inv_fvg_bar_index
-        bars_back_text := str.tostring(bars_back) + " bars ago"
-        bars_back_bg := inv_fvg_active ? value_bgcolor : color.new(color.red, 85)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BARS BACK", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, bars_back_text, text_color=color.black, bgcolor=bars_back_bg, text_size=size.small)
-    row := row + 1
+        // Bars since BPR FVG was last set to true (helps debug zombie states)
+        string bars_since_active = "never"
+        if not na(bpr_fvg_bar_index)
+            int bars_ago = bar_index - bpr_fvg_bar_index
+            bars_since_active := str.tostring(bars_ago) + " bars ago"
+        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bars since detect", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, row, bars_since_active, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+        row := row + 1
 
     // SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress (moved below BARS BACK)
     string setup_timeout_debug = "-"
