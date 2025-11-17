@@ -332,6 +332,8 @@ var bool trade_entered = false
 // Track trailing stop state
 var bool tp_hit = false  // TP was hit, 50% closed, now trailing remaining 50%
 var float breakeven_plus_tick = na  // Breakeven + 1 tick level (direction-aware)
+var float trailing_high_water_mark = na  // Highest high (long) or lowest low (short) since TP hit - used to calculate trailing stop
+var float current_trailing_stop = na  // Current trailing stop level (updated on every bar)
 
 // Track if limit order has been placed for current entry signal
 var bool order_placed = false
@@ -420,6 +422,8 @@ if not in_trading_window
     // Reset trailing stop state
     tp_hit := false
     breakeven_plus_tick := na
+    trailing_high_water_mark := na
+    current_trailing_stop := na
 
     // Delete yellow box
     if not na(eng_ob_box)
@@ -2311,27 +2315,68 @@ if use_trailing_stop and trade_entered and not tp_hit
 
     if tp_reached
         // TP was hit - "TP Order" should have closed 50% automatically
-        // Now cancel "Full SL" and replace with trailing stop at breakeven for remaining 50%
+        // Now cancel "Full SL" and replace with manual trailing stop at breakeven for remaining 50%
         tp_hit := true
-
-        // Calculate ATR for trailing stop
-        float atr_value = ta.atr(trailing_atr_length)
-        float trail_offset = atr_value * trailing_atr_multiplier
 
         // Cancel the original orders
         strategy.cancel("Full SL")      // Cancel full SL (was protecting all contracts)
         strategy.cancel("TP Order")     // Cancel TP order (already filled, but cleanup)
 
-        // Place new trailing stop order for remaining 50% starting at breakeven + tick
-        // For trailing stops: use trail_points (in ticks) instead of trail_offset (in price)
-        float trail_points = trail_offset / syminfo.mintick
+        // Initialize trailing stop state
+        current_trailing_stop := breakeven_plus_tick  // Start at breakeven+tick
 
+        // Initialize high water mark to current price
         if entry_is_bullish
-            // Long: stop trails UP as price moves UP
-            strategy.exit("Trail", "Long", stop=breakeven_plus_tick, trail_points=trail_points)
+            trailing_high_water_mark := high  // Track highest high for longs
         else
-            // Short: stop trails DOWN as price moves DOWN
-            strategy.exit("Trail", "Short", stop=breakeven_plus_tick, trail_points=trail_points)
+            trailing_high_water_mark := low   // Track lowest low for shorts
+
+        // Place initial stop at breakeven+tick (will be updated on every bar)
+        if entry_is_bullish
+            strategy.exit("Trail", "Long", stop=current_trailing_stop)
+        else
+            strategy.exit("Trail", "Short", stop=current_trailing_stop)
+
+// ============================================================================
+// MANUAL TRAILING STOP UPDATE - Runs on every bar after TP hit
+// ============================================================================
+// Update trailing stop on every bar to trail price by trail_offset distance
+// CRITICAL: Always maintain a stop order for fallback protection
+if use_trailing_stop and tp_hit and trade_entered and strategy.position_size != 0
+    // Calculate ATR for trailing stop distance
+    float atr_value = ta.atr(trailing_atr_length)
+    float trail_offset = atr_value * trailing_atr_multiplier
+
+    if entry_is_bullish
+        // LONG TRADE: Trail stop UP as price makes new highs
+        // Update high water mark if new high reached
+        if high > trailing_high_water_mark
+            trailing_high_water_mark := high
+
+        // Calculate new stop: trail_offset below the highest high
+        float new_stop = trailing_high_water_mark - trail_offset
+
+        // Only move stop UP (never down), and only if it improves from current level
+        if new_stop > current_trailing_stop
+            // Cancel old stop and place new one at improved level
+            strategy.cancel("Trail")
+            strategy.exit("Trail", "Long", stop=new_stop)
+            current_trailing_stop := new_stop
+    else
+        // SHORT TRADE: Trail stop DOWN as price makes new lows
+        // Update low water mark if new low reached
+        if low < trailing_high_water_mark
+            trailing_high_water_mark := low
+
+        // Calculate new stop: trail_offset above the lowest low
+        float new_stop = trailing_high_water_mark + trail_offset
+
+        // Only move stop DOWN (never up), and only if it improves from current level
+        if new_stop < current_trailing_stop
+            // Cancel old stop and place new one at improved level
+            strategy.cancel("Trail")
+            strategy.exit("Trail", "Short", stop=new_stop)
+            current_trailing_stop := new_stop
 
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
@@ -2371,6 +2416,8 @@ if trade_entered and strategy.position_size == 0
     // Reset trailing stop state
     tp_hit := false
     breakeven_plus_tick := na
+    trailing_high_water_mark := na
+    current_trailing_stop := na
 
     // Persist TP/SL boxes for the day (don't delete, just stop extending)
     // Add them to daily arrays so they stay visible until 20:00
@@ -2459,33 +2506,33 @@ if trade_entered and not na(tp_box) and not na(sl_box)
 
         if na(live_sl_box)
             if entry_is_bullish
-                // Bullish: SL is below entry, starts at breakeven+tick
-                live_sl_box := box.new(bar_index, entry_price, bar_index + 1, breakeven_plus_tick,
+                // Bullish: SL is below entry, starts at current trailing stop level
+                live_sl_box := box.new(bar_index, entry_price, bar_index + 1, current_trailing_stop,
                                  border_color=color.new(color.red, 40),
                                  bgcolor=color.new(color.red, 90),
                                  border_width=2,
                                  border_style=line.style_dotted,
                                  extend=extend.none)
             else
-                // Bearish: SL is above entry, starts at breakeven+tick
-                live_sl_box := box.new(bar_index, breakeven_plus_tick, bar_index + 1, entry_price,
+                // Bearish: SL is above entry, starts at current trailing stop level
+                live_sl_box := box.new(bar_index, current_trailing_stop, bar_index + 1, entry_price,
                                  border_color=color.new(color.red, 40),
                                  bgcolor=color.new(color.red, 90),
                                  border_width=2,
                                  border_style=line.style_dotted,
                                  extend=extend.none)
 
-        // Update live boxes to extend and track current SL level (breakeven+tick for now, will trail with price)
+        // Update live boxes to extend and track current SL level (trails with price in real-time)
         if not na(live_tp_box)
             box.set_right(live_tp_box, bar_index + 1)
 
         if not na(live_sl_box)
             box.set_right(live_sl_box, bar_index + 1)
-            // Update SL position to current trailing stop level (breakeven+tick initially, trails with price)
+            // Update SL position to current trailing stop level (updates as stop trails)
             if entry_is_bullish
-                box.set_bottom(live_sl_box, breakeven_plus_tick)
+                box.set_bottom(live_sl_box, current_trailing_stop)
             else
-                box.set_top(live_sl_box, breakeven_plus_tick)
+                box.set_top(live_sl_box, current_trailing_stop)
 
 // ============================================================================
 // COMPREHENSIVE ZOMBIE STATE DETECTION - Run right before debug table
@@ -2692,30 +2739,19 @@ if use_trailing_stop and trade_entered
     string tp_hit_text = tp_hit ? "✓ YES" : "✗ NO"
     color tp_hit_bg = tp_hit ? color.new(color.green, 85) : color.new(color.orange, 85)
 
-    // Current SL level (breakeven+tick if TP hit, otherwise entry_sl)
-    string current_sl = na(breakeven_plus_tick) ? str.tostring(entry_sl, format.mintick) : str.tostring(breakeven_plus_tick, format.mintick)
+    // Current SL level - show actual trailing stop if active, otherwise entry SL
+    string current_sl = na(current_trailing_stop) ? str.tostring(entry_sl, format.mintick) : str.tostring(current_trailing_stop, format.mintick)
 
     // Calculate trail offset for display
     float atr_value = ta.atr(trailing_atr_length)
     float trail_offset = atr_value * trailing_atr_multiplier
     string trail_offset_text = str.tostring(trail_offset, format.mintick)
 
-    // Calculate price level where trailing will START to move
-    // For LONG: price must move UP beyond breakeven+tick + trail_offset before stop trails up
-    // For SHORT: price must move DOWN beyond breakeven+tick - trail_offset before stop trails down
-    // The activation threshold is the distance price must travel favorably from breakeven
-    float trail_activation_level = na
-    if not na(breakeven_plus_tick)
-        if entry_is_bullish
-            // Long: price must exceed breakeven+tick + trail_offset (move UP)
-            trail_activation_level := breakeven_plus_tick + trail_offset
-        else
-            // Short: price must exceed breakeven+tick - trail_offset (move DOWN)
-            trail_activation_level := breakeven_plus_tick - trail_offset
-    string trail_activation = na(trail_activation_level) ? "-" : str.tostring(trail_activation_level, format.mintick)
+    // High water mark - shows highest high (long) or lowest low (short) since TP hit
+    string hwm_text = na(trailing_high_water_mark) ? "-" : str.tostring(trailing_high_water_mark, format.mintick)
 
-    // Combined text
-    string trailing_info = tp_hit_text + " | SL:" + current_sl + " | Trail:" + trail_offset_text + " | Activates@" + trail_activation
+    // Combined text - show TP hit, current SL, trail offset, and high water mark
+    string trailing_info = tp_hit_text + " | SL:" + current_sl + " | Trail:" + trail_offset_text + " | HWM:" + hwm_text
 
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trailing Stop", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, trailing_info, text_color=color.black, bgcolor=tp_hit_bg, text_size=size.small)
