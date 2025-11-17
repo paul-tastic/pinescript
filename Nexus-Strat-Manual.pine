@@ -26,9 +26,8 @@ trading_end_minute = input.int(45, "Trading End Minute", minval=0, maxval=59, gr
 // INPUTS - TRADE SETTINGS
 // ============================================================================
 risk_per_trade = input.float(500.0, "Risk Per Trade ($)", minval=1.0, group="Trade Settings", tooltip="Dollar amount to risk per trade")
-max_setup_bars = input.int(100, "Max Setup Age (bars)", minval=1, group="Trade Settings", tooltip="Maximum number of bars before setup is invalidated")
-setup_timeout_bars = input.int(30, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers")
-entry_timeout_bars = input.int(20, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
+setup_timeout_bars = input.int(25, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers (ENG OB: before MSS crosses | BPR/INV FVG: before entry trigger)")
+entry_timeout_bars = input.int(25, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
 grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
 use_trailing_stop = input.bool(true, "Enable Trailing Stop at TP", group="Trade Settings", tooltip="At TP: close 50%, move SL to breakeven+tick, trail remaining 50%")
 trailing_atr_multiplier = input.float(2.0, "Trailing Stop ATR Multiplier", minval=0.5, step=0.5, group="Trade Settings", tooltip="ATR multiplier for trailing stop distance")
@@ -612,17 +611,17 @@ bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 // This prevents the detection from running every bar and invalidating itself
 // Once ENG OB is detected, the setup remains active until invalidated or trade exits
 
-// INVALIDATION: Setup expires after max_setup_bars (only if not in trade) or at trading end time
+// INVALIDATION: ENG OB setup timeout (before MSS OB entry signal triggers) or at trading end time
 if eng_ob_active and not na(eng_ob_bar_index)
     bool should_invalidate_timeout = false
     string timeout_reason = ""
 
-    // Check if setup has exceeded max bars (ONLY if not in a trade)
-    if not trade_entered
+    // Check if ENG OB setup has exceeded timeout (ONLY if entry signal hasn't triggered yet)
+    if not entry_signal_active and not trade_entered
         int bars_since_setup = bar_index - eng_ob_bar_index
-        if bars_since_setup >= max_setup_bars
+        if bars_since_setup >= setup_timeout_bars
             should_invalidate_timeout := true
-            timeout_reason := "Max bars (" + str.tostring(max_setup_bars) + ")"
+            timeout_reason := "Setup timeout (" + str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars) + " bars)"
 
     // Check if it's past trading end time (applies to ALL setups, including active trades)
     int current_hour = hour(time, "America/New_York")
@@ -1341,12 +1340,20 @@ if entry_signal_active
                 box.delete(eng_ob_box)
                 eng_ob_box := na
 
+        // Cancel pending limit orders (CRITICAL: prevent ghost fills after invalidation)
+        strategy.cancel("Long")   // Cancel long entry limit order
+        strategy.cancel("Short")  // Cancel short entry limit order
+        strategy.cancel("Full SL")  // Cancel SL order if placed
+        strategy.cancel("TP/SL Long")  // Cancel combined TP/SL order
+        strategy.cancel("TP/SL Short")  // Cancel combined TP/SL order
+
         // Clear entry signals (all strategies)
         entry_signal_active := false
         active_entry_strategy := ""
         entry_price := na
         entry_tp := na
         entry_sl := na
+        order_placed := false
 
         // Delete TP/SL boxes (both original and live, shared across all strategies)
         if not na(tp_box)
@@ -2159,6 +2166,13 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
                 box.delete(inv_fvg_overlap_box)
                 inv_fvg_overlap_box := na
 
+        // Cancel pending limit orders (CRITICAL: prevent ghost fills after timeout)
+        strategy.cancel("Long")   // Cancel long entry limit order
+        strategy.cancel("Short")  // Cancel short entry limit order
+        strategy.cancel("Full SL")  // Cancel SL order if placed
+        strategy.cancel("TP/SL Long")  // Cancel combined TP/SL order
+        strategy.cancel("TP/SL Short")  // Cancel combined TP/SL order
+
         // Clear generic entry signal state (all strategies)
         entry_signal_active := false
         entry_signal_bar_index := na
@@ -2774,6 +2788,32 @@ if last_exit_bar >= 0
 color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.green, 85)
 table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
+row := row + 1
+
+// Invalidation parameters - show timeout settings with active counts
+string setup_count = "-"
+string entry_count = "-"
+color timeout_bg = value_bgcolor
+
+// Calculate setup timeout count (ENG OB before MSS crosses, or BPR/INV FVG before entry trigger)
+if eng_ob_active and not entry_signal_active and not na(eng_ob_bar_index)
+    int bars_since_setup = bar_index - eng_ob_bar_index
+    setup_count := str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars)
+    timeout_bg := bars_since_setup >= setup_timeout_bars ? color.new(color.red, 85) : (bars_since_setup >= setup_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
+else if (bpr_fvg_active or inv_fvg_active) and not entry_signal_active and not na(bpr_fvg_bar_index)
+    int bars_since_setup = bar_index - bpr_fvg_bar_index
+    setup_count := str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars)
+    timeout_bg := bars_since_setup >= setup_timeout_bars ? color.new(color.red, 85) : (bars_since_setup >= setup_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
+
+// Calculate entry timeout count (after entry signal triggers, before order fills)
+if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
+    int bars_since_entry = bar_index - entry_signal_bar_index
+    entry_count := str.tostring(bars_since_entry) + "/" + str.tostring(entry_timeout_bars)
+    timeout_bg := bars_since_entry >= entry_timeout_bars ? color.new(color.red, 85) : (bars_since_entry >= entry_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
+
+string invalidation_params = "Setup: " + setup_count + " | Entry: " + entry_count
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Timeout Counters", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, invalidation_params, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 row := row + 1
 
 // ENGULFING DETECTION DIAGNOSTIC (ALWAYS VISIBLE)
