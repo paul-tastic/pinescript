@@ -639,11 +639,6 @@ if eng_ob_active and not na(eng_ob_bar_index)
         timeout_reason := timeout_reason == "" ? end_time_str + " NY time" : timeout_reason + " + " + end_time_str
 
     if should_invalidate_timeout
-        label.new(bar_index, eng_ob_is_bullish ? low : high, "❌ TIMEOUT\n" + timeout_reason,
-                 color=color.purple, textcolor=color.white,
-                 style=eng_ob_is_bullish ? label.style_label_up : label.style_label_down,
-                 size=size.small)
-
         // Close any open positions and cancel pending orders
         strategy.close_all()
         strategy.cancel_all()
@@ -2053,6 +2048,23 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
         entry_signal_active := true
         entry_signal_bar_index := bar_index
 
+        // Clear any lingering ENG OB setup when BPR/INV FVG entry signal activates
+        if eng_ob_active
+            eng_ob_active := false
+            if not na(eng_ob_diamond)
+                label.delete(eng_ob_diamond)
+                eng_ob_diamond := na
+            eng_ob_is_bullish := false
+            eng_ob_deepest_level := na
+            eng_ob_bar_index := na
+            eng_ob_candle_high := na
+            eng_ob_candle_low := na
+            target_fractal_level_mss := na
+            mss_ob_confirmed_bar := na
+            if not na(eng_ob_box)
+                box.delete(eng_ob_box)
+                eng_ob_box := na
+
         if has_inv_fvg_pattern
             // INVERTED FVG: Entry at overlap zone, SL at reversal candle
             active_entry_strategy := "Inverted FVG"
@@ -2333,31 +2345,13 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     float tp_qty = use_trailing_stop ? position_size / 2 : 0.0
     float trail_qty = use_trailing_stop ? position_size / 2 : 0.0
 
-    // Place limit order at entry level
+    // Place limit order at entry level (DO NOT place exit orders yet - must wait for entry to fill)
     if entry_is_bullish
         // Enter long position with limit order at entry level
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
-
-        if use_trailing_stop
-            // Trailing stop mode:
-            // 1. FULL SL covering all contracts (if SL hit, everything closes)
-            // 2. TP Order will be placed AFTER trade enters (see trade entry section below)
-            strategy.exit("Full SL", "Long", stop=entry_sl)
-        else
-            // Standard exit: full position at TP/SL
-            strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
     else
         // Enter short position with limit order at entry level
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
-
-        if use_trailing_stop
-            // Trailing stop mode:
-            // 1. FULL SL covering all contracts (if SL hit, everything closes)
-            // 2. TP Order will be placed AFTER trade enters (see trade entry section below)
-            strategy.exit("Full SL", "Short", stop=entry_sl)
-        else
-            // Standard exit: full position at TP/SL
-            strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
 
     // Mark that order has been placed for this signal
     order_placed := true
@@ -2372,17 +2366,26 @@ if entry_signal_active and not trade_entered
     if strategy.position_size != 0
         trade_entered := true
 
-        // Place TP Order now that trade has entered (only for trailing stop mode)
+        // Place TP and SL orders now that trade has entered
         if use_trailing_stop
+            // Trailing stop mode: place TP order for 50% and SL for 100%
             // Calculate TP quantity (half of position)
             float tp_qty = math.abs(strategy.position_size) / 2
 
             if entry_is_bullish
-                // Long position: place SELL limit at TP
+                // Long position: place SELL limit at TP (50%) and STOP for all (100%)
                 strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
+                strategy.exit("Full SL", "Long", stop=entry_sl)
             else
-                // Short position: place BUY limit at TP
+                // Short position: place BUY limit at TP (50%) and STOP for all (100%)
                 strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
+                strategy.exit("Full SL", "Short", stop=entry_sl)
+        else
+            // Standard exit: full position at TP/SL
+            if entry_is_bullish
+                strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
+            else
+                strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
 
         // Create TP and SL indicator boxes (only when trade is actually entered)
         // This completes the standard visual flow: YELLOW → BLUE → GREEN/RED
@@ -2782,7 +2785,7 @@ if inv_fvg_active
 // ============================================================================
 // Calculate max rows needed (will adjust dynamically)
 var int MAX_DEBUG_ROWS = 50
-var table debugTable = table.new(position.top_right, 2, MAX_DEBUG_ROWS, border_width=1)
+var table debugTable = table.new(position.bottom_left, 2, MAX_DEBUG_ROWS, border_width=1)
 
 // Clear the table on each bar to remove stale data
 table.clear(debugTable, 0, 0, 1, MAX_DEBUG_ROWS - 1)
@@ -2902,34 +2905,6 @@ if last_exit_bar >= 0
     color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.green, 85)
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
-    row := row + 1
-
-// Timeout Counters (only show when there's an active setup)
-string setup_count = "-"
-string entry_count = "-"
-color timeout_bg = value_bgcolor
-
-// Calculate setup timeout count (ENG OB before MSS crosses, or BPR/INV FVG before entry trigger)
-if eng_ob_active and not entry_signal_active and not na(eng_ob_bar_index)
-    int bars_since_setup = bar_index - eng_ob_bar_index
-    setup_count := str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars)
-    timeout_bg := bars_since_setup >= setup_timeout_bars ? color.new(color.red, 85) : (bars_since_setup >= setup_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
-else if (bpr_fvg_active or inv_fvg_active) and not entry_signal_active and not na(bpr_fvg_bar_index)
-    int bars_since_setup = bar_index - bpr_fvg_bar_index
-    setup_count := str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars)
-    timeout_bg := bars_since_setup >= setup_timeout_bars ? color.new(color.red, 85) : (bars_since_setup >= setup_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
-
-// Calculate entry timeout count (after entry signal triggers, before order fills)
-if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
-    int bars_since_entry = bar_index - entry_signal_bar_index
-    entry_count := str.tostring(bars_since_entry) + "/" + str.tostring(entry_timeout_bars)
-    timeout_bg := bars_since_entry >= entry_timeout_bars ? color.new(color.red, 85) : (bars_since_entry >= entry_timeout_bars * 0.8 ? color.new(color.orange, 85) : color.new(color.green, 85))
-
-// Only show row if there's actual timeout data
-if setup_count != "-" or entry_count != "-"
-    string invalidation_params = "Setup: " + setup_count + " | Entry: " + entry_count
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Timeout Counters", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, invalidation_params, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
     row := row + 1
 
 // Consolidated S&D Zones (always show)
