@@ -261,6 +261,10 @@ var int demand_trigger_bar = -1
 var float demand_lowest_low = na
 var float supply_highest_high = na
 
+// Track deepest level where a trade was executed (becomes new zone edge)
+var float demand_trade_executed_level = na  // Lowest low where trade was executed in demand
+var float supply_trade_executed_level = na  // Highest high where trade was executed in supply
+
 // Track if we're completely outside both zones (ready to reset)
 var bool was_outside_zones = true
 
@@ -472,6 +476,10 @@ if not in_trading_window
     inv_fvg_bar_index := na
     inv_fvg_invalidation_reason := "Outside trading window"
 
+    // Reset zone depth tracking for new trading day
+    demand_trade_executed_level := na
+    supply_trade_executed_level := na
+
 // Track when trade enters
 if entry_signal_active and not trade_entered and strategy.position_size != 0
     last_position_entry := strategy.position_avg_price
@@ -595,7 +603,11 @@ if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
     // Check if current or previous candle made the deepest low FOR THIS ZONE ENTRY
     bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
 
-    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
+    // NEW: Check if price has gone deeper than previous trade execution level
+    // If a trade was executed previously, require price to go LOWER than that level
+    bool deeper_than_last_trade = na(demand_trade_executed_level) or low < demand_trade_executed_level or low[1] < demand_trade_executed_level
+
+    is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest and deeper_than_last_trade
 
 if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_active and not entry_signal_active
     // Bearish engulfing: current candle close engulfs previous candle body
@@ -606,7 +618,11 @@ if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
     // Check if current or previous candle made the highest high FOR THIS ZONE ENTRY
     bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
 
-    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest
+    // NEW: Check if price has gone deeper than previous trade execution level
+    // If a trade was executed previously, require price to go HIGHER than that level
+    bool deeper_than_last_trade = na(supply_trade_executed_level) or high > supply_trade_executed_level or high[1] > supply_trade_executed_level
+
+    is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest and deeper_than_last_trade
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
@@ -1489,25 +1505,30 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
 
             // Only activate if FVG meets minimum tick size requirement
             if fvg_size_ticks >= bpr_fvg_min_ticks
-                bpr_fvg_active := true
-                bpr_fvg_is_bullish := true
-                bpr_fvg_bottom := high[2]  // Bottom of gap
-                bpr_fvg_top := low  // Top of gap
-                bpr_fvg_bar_index := bar_index
+                // NEW: Check if price has gone deeper than previous trade execution level
+                // If a trade was executed previously in supply, require price to go HIGHER than that level
+                bool deeper_than_last_trade = na(supply_trade_executed_level) or high > supply_trade_executed_level or high[1] > supply_trade_executed_level or high[2] > supply_trade_executed_level
 
-                // Track candle for SL - whichever of the 3 candles made the highest high
-                if high >= high[1] and high >= high[2]
-                    bpr_fvg_candle_high := high
-                    bpr_fvg_candle_low := low
-                else if high[1] >= high[2]
-                    bpr_fvg_candle_high := high[1]
-                    bpr_fvg_candle_low := low[1]
-                else
-                    bpr_fvg_candle_high := high[2]
-                    bpr_fvg_candle_low := low[2]
+                if deeper_than_last_trade
+                    bpr_fvg_active := true
+                    bpr_fvg_is_bullish := true
+                    bpr_fvg_bottom := high[2]  // Bottom of gap
+                    bpr_fvg_top := low  // Top of gap
+                    bpr_fvg_bar_index := bar_index
 
-                // Invalidation level: highest high of the 3 candles involved
-                bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
+                    // Track candle for SL - whichever of the 3 candles made the highest high
+                    if high >= high[1] and high >= high[2]
+                        bpr_fvg_candle_high := high
+                        bpr_fvg_candle_low := low
+                    else if high[1] >= high[2]
+                        bpr_fvg_candle_high := high[1]
+                        bpr_fvg_candle_low := low[1]
+                    else
+                        bpr_fvg_candle_high := high[2]
+                        bpr_fvg_candle_low := low[2]
+
+                    // Invalidation level: highest high of the 3 candles involved
+                    bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
 
     // Bullish setup: detect bearish FVG in demand zone
     // Check if current candle OR previous 2 candles touched demand zone
@@ -1533,25 +1554,30 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
 
             // Only activate if FVG meets minimum tick size requirement
             if fvg_size_ticks >= bpr_fvg_min_ticks
-                bpr_fvg_active := true
-                bpr_fvg_is_bullish := false
-                bpr_fvg_top := low[2]  // Top of gap
-                bpr_fvg_bottom := high  // Bottom of gap
-                bpr_fvg_bar_index := bar_index
+                // NEW: Check if price has gone deeper than previous trade execution level
+                // If a trade was executed previously in demand, require price to go LOWER than that level
+                bool deeper_than_last_trade = na(demand_trade_executed_level) or low < demand_trade_executed_level or low[1] < demand_trade_executed_level or low[2] < demand_trade_executed_level
 
-                // Track candle for SL - whichever of the 3 candles made the lowest low
-                if low <= low[1] and low <= low[2]
-                    bpr_fvg_candle_high := high
-                    bpr_fvg_candle_low := low
-                else if low[1] <= low[2]
-                    bpr_fvg_candle_high := high[1]
-                    bpr_fvg_candle_low := low[1]
-                else
-                    bpr_fvg_candle_high := high[2]
-                    bpr_fvg_candle_low := low[2]
+                if deeper_than_last_trade
+                    bpr_fvg_active := true
+                    bpr_fvg_is_bullish := false
+                    bpr_fvg_top := low[2]  // Top of gap
+                    bpr_fvg_bottom := high  // Bottom of gap
+                    bpr_fvg_bar_index := bar_index
 
-                // Invalidation level: lowest low of the 3 candles involved
-                bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
+                    // Track candle for SL - whichever of the 3 candles made the lowest low
+                    if low <= low[1] and low <= low[2]
+                        bpr_fvg_candle_high := high
+                        bpr_fvg_candle_low := low
+                    else if low[1] <= low[2]
+                        bpr_fvg_candle_high := high[1]
+                        bpr_fvg_candle_low := low[1]
+                    else
+                        bpr_fvg_candle_high := high[2]
+                        bpr_fvg_candle_low := low[2]
+
+                    // Invalidation level: lowest low of the 3 candles involved
+                    bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
 
 // INVALIDATION: Price closes beyond invalidation level (deeper into zone)
 // This catches price going BACK INTO the zone (wrong direction), not price breaching THROUGH the FVG
@@ -2366,6 +2392,15 @@ if entry_signal_active and not trade_entered
     if strategy.position_size != 0
         trade_entered := true
 
+        // Record the deepest level where this trade was executed (becomes new zone edge)
+        // This prevents taking multiple trades at the same zone level
+        if entry_is_bullish
+            // Bullish trade from demand zone - record the lowest low as the new zone edge
+            demand_trade_executed_level := demand_lowest_low
+        else
+            // Bearish trade from supply zone - record the highest high as the new zone edge
+            supply_trade_executed_level := supply_highest_high
+
         // Place TP and SL orders now that trade has entered
         if use_trailing_stop
             // Trailing stop mode: place TP order for 50% and SL for 100%
@@ -2927,6 +2962,15 @@ else
 
 table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". S&D Zones", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
 table.cell(debugTable, 1, row, sd_zones_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Zone Depth Tracking (show execution levels)
+string zone_depth_text = "S: "
+zone_depth_text := zone_depth_text + (na(supply_trade_executed_level) ? "-" : str.tostring(supply_trade_executed_level, format.mintick))
+zone_depth_text := zone_depth_text + " | D: "
+zone_depth_text := zone_depth_text + (na(demand_trade_executed_level) ? "-" : str.tostring(demand_trade_executed_level, format.mintick))
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Depth", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, zone_depth_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
 // ENGULFING DETECTION DIAGNOSTIC (only show in debug mode)
