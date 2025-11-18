@@ -583,9 +583,10 @@ if in_demand
 bool is_bullish_engulfing = false
 bool is_bearish_engulfing = false
 
-// Only check for engulfing when in an AOI, within trading window, and NO active ENG OB setup
+// Only check for engulfing when in an AOI, within trading window, NO active ENG OB setup, and NO active entry signal
 // This prevents the detection from running every bar and invalidating itself
-if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_active
+// Also prevents detecting new setups while awaiting entry from another strategy (BPR/INV FVG)
+if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_active and not entry_signal_active
     // Bullish engulfing: current candle close engulfs previous candle body
     bool current_bullish = close > open
     bool prev_bearish = close[1] < open[1]
@@ -596,7 +597,7 @@ if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
 
     is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest
 
-if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_active
+if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_active and not entry_signal_active
     // Bearish engulfing: current candle close engulfs previous candle body
     bool current_bearish = close < open
     bool prev_bullish = close[1] > open[1]
@@ -609,8 +610,9 @@ if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
 
 bool engulfing_ob_detected = is_bullish_engulfing or is_bearish_engulfing
 
-// NOTE: Engulfing detection only runs when NO active ENG OB exists
+// NOTE: Engulfing detection only runs when NO active ENG OB exists AND no entry signal active
 // This prevents the detection from running every bar and invalidating itself
+// Also prevents conflicting with other active strategies (BPR/INV FVG awaiting entry)
 // Once ENG OB is detected, the setup remains active until invalidated or trade exits
 
 // INVALIDATION: ENG OB setup timeout (before MSS OB entry signal triggers) or at trading end time
