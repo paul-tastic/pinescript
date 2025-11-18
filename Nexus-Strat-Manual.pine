@@ -1721,89 +1721,11 @@ if bpr_fvg_active
         box.set_right(bpr_fvg_box, bar_index + 1)
 
 // ============================================================================
-// INVERTED FVG DETECTION
+// INVERTED FVG DETECTION - REMOVED
 // ============================================================================
-// Inverted FVG = BPR FVG + opposite direction FVG that overlaps
-// Entry is at the overlap zone, not at the FVG breach
-// Every Inverted FVG starts as a BPR FVG, but not every BPR FVG becomes Inverted
-
-// Detect Inverted FVG when we have an active BPR FVG (not yet triggered entry)
-// Look for opposite direction FVG that overlaps the initial BPR FVG
-// Don't detect when entry signal is already active or trade is entered
-if use_inverted_fvg and bpr_fvg_active and not inv_fvg_active and not entry_signal_active and not trade_entered and bar_index >= 2
-    // Check for opposite direction FVG
-    if bpr_fvg_is_bullish
-        // Initial FVG is bullish (gap up) - look for bearish FVG (gap down) that overlaps
-        // Bearish FVG: current high < low of 2 bars ago
-        // IMPORTANT: Close must be BELOW the BPR FVG BOTTOM (fully breach the FVG range)
-        bool has_bearish_reversal_fvg = high < low[2] and close < bpr_fvg_bottom
-
-        if has_bearish_reversal_fvg
-            // Check if reversal FVG overlaps initial FVG
-            float reversal_fvg_top = low[2]
-            float reversal_fvg_bottom = high
-
-            // Overlap exists if reversal bottom < initial top AND reversal top > initial bottom
-            bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
-
-            if has_overlap
-                // Calculate overlap zone
-                float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
-                float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
-
-                // Activate Inverted FVG
-                inv_fvg_active := true
-                inv_fvg_is_bullish := false  // Bearish trade (reversal FVG is bearish)
-                inv_fvg_overlap_top := overlap_top
-                inv_fvg_overlap_bottom := overlap_bottom
-                inv_fvg_bar_index := bar_index
-
-                // Track reversal candle for SL - whichever of the 3 candles made the highest high
-                if high >= high[1] and high >= high[2]
-                    inv_fvg_reversal_candle_high := high
-                    inv_fvg_reversal_candle_low := low
-                else if high[1] >= high[2]
-                    inv_fvg_reversal_candle_high := high[1]
-                    inv_fvg_reversal_candle_low := low[1]
-                else
-                    inv_fvg_reversal_candle_high := high[2]
-                    inv_fvg_reversal_candle_low := low[2]
-    else
-        // Initial FVG is bearish (gap down) - look for bullish FVG (gap up) that overlaps
-        // Bullish FVG: current low > high of 2 bars ago
-        // IMPORTANT: Close must be ABOVE the BPR FVG TOP (fully breach the FVG range)
-        bool has_bullish_reversal_fvg = low > high[2] and close > bpr_fvg_top
-
-        if has_bullish_reversal_fvg
-            // Check if reversal FVG overlaps initial FVG
-            float reversal_fvg_top = low
-            float reversal_fvg_bottom = high[2]
-
-            // Overlap exists if reversal bottom < initial top AND reversal top > initial bottom
-            bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
-
-            if has_overlap
-                // Calculate overlap zone
-                float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
-                float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
-
-                // Activate Inverted FVG
-                inv_fvg_active := true
-                inv_fvg_is_bullish := true  // Bullish trade (reversal FVG is bullish)
-                inv_fvg_overlap_top := overlap_top
-                inv_fvg_overlap_bottom := overlap_bottom
-                inv_fvg_bar_index := bar_index
-
-                // Track reversal candle for SL - whichever of the 3 candles made the lowest low
-                if low <= low[1] and low <= low[2]
-                    inv_fvg_reversal_candle_high := high
-                    inv_fvg_reversal_candle_low := low
-                else if low[1] <= low[2]
-                    inv_fvg_reversal_candle_high := high[1]
-                    inv_fvg_reversal_candle_low := low[1]
-                else
-                    inv_fvg_reversal_candle_high := high[2]
-                    inv_fvg_reversal_candle_low := low[2]
+// Inverted FVG detection has been moved into the BPR FVG entry signal detection
+// to ensure INV FVG takes priority over BPR FVG when both conditions are met.
+// See "BPR FVG / INVERTED FVG STRATEGY - Entry Signal Detection" section below.
 
 // INVALIDATION: Clear Inverted FVG when zones are disabled
 if inv_fvg_active
@@ -2026,8 +1948,9 @@ if use_mss_ob and eng_ob_active and not entry_signal_active and not trade_entere
             entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
 
 // ============================================================================
-// BPR FVG STRATEGY - Entry Signal Detection
+// BPR FVG / INVERTED FVG STRATEGY - Entry Signal Detection
 // ============================================================================
+// PRIORITY LOGIC: Check for INV FVG first, fall back to BPR FVG if no reversal pattern
 // Entry triggered when price CLOSES below FVG bottom (bearish) or above FVG top (bullish)
 // Don't trigger new entries while a trade is active or within cooldown period
 // IMPORTANT: Only check at bar close (barstate.isconfirmed) to wait for candle to fully close
@@ -2042,52 +1965,123 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
         close_through_fvg := close > bpr_fvg_top
 
     if close_through_fvg
+        // Close breached the FVG - now check if this is an INV FVG or just BPR FVG
+        // PRIORITY: Check for reversal FVG pattern first (INV FVG takes precedence)
+        bool has_inv_fvg_pattern = false
+
+        if use_inverted_fvg and bar_index >= 2
+            if bpr_fvg_is_bullish
+                // Initial FVG is bullish (gap up) - look for bearish reversal FVG (gap down)
+                // Bearish FVG: current high < low of 2 bars ago
+                bool has_bearish_reversal_fvg = high < low[2]
+
+                if has_bearish_reversal_fvg
+                    // Check if reversal FVG overlaps initial FVG
+                    float reversal_fvg_top = low[2]
+                    float reversal_fvg_bottom = high
+                    bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
+
+                    if has_overlap
+                        has_inv_fvg_pattern := true
+
+                        // Calculate overlap zone
+                        float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
+                        float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
+
+                        // Activate Inverted FVG
+                        inv_fvg_active := true
+                        inv_fvg_is_bullish := false  // Bearish trade (reversal FVG is bearish)
+                        inv_fvg_overlap_top := overlap_top
+                        inv_fvg_overlap_bottom := overlap_bottom
+                        inv_fvg_bar_index := bar_index
+
+                        // Track reversal candle for SL - whichever of the 3 candles made the highest high
+                        if high >= high[1] and high >= high[2]
+                            inv_fvg_reversal_candle_high := high
+                            inv_fvg_reversal_candle_low := low
+                        else if high[1] >= high[2]
+                            inv_fvg_reversal_candle_high := high[1]
+                            inv_fvg_reversal_candle_low := low[1]
+                        else
+                            inv_fvg_reversal_candle_high := high[2]
+                            inv_fvg_reversal_candle_low := low[2]
+            else
+                // Initial FVG is bearish (gap down) - look for bullish reversal FVG (gap up)
+                // Bullish FVG: current low > high of 2 bars ago
+                bool has_bullish_reversal_fvg = low > high[2]
+
+                if has_bullish_reversal_fvg
+                    // Check if reversal FVG overlaps initial FVG
+                    float reversal_fvg_top = low
+                    float reversal_fvg_bottom = high[2]
+                    bool has_overlap = reversal_fvg_bottom < bpr_fvg_top and reversal_fvg_top > bpr_fvg_bottom
+
+                    if has_overlap
+                        has_inv_fvg_pattern := true
+
+                        // Calculate overlap zone
+                        float overlap_top = math.min(reversal_fvg_top, bpr_fvg_top)
+                        float overlap_bottom = math.max(reversal_fvg_bottom, bpr_fvg_bottom)
+
+                        // Activate Inverted FVG
+                        inv_fvg_active := true
+                        inv_fvg_is_bullish := true  // Bullish trade (reversal FVG is bullish)
+                        inv_fvg_overlap_top := overlap_top
+                        inv_fvg_overlap_bottom := overlap_bottom
+                        inv_fvg_bar_index := bar_index
+
+                        // Track reversal candle for SL - whichever of the 3 candles made the lowest low
+                        if low <= low[1] and low <= low[2]
+                            inv_fvg_reversal_candle_high := high
+                            inv_fvg_reversal_candle_low := low
+                        else if low[1] <= low[2]
+                            inv_fvg_reversal_candle_high := high[1]
+                            inv_fvg_reversal_candle_low := low[1]
+                        else
+                            inv_fvg_reversal_candle_high := high[2]
+                            inv_fvg_reversal_candle_low := low[2]
+
+        // Now activate entry signal based on whether INV FVG pattern was found
         entry_signal_active := true
         entry_signal_bar_index := bar_index
-        active_entry_strategy := "BPR FVG"
-        entry_is_bullish := not bpr_fvg_is_bullish  // Inverse: bullish FVG = bearish trade
 
-        if bpr_fvg_is_bullish
-            // Bearish setup: Entry at bottom of FVG, SL at HIGH of FVG candle (with grace ticks), TP at 2:1 RR
-            entry_price := bpr_fvg_bottom
-            entry_sl := bpr_fvg_candle_high + grace_ticks  // Pad SL above the candle high
-            float risk = entry_sl - entry_price
-            entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
+        if has_inv_fvg_pattern
+            // INVERTED FVG: Entry at overlap zone, SL at reversal candle
+            active_entry_strategy := "Inverted FVG"
+            entry_is_bullish := inv_fvg_is_bullish
+
+            if inv_fvg_is_bullish
+                // Bullish setup: Entry at TOP of overlap, SL at LOW of reversal candle
+                entry_price := inv_fvg_overlap_top
+                entry_sl := inv_fvg_reversal_candle_low - grace_ticks
+                float risk = entry_price - entry_sl
+                entry_tp := entry_price + (risk * 2)  // 2:1 RR
+            else
+                // Bearish setup: Entry at BOTTOM of overlap, SL at HIGH of reversal candle
+                entry_price := inv_fvg_overlap_bottom
+                entry_sl := inv_fvg_reversal_candle_high + grace_ticks
+                float risk = entry_sl - entry_price
+                entry_tp := entry_price - (risk * 2)  // 2:1 RR
         else
-            // Bullish setup: Entry at top of FVG, SL at LOW of FVG candle (with grace ticks), TP at 2:1 RR
-            entry_price := bpr_fvg_top
-            entry_sl := bpr_fvg_candle_low - grace_ticks  // Pad SL below the candle low
-            float risk = entry_price - entry_sl
-            entry_tp := entry_price + (risk * 2)  // 2:1 reward to risk
+            // BPR FVG: Entry at FVG boundary, SL at FVG candle
+            active_entry_strategy := "BPR FVG"
+            entry_is_bullish := not bpr_fvg_is_bullish  // Inverse: bullish FVG = bearish trade
+
+            if bpr_fvg_is_bullish
+                // Bearish setup: Entry at bottom of FVG, SL at HIGH of FVG candle (with grace ticks), TP at 2:1 RR
+                entry_price := bpr_fvg_bottom
+                entry_sl := bpr_fvg_candle_high + grace_ticks  // Pad SL above the candle high
+                float risk = entry_sl - entry_price
+                entry_tp := entry_price - (risk * 2)  // 2:1 reward to risk
+            else
+                // Bullish setup: Entry at top of FVG, SL at LOW of FVG candle (with grace ticks), TP at 2:1 RR
+                entry_price := bpr_fvg_top
+                entry_sl := bpr_fvg_candle_low - grace_ticks  // Pad SL below the candle low
+                float risk = entry_price - entry_sl
+                entry_tp := entry_price + (risk * 2)  // 2:1 reward to risk
 
         // DON'T clear BPR FVG state here - keep it for debug table display
         // It will be cleared when trade exits or is invalidated
-
-// ============================================================================
-// INVERTED FVG STRATEGY - Entry Signal Detection
-// ============================================================================
-// Entry triggered when Inverted FVG is detected (overlap found)
-// Entry is at top of overlap (bearish) or bottom of overlap (bullish)
-// SL is at high/low of reversal FVG candle, TP is 2:1 RR
-if use_inverted_fvg and inv_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown
-    // Inverted FVG entry triggers immediately when overlap is detected
-    entry_signal_active := true
-    entry_signal_bar_index := bar_index
-    active_entry_strategy := "Inverted FVG"
-    entry_is_bullish := inv_fvg_is_bullish
-
-    if inv_fvg_is_bullish
-        // Bullish setup: Entry at TOP of overlap, SL at LOW of reversal candle
-        entry_price := inv_fvg_overlap_top
-        entry_sl := inv_fvg_reversal_candle_low - grace_ticks
-        float risk = entry_price - entry_sl
-        entry_tp := entry_price + (risk * 2)  // 2:1 RR
-    else
-        // Bearish setup: Entry at BOTTOM of overlap, SL at HIGH of reversal candle
-        entry_price := inv_fvg_overlap_bottom
-        entry_sl := inv_fvg_reversal_candle_high + grace_ticks
-        float risk = entry_sl - entry_price
-        entry_tp := entry_price - (risk * 2)  // 2:1 RR
 
 // ============================================================================
 // BREAKER BLOCK STRATEGY - Entry Signal Detection
