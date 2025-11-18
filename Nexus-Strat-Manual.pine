@@ -603,9 +603,9 @@ if demand_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
     // Check if current or previous candle made the deepest low FOR THIS ZONE ENTRY
     bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
 
-    // NEW: Check if price has gone deeper than previous trade execution level
-    // If a trade was executed previously, require price to go LOWER than that level
-    bool deeper_than_last_trade = na(demand_trade_executed_level) or low < demand_trade_executed_level or low[1] < demand_trade_executed_level
+    // NEW: Check if price has gone deeper or equal to previous trade execution level
+    // If a trade was executed previously, require price to go LOWER or equal to that level
+    bool deeper_than_last_trade = na(demand_trade_executed_level) or low <= demand_trade_executed_level or low[1] <= demand_trade_executed_level
 
     is_bullish_engulfing := current_bullish and prev_bearish and engulfs_body and is_deepest and deeper_than_last_trade
 
@@ -618,9 +618,9 @@ if supply_triggered and bar_index > 0 and in_trading_window and not eng_ob_activ
     // Check if current or previous candle made the highest high FOR THIS ZONE ENTRY
     bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
 
-    // NEW: Check if price has gone deeper than previous trade execution level
-    // If a trade was executed previously, require price to go HIGHER than that level
-    bool deeper_than_last_trade = na(supply_trade_executed_level) or high > supply_trade_executed_level or high[1] > supply_trade_executed_level
+    // NEW: Check if price has gone deeper or equal to previous trade execution level
+    // If a trade was executed previously, require price to go HIGHER or equal to that level
+    bool deeper_than_last_trade = na(supply_trade_executed_level) or high >= supply_trade_executed_level or high[1] >= supply_trade_executed_level
 
     is_bearish_engulfing := current_bearish and prev_bullish and engulfs_body and is_deepest and deeper_than_last_trade
 
@@ -1505,9 +1505,9 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
 
             // Only activate if FVG meets minimum tick size requirement
             if fvg_size_ticks >= bpr_fvg_min_ticks
-                // NEW: Check if price has gone deeper than previous trade execution level
-                // If a trade was executed previously in supply, require price to go HIGHER than that level
-                bool deeper_than_last_trade = na(supply_trade_executed_level) or high > supply_trade_executed_level or high[1] > supply_trade_executed_level or high[2] > supply_trade_executed_level
+                // NEW: Check if price has gone deeper or equal to previous trade execution level
+                // If a trade was executed previously in supply, require price to go HIGHER or equal to that level
+                bool deeper_than_last_trade = na(supply_trade_executed_level) or high >= supply_trade_executed_level or high[1] >= supply_trade_executed_level or high[2] >= supply_trade_executed_level
 
                 if deeper_than_last_trade
                     bpr_fvg_active := true
@@ -1554,9 +1554,9 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
 
             // Only activate if FVG meets minimum tick size requirement
             if fvg_size_ticks >= bpr_fvg_min_ticks
-                // NEW: Check if price has gone deeper than previous trade execution level
-                // If a trade was executed previously in demand, require price to go LOWER than that level
-                bool deeper_than_last_trade = na(demand_trade_executed_level) or low < demand_trade_executed_level or low[1] < demand_trade_executed_level or low[2] < demand_trade_executed_level
+                // NEW: Check if price has gone deeper or equal to previous trade execution level
+                // If a trade was executed previously in demand, require price to go LOWER or equal to that level
+                bool deeper_than_last_trade = na(demand_trade_executed_level) or low <= demand_trade_executed_level or low[1] <= demand_trade_executed_level or low[2] <= demand_trade_executed_level
 
                 if deeper_than_last_trade
                     bpr_fvg_active := true
