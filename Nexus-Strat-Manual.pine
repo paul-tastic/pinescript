@@ -2893,26 +2893,31 @@ if last_exit_bar >= 0
     table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
     row := row + 1
 
-// Consolidated S&D Zones (always show)
-string sd_zones_text = ""
+// Supply & Demand Zones (split into two rows for color coding)
+// Supply Zone (red text)
+string supply_zone_text = ""
 if clear_supply
-    sd_zones_text := "S: DISABLED"
+    supply_zone_text := "DISABLED"
 else if supply_configured
-    sd_zones_text := "S: " + str.tostring(supply_bottom, format.mintick) + "-" + str.tostring(supply_top, format.mintick)
+    supply_zone_text := str.tostring(supply_bottom, format.mintick) + " - " + str.tostring(supply_top, format.mintick)
 else
-    sd_zones_text := "S: -"
+    supply_zone_text := "-"
 
-sd_zones_text := sd_zones_text + " | "
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, supply_zone_text, text_color=color.red, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
 
+// Demand Zone (blue text)
+string demand_zone_text = ""
 if clear_demand
-    sd_zones_text := sd_zones_text + "D: DISABLED"
+    demand_zone_text := "DISABLED"
 else if demand_configured
-    sd_zones_text := sd_zones_text + "D: " + str.tostring(demand_bottom, format.mintick) + "-" + str.tostring(demand_top, format.mintick)
+    demand_zone_text := str.tostring(demand_bottom, format.mintick) + " - " + str.tostring(demand_top, format.mintick)
 else
-    sd_zones_text := sd_zones_text + "D: -"
+    demand_zone_text := "-"
 
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". S&D Zones", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, sd_zones_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, demand_zone_text, text_color=color.blue, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
 // Zone Depth Tracking (show execution levels)
