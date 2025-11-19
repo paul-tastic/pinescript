@@ -26,6 +26,7 @@ trading_end_minute = input.int(45, "Trading End Minute", minval=0, maxval=59, gr
 // INPUTS - TRADE SETTINGS
 // ============================================================================
 risk_per_trade = input.float(500.0, "Risk Per Trade ($)", minval=1.0, group="Trade Settings", tooltip="Dollar amount to risk per trade")
+point_value = input.float(5.0, "Point Value ($)", minval=0.01, step=0.25, group="Trade Settings", tooltip="Dollar value per 1 point move (MES=$5, ES=$50, MNQ=$2, NQ=$20, MCL=$10, GC=$10)")
 setup_timeout_bars = input.int(25, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers (ENG OB: before MSS crosses | BPR/INV FVG: before entry trigger)")
 entry_timeout_bars = input.int(25, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
 grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
@@ -2313,7 +2314,9 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
 // When any entry signal becomes active, place the trade ONCE
 if entry_signal_active and not trade_entered and not order_placed and not na(entry_price)
     // Calculate position size based on risk
-    float risk_per_contract = math.abs(entry_price - entry_sl)
+    // Risk per contract = (price distance in points) × (dollar value per point)
+    float risk_points = math.abs(entry_price - entry_sl)
+    float risk_per_contract = risk_points * point_value
     float position_size_raw = risk_per_trade / risk_per_contract
 
     // If trailing stop enabled, round to nearest even number to ensure clean 50/50 split
