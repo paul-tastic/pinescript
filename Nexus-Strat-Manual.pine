@@ -78,9 +78,10 @@ bgcolor(not in_trading_window ? color.new(color.gray, 90) : na, title="Non-Tradi
 // SESSION HIGH/LOW TRACKING
 // ============================================================================
 // Session times (America/New_York):
-// - Asian: 20:00 - 00:00 (previous day 8pm to midnight)
-// - London: 03:00 - 12:00
-// - Previous Day: 00:00 - 00:00 (full previous trading day)
+// - Asian: 18:00 - 02:00 (6pm to 2am)
+// - London: 03:00 - 09:00 (3am to 9am)
+// - Previous Day NY: 09:30 - 16:00 (previous trading day)
+// All sessions reset at 17:00 ET (5pm) for fresh calculation next day
 
 // Track session highs and lows
 var float asian_high = na
@@ -90,101 +91,51 @@ var float london_low = na
 var float prev_day_high = na
 var float prev_day_low = na
 
-// Track if sessions have been crossed (invalidated)
-var bool asian_high_crossed = false
-var bool asian_low_crossed = false
-var bool london_high_crossed = false
-var bool london_low_crossed = false
-var bool prev_day_high_crossed = false
-var bool prev_day_low_crossed = false
-
-// Track lines for visual display
-var line asian_high_line = na
-var line asian_low_line = na
-var line london_high_line = na
-var line london_low_line = na
-var line prev_day_high_line = na
-var line prev_day_low_line = na
+// Track NY session high/low during current day (will become prev_day at 17:00)
+var float ny_session_high = na
+var float ny_session_low = na
 
 // Get current time
 int hour_et = hour(time, "America/New_York")
-int day_of_month = dayofmonth(time, "America/New_York")
+int minute_et = minute(time, "America/New_York")
 
-// Track session high/low during their respective periods
-// Asian session: 20:00 - 00:00 (8pm to midnight)
-bool in_asian_session = hour_et >= 20 or hour_et < 0
+// RESET ALL at 17:00 ET (5pm) - saves current NY session as prev_day, clears everything else
+if hour_et == 17 and minute_et == 0
+    // Save today's NY session as prev_day
+    prev_day_high := ny_session_high
+    prev_day_low := ny_session_low
+
+    // Clear all sessions for fresh tracking
+    asian_high := na
+    asian_low := na
+    london_high := na
+    london_low := na
+    ny_session_high := na
+    ny_session_low := na
+
+// Asian session: 18:00 - 02:00 (6pm to 2am)
+bool in_asian_session = (hour_et >= 18) or (hour_et < 2)
 if in_asian_session
     if na(asian_high) or high > asian_high
         asian_high := high
     if na(asian_low) or low < asian_low
         asian_low := low
 
-        // do NOT reset asian hi/lo at NY midnight. instead of resetting at midnight, reset at next asian session
-else if hour_et == 0 and minute(time, "America/New_York") == 0
-    // Reset at midnight (start of new day)
-    asian_high := na
-    asian_low := na
-    asian_high_crossed := false
-    asian_low_crossed := false
-
-// London session: 03:00 - 12:00
-bool in_london_session = hour_et >= 3 and hour_et < 12
+// London session: 03:00 - 09:00 (3am to 9am)
+bool in_london_session = hour_et >= 3 and hour_et < 9
 if in_london_session
     if na(london_high) or high > london_high
         london_high := high
     if na(london_low) or low < london_low
         london_low := low
-else if hour_et == 3 and minute(time, "America/New_York") == 0
-    // Reset at London open
-    london_high := na
-    london_low := na
-    london_high_crossed := false
-    london_low_crossed := false
 
-// Previous Day high/low: track full previous day, reset at midnight
-var float temp_day_high = na
-var float temp_day_low = na
-var int last_tracked_day = na
-
-if barstate.isnew
-    int current_day = dayofmonth(time, "America/New_York")
-
-    // At start of new day (midnight ET), save yesterday's high/low as prev_day
-    if not na(last_tracked_day) and current_day != last_tracked_day
-        prev_day_high := temp_day_high
-        prev_day_low := temp_day_low
-        prev_day_high_crossed := false
-        prev_day_low_crossed := false
-
-        // Reset temp tracking for new day
-        temp_day_high := high
-        temp_day_low := low
-    else
-        // Continue tracking current day's high/low
-        if na(temp_day_high) or high > temp_day_high
-            temp_day_high := high
-        if na(temp_day_low) or low < temp_day_low
-            temp_day_low := low
-
-    last_tracked_day := current_day
-
-// Check for crosses and invalidate levels
-if not asian_high_crossed and not na(asian_high) and high >= asian_high
-    asian_high_crossed := true
-if not asian_low_crossed and not na(asian_low) and low <= asian_low
-    asian_low_crossed := true
-
-if not london_high_crossed and not na(london_high) and high >= london_high
-    london_high_crossed := true
-if not london_low_crossed and not na(london_low) and low <= london_low
-    london_low_crossed := true
-
-if not prev_day_high_crossed and not na(prev_day_high) and high >= prev_day_high
-    prev_day_high_crossed := true
-if not prev_day_low_crossed and not na(prev_day_low) and low <= prev_day_low
-    prev_day_low_crossed := true
-
-// Session level lines removed - keep it simple
+// NY session: 09:30 - 16:00 (9:30am to 4pm)
+bool in_ny_session = (hour_et == 9 and minute_et >= 30) or (hour_et >= 10 and hour_et < 16)
+if in_ny_session
+    if na(ny_session_high) or high > ny_session_high
+        ny_session_high := high
+    if na(ny_session_low) or low < ny_session_low
+        ny_session_low := low
 
 // ============================================================================
 // ZONE VISUALIZATION - Draw zones during trading window on current day
@@ -3072,11 +3023,29 @@ if debug_mode
         table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
         row := row + 1
 
-// Session Levels - REMOVED (rows 11-13 reserved for future use)
-// If re-enabled, use hardcoded row numbers like:
-// table.cell(debugTable, 0, 11, "#11. London Low", ...)
-// table.cell(debugTable, 0, 12, "#12. Prev Day High", ...)
-// table.cell(debugTable, 0, 13, "#13. Prev Day Low", ...)
+// ============================================================================
+// SESSION LEVELS (always visible)
+// ============================================================================
+// Asian High/Low
+string asian_levels = na(asian_high) ? "-" : str.tostring(asian_high, format.mintick)
+asian_levels := asian_levels + " / " + (na(asian_low) ? "-" : str.tostring(asian_low, format.mintick))
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Asian H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, asian_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// London High/Low
+string london_levels = na(london_high) ? "-" : str.tostring(london_high, format.mintick)
+london_levels := london_levels + " / " + (na(london_low) ? "-" : str.tostring(london_low, format.mintick))
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". London H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, london_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
+
+// Previous Day NY High/Low
+string prev_day_levels = na(prev_day_high) ? "-" : str.tostring(prev_day_high, format.mintick)
+prev_day_levels := prev_day_levels + " / " + (na(prev_day_low) ? "-" : str.tostring(prev_day_low, format.mintick))
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Prev Day NY H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, prev_day_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
+row := row + 1
 
 // ============================================================================
 // MSS OB SPECIFIC (only when eng_ob_active AND bar_index is valid)
