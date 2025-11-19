@@ -81,7 +81,7 @@ bgcolor(not in_trading_window ? color.new(color.gray, 90) : na, title="Non-Tradi
 // - Asian: 18:00 - 02:00 (6pm to 2am)
 // - London: 03:00 - 09:00 (3am to 9am)
 // - Previous Day NY: 09:30 - 16:00 (previous trading day)
-// All sessions reset at 17:00 ET (5pm) for fresh calculation next day
+// All sessions reset at 09:00 ET - Asian/London reset for today, Prev Day calculated from yesterday
 
 // Track session highs and lows
 var float asian_high = na
@@ -91,27 +91,43 @@ var float london_low = na
 var float prev_day_high = na
 var float prev_day_low = na
 
-// Track NY session high/low during current day (will become prev_day at 17:00)
-var float ny_session_high = na
-var float ny_session_low = na
-
 // Get current time
 int hour_et = hour(time, "America/New_York")
 int minute_et = minute(time, "America/New_York")
 
-// RESET ALL at 17:00 ET (5pm) - saves current NY session as prev_day, clears everything else
-if hour_et == 17 and minute_et == 0
-    // Save today's NY session as prev_day
-    prev_day_high := ny_session_high
-    prev_day_low := ny_session_low
+// At 09:00 ET: Calculate Previous Day NY session from historical data and reset current day sessions
+if hour_et == 9 and minute_et == 0
+    // Calculate Previous Day NY High/Low from historical bars
+    // Look back through bars to find previous day's NY session (09:30-16:00)
+    float temp_prev_high = na
+    float temp_prev_low = na
 
-    // Clear all sessions for fresh tracking
+    // Loop through last 500 bars to find previous day's NY session
+    for i = 1 to 500
+        int bar_time = time[i]
+        int bar_hour = hour(bar_time, "America/New_York")
+        int bar_minute = minute(bar_time, "America/New_York")
+        int bar_day = dayofmonth(bar_time, "America/New_York")
+        int current_day = dayofmonth(time, "America/New_York")
+
+        // Check if this bar is from previous day's NY session (09:30-16:00)
+        bool is_prev_day = bar_day != current_day
+        bool is_ny_time = (bar_hour == 9 and bar_minute >= 30) or (bar_hour >= 10 and bar_hour < 16)
+
+        if is_prev_day and is_ny_time
+            if na(temp_prev_high) or high[i] > temp_prev_high
+                temp_prev_high := high[i]
+            if na(temp_prev_low) or low[i] < temp_prev_low
+                temp_prev_low := low[i]
+
+    prev_day_high := temp_prev_high
+    prev_day_low := temp_prev_low
+
+    // Reset current day sessions
     asian_high := na
     asian_low := na
     london_high := na
     london_low := na
-    ny_session_high := na
-    ny_session_low := na
 
 // Asian session: 18:00 - 02:00 (6pm to 2am)
 bool in_asian_session = (hour_et >= 18) or (hour_et < 2)
@@ -128,14 +144,6 @@ if in_london_session
         london_high := high
     if na(london_low) or low < london_low
         london_low := low
-
-// NY session: 09:30 - 16:00 (9:30am to 4pm)
-bool in_ny_session = (hour_et == 9 and minute_et >= 30) or (hour_et >= 10 and hour_et < 16)
-if in_ny_session
-    if na(ny_session_high) or high > ny_session_high
-        ny_session_high := high
-    if na(ny_session_low) or low < ny_session_low
-        ny_session_low := low
 
 // ============================================================================
 // ZONE VISUALIZATION - Draw zones during trading window on current day
