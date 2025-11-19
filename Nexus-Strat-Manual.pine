@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.0.3", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -30,7 +30,7 @@ point_value = input.float(5.0, "Point Value ($)", minval=0.01, step=0.25, group=
 setup_timeout_bars = input.int(25, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers (ENG OB: before MSS crosses | BPR/INV FVG: before entry trigger)")
 entry_timeout_bars = input.int(25, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
 grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
-use_trailing_stop = input.bool(true, "Enable Trailing Stop at TP", group="Trade Settings", tooltip="At TP: close 50%, move SL to breakeven+tick, trail remaining 50%")
+use_trailing_stop = input.bool(false, "Enable Trailing Stop at TP", group="Trade Settings", tooltip="At TP: close 50%, move SL to breakeven+tick, trail remaining 50%")
 trailing_atr_multiplier = input.float(2.0, "Trailing Stop ATR Multiplier", minval=0.5, step=0.5, group="Trade Settings", tooltip="ATR multiplier for trailing stop distance")
 trailing_atr_length = input.int(14, "ATR Length for Trailing", minval=1, group="Trade Settings", tooltip="Period for ATR calculation")
 
@@ -48,6 +48,22 @@ use_breaker_block = input.bool(false, "Breaker Block", group="Entry Strategies",
 // ============================================================================
 debug_mode = input.bool(false, "Debug Mode", group="Debug", tooltip="Show debug labels on chart (FVG counters, etc.)")
 
+// ============================================================================
+// TODO LIST - PENDING FEATURES
+// ============================================================================
+// FEATURE REQUESTS:
+// [ ] User config: max trades per day limit
+// [ ] Daily trade summary table showing:
+//     - Entry price/time
+//     - Exit price/time
+//     - Trade result (win/loss/breakeven)
+//     - Strategy used (MSS OB, BPR FVG, INV FVG, etc.)
+//     - Win rate and P&L stats
+//
+// IMPLEMENTATION TASKS:
+// [ ] Breaker Block detection and entry logic
+// [ ] MSS OB crossing detection (stop invalidation after cross)
+//
 // ============================================================================
 // ZONE DETECTION
 // ============================================================================
@@ -280,7 +296,7 @@ var box inv_fvg_overlap_box = na  // Purple box for overlap visualization
 var string inv_fvg_invalidation_reason = ""  // Track why Inverted FVG was cleared (for debugging)
 
 // Track Breaker Block specific state
-// TODO: Add Breaker Block variables when implementing
+// (see TODO list at top of file)
 
 // Track TP/SL indicator boxes - use arrays to persist multiple boxes throughout the day
 var array<box> daily_tp_boxes = array.new<box>()
@@ -289,6 +305,9 @@ var box tp_box = na  // Current active TP box (original - shows initial plan)
 var box sl_box = na  // Current active SL box (original - shows initial plan)
 var box live_tp_box = na  // Live TP box (updates in real-time as trailing stop moves)
 var box live_sl_box = na  // Live SL box (updates in real-time as trailing stop moves)
+
+// Track trade type label
+var label trade_type_label = na  // Label showing which strategy is active
 
 // Track if we've already entered a trade for this setup
 var bool trade_entered = false
@@ -407,6 +426,11 @@ if not in_trading_window
     if not na(live_sl_box)
         box.delete(live_sl_box)
         live_sl_box := na
+
+    // Delete trade type label
+    if not na(trade_type_label)
+        label.delete(trade_type_label)
+        trade_type_label := na
 
     // Clear BPR FVG state
     if not na(bpr_fvg_box)
@@ -1130,7 +1154,7 @@ else if is_bearish_engulfing
 
 // INVALIDATION: Price goes deeper into zone than ENG OB candle (before MSS OB is crossed)
 // Only invalidate if price is IN the zone and goes deeper than the OB candle
-// TODO: Once MSS OB crossing detection is implemented, add condition to stop invalidation after cross
+// (see TODO list at top of file for MSS OB crossing detection)
 if eng_ob_active
     if eng_ob_is_bullish and demand_triggered and not na(eng_ob_candle_low)
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
@@ -2201,15 +2225,15 @@ if use_inverted_fvg and entry_signal_active and active_entry_strategy == "BPR FV
 // ============================================================================
 // BREAKER BLOCK STRATEGY - Entry Signal Detection
 // ============================================================================
-// TODO: Implement Breaker Block detection
+// (see TODO list at top of file for Breaker Block implementation)
 if use_breaker_block and eng_ob_active and not entry_signal_active
     // Placeholder for Breaker Block strategy
-    bool breaker_triggered = false  // TODO: Add actual detection logic
+    bool breaker_triggered = false  // Needs detection logic
 
     if breaker_triggered
         entry_signal_active := true
         active_entry_strategy := "Breaker Block"
-        // TODO: Set entry_price, entry_tp, entry_sl
+        // Needs: entry_price, entry_tp, entry_sl
 
 // ============================================================================
 // ENTRY SIGNAL TIMEOUT - Works for ALL strategies
@@ -2398,7 +2422,7 @@ if entry_signal_active and not trade_entered
             box.delete(live_sl_box)
             live_sl_box := na
 
-        // Create new TP box (green) and SL box (red)
+        // Create new TP box (green) and SL box (red) with strategy text on SL box only
         if entry_is_bullish
             // Bullish: TP is above entry
             tp_box := box.new(bar_index, entry_tp, bar_index + 1, entry_price,
@@ -2411,7 +2435,10 @@ if entry_signal_active and not trade_entered
                              border_color=color.red,
                              bgcolor=color.new(color.red, 85),
                              border_width=1,
-                             extend=extend.none)
+                             extend=extend.none,
+                             text=active_entry_strategy,
+                             text_color=color.black,
+                             text_size=size.small)
         else
             // Bearish: TP is below entry
             tp_box := box.new(bar_index, entry_price, bar_index + 1, entry_tp,
@@ -2424,7 +2451,25 @@ if entry_signal_active and not trade_entered
                              border_color=color.red,
                              bgcolor=color.new(color.red, 85),
                              border_width=1,
-                             extend=extend.none)
+                             extend=extend.none,
+                             text=active_entry_strategy,
+                             text_color=color.black,
+                             text_size=size.small)
+
+        // Create trade type label showing which strategy is being used
+        if not na(trade_type_label)
+            label.delete(trade_type_label)
+
+        // Position label at entry price, slightly to the left of current bar
+        color label_color = entry_is_bullish ? color.green : color.red
+        trade_type_label := label.new(bar_index, entry_price, active_entry_strategy,
+                                      xloc=xloc.bar_index,
+                                      yloc=yloc.price,
+                                      color=color.new(label_color, 80),
+                                      textcolor=color.white,
+                                      size=size.small,
+                                      style=label.style_label_left,
+                                      textalign=text.align_left)
 
 // ============================================================================
 // TRAILING STOP ACTIVATION - When TP is hit, switch to trailing stop
@@ -2561,6 +2606,11 @@ if trade_entered and strategy.position_size == 0
     if not na(live_sl_box)
         array.push(daily_sl_boxes, live_sl_box)
         live_sl_box := na
+
+    // Delete trade type label
+    if not na(trade_type_label)
+        label.delete(trade_type_label)
+        trade_type_label := na
 
     // Delete eng_ob_box since it's just for active setup
     if not na(eng_ob_box)
@@ -2787,10 +2837,6 @@ var table debugTable = table.new(position.bottom_left, 2, MAX_DEBUG_ROWS, border
 // Clear the table on each bar to remove stale data
 table.clear(debugTable, 0, 0, 1, MAX_DEBUG_ROWS - 1)
 
-// Initialize row counter for dynamic table
-var int row = 0
-row := 0
-
 // Common colors - SUBTLE
 color label_bgcolor = color.new(color.gray, 20)  // Dark gray background for labels (left column)
 color value_bgcolor = color.new(color.gray, 85)   // Light gray background for values (right column)
@@ -2799,34 +2845,35 @@ color value_bgcolor = color.new(color.gray, 85)   // Light gray background for v
 // BASE TABLE (ALWAYS VISIBLE)
 // ============================================================================
 
-// Determine AOI status based on flow rules
-string aoi_status = "-"
-if trade_entered and strategy.position_size != 0
-    aoi_status := "IN TRADE"
+// Determine Status based on flow rules
+string status = "-"
+if not in_trading_window
+    status := "Inactive (outside window)"
+    value_bgcolor := color.new(color.gray, 85)
+else if in_cooldown
+    status := "In Cooldown"
+    value_bgcolor := color.new(color.orange, 85)
+else if trade_entered and strategy.position_size != 0
+    status := "In Trade"
     value_bgcolor := entry_is_bullish ? color.new(color.green, 80) : color.new(color.red, 80)
 else if entry_signal_active
-    aoi_status := "AWAITING ENTRY"
+    status := "Active Entry"
     value_bgcolor := entry_is_bullish ? color.new(color.green, 80) : color.new(color.red, 80)
-else if eng_ob_active
-    aoi_status := "AWAITING ENTRY"
-    value_bgcolor := eng_ob_is_bullish ? color.new(color.green, 85) : color.new(color.red, 85)
-else if bpr_fvg_active or inv_fvg_active
-    aoi_status := "AWAITING ENTRY"
+else if eng_ob_active or bpr_fvg_active or inv_fvg_active
+    status := "Active Setup"
     // For BPR FVG, trade direction is INVERTED from FVG direction
-    // Bullish FVG = bearish trade (red), Bearish FVG = bullish trade (blue)
     // For Inverted FVG, trade direction matches the variable
-    value_bgcolor := (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish) ? color.new(color.green, 85) : color.new(color.red, 85)
+    bool trade_is_bullish = eng_ob_active ? eng_ob_is_bullish : (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish)
+    value_bgcolor := trade_is_bullish ? color.new(color.green, 85) : color.new(color.red, 85)
 else if supply_triggered or demand_triggered
-    aoi_status := supply_triggered ? "IN SUPPLY" : "IN DEMAND"
+    status := supply_triggered ? "In Supply" : "In Demand"
     value_bgcolor := supply_triggered ? color.new(color.red, 85) : color.new(color.green, 85)
 else
-    aoi_status := "-"
+    status := "Waiting"
     value_bgcolor := color.new(color.gray, 85)
 
-string padded_status = aoi_status == "-" ? "  -   " : aoi_status
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". AOI Status", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, row, padded_status, text_color=color.black, bgcolor=value_bgcolor, text_size=size.normal)
-row := row + 1
+table.cell(debugTable, 0, 0, "#0. Status", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 0, status, text_color=color.black, bgcolor=value_bgcolor, text_size=size.normal)
 
 // Entry Strategy - show which strategy is active (detected or triggered)
 string entry_strategy_text = "-"
@@ -2843,23 +2890,22 @@ else if bpr_fvg_active
 else if eng_ob_active
     entry_strategy_text := "MSS OB (detected)"
     entry_strategy_bgcolor := value_bgcolor
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
-table.cell(debugTable, 1, row, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
-row := row + 1
+table.cell(debugTable, 0, 1, "#1. Entry Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.normal)
+table.cell(debugTable, 1, 1, entry_strategy_text, text_color=color.black, bgcolor=entry_strategy_bgcolor, text_size=size.normal)
 
 // Combined: Entry + TP + SL
 string entry_tp_sl_text = "-"
 if entry_signal_active and not na(entry_price) and not na(entry_tp) and not na(entry_sl)
     entry_tp_sl_text := "Entry: " + str.tostring(entry_price, format.mintick) + " | TP: " + str.tostring(entry_tp, format.mintick) + " | SL: " + str.tostring(entry_sl, format.mintick)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry/TP/SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, entry_tp_sl_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 2, "#2. Entry/TP/SL", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 2, entry_tp_sl_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
-// Position Size
+// Position Size & Risk Amount (combined)
 string pos_size = str.tostring(strategy.position_size)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Position Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, pos_size, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+string risk_display = trade_entered ? "$" + str.tostring(risk_per_trade, format.mintick) : "-"
+string pos_and_risk = pos_size + " (" + risk_display + " risk)"
+table.cell(debugTable, 0, 3, "#3. Position / Risk", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 3, pos_and_risk, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Trailing Stop Status (only show when use_trailing_stop is enabled)
 if use_trailing_stop and trade_entered
@@ -2881,28 +2927,8 @@ if use_trailing_stop and trade_entered
     // Combined text - show TP hit, current SL, trail offset, and high water mark
     string trailing_info = tp_hit_text + " | SL:" + current_sl + " | Trail:" + trail_offset_text + " | HWM:" + hwm_text
 
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trailing Stop", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, trailing_info, text_color=color.black, bgcolor=tp_hit_bg, text_size=size.small)
-    row := row + 1
-
-// Trading Window status - DETAILED
-string trading_window_text = in_trading_window ? "✓ IN" : "✗ OUT"
-string time_details = " | " + str.tostring(current_time_minutes) + " mins (start:" + str.tostring(trading_start_minutes) + " end:" + str.tostring(trading_end_minutes) + ")"
-trading_window_text := trading_window_text + time_details
-color trading_window_bg = in_trading_window ? color.new(color.green, 85) : color.new(color.red, 85)
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Trading Window", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, trading_window_text, text_color=color.black, bgcolor=trading_window_bg, text_size=size.small)
-row := row + 1
-
-// Cooldown status (only show if there's meaningful data)
-if last_exit_bar >= 0
-    string cooldown_text = in_cooldown ? "✗ YES (blocked)" : "✓ NO"
-    int bars_since_exit = bar_index - last_exit_bar
-    cooldown_text := cooldown_text + " (" + str.tostring(bars_since_exit) + " bars)"
-    color cooldown_bg = in_cooldown ? color.new(color.red, 85) : color.new(color.green, 85)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Cooldown", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, cooldown_text, text_color=color.black, bgcolor=cooldown_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 4, "#4. Trailing Stop", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 4, trailing_info, text_color=color.black, bgcolor=tp_hit_bg, text_size=size.small)
 
 // Supply & Demand Zones (split into two rows for color coding)
 // Supply Zone (red text)
@@ -2914,9 +2940,8 @@ else if supply_configured
 else
     supply_zone_text := "-"
 
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, supply_zone_text, text_color=color.red, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 5, "#5. Supply Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 5, supply_zone_text, text_color=color.red, bgcolor=value_bgcolor, text_size=size.small)
 
 // Demand Zone (blue text)
 string demand_zone_text = ""
@@ -2927,18 +2952,16 @@ else if demand_configured
 else
     demand_zone_text := "-"
 
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, demand_zone_text, text_color=color.blue, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 6, "#6. Demand Zone", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 6, demand_zone_text, text_color=color.blue, bgcolor=value_bgcolor, text_size=size.small)
 
-// Zone Depth Tracking (show execution levels)
-string zone_depth_text = "S: "
-zone_depth_text := zone_depth_text + (na(supply_trade_executed_level) ? "-" : str.tostring(supply_trade_executed_level, format.mintick))
-zone_depth_text := zone_depth_text + " | D: "
-zone_depth_text := zone_depth_text + (na(demand_trade_executed_level) ? "-" : str.tostring(demand_trade_executed_level, format.mintick))
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Depth", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, zone_depth_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+// Zone Depth Tracking (show execution levels) - NOTE: Can't color individual characters in PineScript
+// We'll use a workaround by displaying as plain text but add color markers in the label
+string supply_depth_val = na(supply_trade_executed_level) ? "-" : str.tostring(supply_trade_executed_level, format.mintick)
+string demand_depth_val = na(demand_trade_executed_level) ? "-" : str.tostring(demand_trade_executed_level, format.mintick)
+string zone_depth_text = "S: " + supply_depth_val + " | D: " + demand_depth_val
+table.cell(debugTable, 0, 7, "#7. Zone Depth", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 7, zone_depth_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // COMBINED TIMEOUT COUNTER - Shows setup and entry timeout progress on one line
 string setup_part = "-"
@@ -2971,61 +2994,24 @@ if entry_signal_active and not na(entry_signal_bar_index)
         timeout_bg := color.new(color.red, 90)
 
 string combined_timeout_text = "Setup: " + setup_part + " | Entry: " + entry_part
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Timeouts", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, combined_timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 8, "#8. Timeouts", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 8, combined_timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-// ENGULFING DETECTION DIAGNOSTIC (only show in debug mode)
-if debug_mode
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-    table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-    row := row + 1
+// ENG OB SETUP (only show in debug mode)
+if debug_mode and (eng_ob_active or supply_triggered or demand_triggered)
+    // Header row (merged columns)
+    color eng_header_bg = color.new(color.gray, 50)
+    table.cell(debugTable, 0, 9, "#9. ENG OB SETUP", text_color=color.white, bgcolor=eng_header_bg, text_size=size.small)
+    table.cell(debugTable, 1, 9, "", text_color=color.white, bgcolor=eng_header_bg, text_size=size.small)
 
-    // Zone triggered status
-    string zone_triggered_text = "-"
-    if supply_triggered
-        zone_triggered_text := "✓ SUPPLY"
-    else if demand_triggered
-        zone_triggered_text := "✓ DEMAND"
-    else
-        zone_triggered_text := "✗ NONE"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Triggered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, zone_triggered_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
-
-    // Engulfing pattern conditions (bullish)
-    if demand_triggered and bar_index > 0
-        bool current_bullish = close > open
-        bool prev_bearish = close[1] < open[1]
-        bool engulfs_body = close >= open[1]
-        bool is_deepest = low <= demand_lowest_low or low[1] <= demand_lowest_low
-
-        string bullish_eng_text = ""
-        bullish_eng_text := bullish_eng_text + (current_bullish ? "✓" : "✗") + "cur_bull "
-        bullish_eng_text := bullish_eng_text + (prev_bearish ? "✓" : "✗") + "prv_bear "
-        bullish_eng_text := bullish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-        bullish_eng_text := bullish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
-
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bullish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, bullish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
-
-    // Engulfing pattern conditions (bearish)
-    if supply_triggered and bar_index > 0
-        bool current_bearish = close < open
-        bool prev_bullish = close[1] > open[1]
-        bool engulfs_body = close <= open[1]
-        bool is_deepest = high >= supply_highest_high or high[1] >= supply_highest_high
-
-        string bearish_eng_text = ""
-        bearish_eng_text := bearish_eng_text + (current_bearish ? "✓" : "✗") + "cur_bear "
-        bearish_eng_text := bearish_eng_text + (prev_bullish ? "✓" : "✗") + "prv_bull "
-        bearish_eng_text := bearish_eng_text + (engulfs_body ? "✓" : "✗") + "engulf "
-        bearish_eng_text := bearish_eng_text + (is_deepest ? "✓" : "✗") + "deep"
-
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bearish Eng Conds", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, bearish_eng_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
+    // Bar indices: ENG OB bar vs current bar
+    string eng_bar_indices = "-"
+    if not na(eng_ob_bar_index)
+        eng_bar_indices := "ENG: " + str.tostring(eng_ob_bar_index) + " | Cur: " + str.tostring(bar_index) + " | Diff: " + str.tostring(bar_index - eng_ob_bar_index)
+    else if supply_triggered or demand_triggered
+        eng_bar_indices := "Waiting for ENG OB | Cur: " + str.tostring(bar_index)
+    table.cell(debugTable, 0, 10, "#10. Bar Indices", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 10, eng_bar_indices, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // ============================================================================
 // SESSION LEVELS (always visible)
@@ -3033,51 +3019,37 @@ if debug_mode
 // Asian High/Low
 string asian_levels = na(asian_high) ? "-" : str.tostring(asian_high, format.mintick)
 asian_levels := asian_levels + " / " + (na(asian_low) ? "-" : str.tostring(asian_low, format.mintick))
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Asian H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, asian_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 11, "#11. Asian H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 11, asian_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // London High/Low
 string london_levels = na(london_high) ? "-" : str.tostring(london_high, format.mintick)
 london_levels := london_levels + " / " + (na(london_low) ? "-" : str.tostring(london_low, format.mintick))
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". London H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, london_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 12, "#12. London H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 12, london_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // Previous Day NY High/Low
 string prev_day_levels = na(prev_day_high) ? "-" : str.tostring(prev_day_high, format.mintick)
 prev_day_levels := prev_day_levels + " / " + (na(prev_day_low) ? "-" : str.tostring(prev_day_low, format.mintick))
-table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Prev Day NY H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-table.cell(debugTable, 1, row, prev_day_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 13, "#13. Prev Day NY H/L", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, 13, prev_day_levels, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
 // ============================================================================
-// MSS OB SPECIFIC (only when eng_ob_active AND bar_index is valid)
+// MSS OB SECTION (only when eng_ob_active AND bar_index is valid)
 // ============================================================================
 if eng_ob_active and not na(eng_ob_bar_index)
-    // Divider
-    color eng_divider_color = color.new(color.gray, 50)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS OB DEBUG", text_color=color.white, bgcolor=eng_divider_color, text_size=size.small)
-    table.cell(debugTable, 1, row, "", text_color=color.black, bgcolor=eng_divider_color, text_size=size.small)
-    row := row + 1
+    // Header row (merged columns)
+    color mss_header_bg = color.new(color.gray, 50)
+    table.cell(debugTable, 0, 14, "#14. MSS OB", text_color=color.white, bgcolor=mss_header_bg, text_size=size.small)
+    table.cell(debugTable, 1, 14, "", text_color=color.black, bgcolor=mss_header_bg, text_size=size.small)
 
-    // DIAGNOSTIC: What are the ACTUAL values when this section renders?
-    string diagnostic_active = "active=" + str.tostring(eng_ob_active)
-    string diagnostic_bar = "ob_bar=" + (na(eng_ob_bar_index) ? "na" : str.tostring(eng_ob_bar_index))
-    string diagnostic_current = "cur=" + str.tostring(bar_index)
-    string diagnostic_window = "in_window=" + str.tostring(in_trading_window)
-    string diagnostic_new = "new=" + str.tostring(barstate.isnew)
-    string diagnostic_all = diagnostic_active + " | " + diagnostic_bar + " | " + diagnostic_current + " | " + diagnostic_window + " | " + diagnostic_new
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". DIAGNOSTIC", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, diagnostic_all, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
-
-    // Engulfing OB Status
-    string eng_status = "✓"
-    color eng_bgcolor = value_bgcolor
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Engulfing OB", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, eng_status, text_color=color.black, bgcolor=eng_bgcolor, text_size=size.small)
-    row := row + 1
+    // Bar Indices (ENG OB bar vs current) - consolidated from old row 22
+    string mss_bar_indices = "-"
+    if not na(eng_ob_bar_index)
+        int bars_diff = bar_index - eng_ob_bar_index
+        mss_bar_indices := "ENG: " + str.tostring(eng_ob_bar_index) + " | Cur: " + str.tostring(bar_index) + " | Diff: " + str.tostring(bars_diff)
+    table.cell(debugTable, 0, 15, "#15. Bar Indices", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 15, mss_bar_indices, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
     // MSS Fractal Level
     string fractal_level = "-"
@@ -3086,62 +3058,33 @@ if eng_ob_active and not na(eng_ob_bar_index)
             fractal_level := str.tostring(target_fractal_level_mss, format.mintick) + (eng_ob_is_bullish ? " (↑)" : " (↓)")
         else
             fractal_level := "SEARCHING"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". MSS Fractal", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, fractal_level, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 16, "#16. MSS Fractal", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 16, fractal_level, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 
-    // ENG OB Bar Index (shows where the ENG OB candle is)
-    string eng_bar_text = na(eng_ob_bar_index) ? "na" : str.tostring(eng_ob_bar_index)
-    if not na(eng_ob_bar_index)
-        int bars_ago = bar_index - eng_ob_bar_index
-        // EXPLICIT DEBUG: Show the actual calculation
-        eng_bar_text := eng_bar_text + " | cur=" + str.tostring(bar_index) + " | diff=" + str.tostring(bars_ago)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB Bar", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, eng_bar_text, text_color=color.black, bgcolor=color.new(color.yellow, 0), text_size=size.small)
-    row := row + 1
-
-    // Should Invalidate Timeout (shows if timeout logic would fire)
-    // Recalculate the timeout logic here for display
-    bool should_invalidate_timeout_display = false
-    string timeout_reason_display = "-"
-    if not na(eng_ob_bar_index)
-        if not entry_signal_active and not trade_entered
-            int bars_since_setup = bar_index - eng_ob_bar_index
-            if bars_since_setup >= setup_timeout_bars
-                should_invalidate_timeout_display := true
-                timeout_reason_display := "Setup timeout (" + str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars) + ")"
-
-        int current_hour = hour(time, "America/New_York")
-        int current_minute = minute(time, "America/New_York")
-        int current_time_mins = current_hour * 60 + current_minute
-        int end_time_mins = trading_end_hour * 60 + trading_end_minute
-
-        if current_time_mins >= end_time_mins
-            should_invalidate_timeout_display := true
-            string end_time_str = str.tostring(trading_end_hour) + ":" + (trading_end_minute < 10 ? "0" : "") + str.tostring(trading_end_minute)
-            timeout_reason_display := timeout_reason_display == "-" ? end_time_str + " NY time" : timeout_reason_display + " + " + end_time_str
-
-    string timeout_text = should_invalidate_timeout_display ? "YES: " + timeout_reason_display : "NO"
-    color timeout_bg = should_invalidate_timeout_display ? color.new(color.red, 85) : color.new(color.green, 85)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Should Timeout", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
-    row := row + 1
+    // Timeout Progress (consolidated from row 10 for MSS OB specific)
+    string mss_timeout = "-"
+    color mss_timeout_bg = value_bgcolor
+    if not na(eng_ob_bar_index) and not entry_signal_active and not trade_entered
+        int bars_since_setup = bar_index - eng_ob_bar_index
+        mss_timeout := str.tostring(bars_since_setup) + " / " + str.tostring(setup_timeout_bars) + " bars"
+        if bars_since_setup >= setup_timeout_bars
+            mss_timeout_bg := color.new(color.red, 85)
+        else if bars_since_setup >= setup_timeout_bars * 0.8
+            mss_timeout_bg := color.new(color.red, 90)
+    table.cell(debugTable, 0, 17, "#17. Timeout", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 17, mss_timeout, text_color=color.black, bgcolor=mss_timeout_bg, text_size=size.small)
 
 // ============================================================================
-// BPR FVG / INVERTED FVG DEBUG (combined - only when either is active)
+// FVG SECTION (BPR FVG / INVERTED FVG - combined, only when either is active)
 // ============================================================================
 if bpr_fvg_active or inv_fvg_active
-    // Divider
-    color fvg_divider_color = color.new(color.gray, 50)
-    string fvg_title = bpr_fvg_active ? "BPR FVG DEBUG" : "INVERTED FVG DEBUG"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". " + fvg_title, text_color=color.white, bgcolor=fvg_divider_color, text_size=size.small)
-    table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=fvg_divider_color, text_size=size.small)
-    row := row + 1
+    // Header row (merged columns)
+    color fvg_header_bg = color.new(color.gray, 50)
+    string fvg_title = inv_fvg_active ? "INVERTED FVG" : "BPR FVG"
+    table.cell(debugTable, 0, 18, "#18. " + fvg_title, text_color=color.white, bgcolor=fvg_header_bg, text_size=size.small)
+    table.cell(debugTable, 1, 18, "", text_color=color.white, bgcolor=fvg_header_bg, text_size=size.small)
 
-    // Determine if entry is active for this FVG type
-    bool fvg_entry_active = entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
-
-    // Determine trade direction to use correct colors - SUBTLE
+    // Determine trade direction for color coding
     // For BPR FVG: trade direction is INVERTED from FVG direction
     // For Inverted FVG: trade direction matches the variable
     bool fvg_trade_is_bullish = bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish
@@ -3149,59 +3092,129 @@ if bpr_fvg_active or inv_fvg_active
     color invalid_color = fvg_trade_is_bullish ? color.new(color.red, 85) : color.new(color.green, 85)
     color neutral_color = value_bgcolor
 
-    // RAW BOOLEAN DEBUG - Only show in debug mode for zombie diagnosis
+    // Row 19: Pattern Type + Direction
+    string pattern_dir = inv_fvg_active ? "INV FVG" : "BPR FVG"
+    pattern_dir := pattern_dir + " (" + (fvg_trade_is_bullish ? "Long" : "Short") + ")"
+    table.cell(debugTable, 0, 19, "#19. Pattern", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 19, pattern_dir, text_color=color.black, bgcolor=valid_color, text_size=size.small)
+
+    // Row 20: Bars Back (detection bar)
+    string fvg_bars_back = "-"
+    if not na(bpr_fvg_bar_index)
+        int bars_back = bar_index - bpr_fvg_bar_index
+        fvg_bars_back := str.tostring(bars_back) + " bars ago"
+    else if not na(inv_fvg_bar_index)
+        int bars_back = bar_index - inv_fvg_bar_index
+        fvg_bars_back := str.tostring(bars_back) + " bars ago"
+    table.cell(debugTable, 0, 20, "#20. Bars Back", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 20, fvg_bars_back, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
+
+    // Row 21: Size + Tick Check
+    string fvg_size_check = "-"
+    bool size_valid = false
+    if bpr_fvg_active and not na(bpr_fvg_top) and not na(bpr_fvg_bottom)
+        float fvg_size_val = bpr_fvg_top - bpr_fvg_bottom
+        float actual_ticks = fvg_size_val / syminfo.mintick
+        float required_ticks = bpr_fvg_min_ticks
+        string comparison = actual_ticks > required_ticks ? " > " : (actual_ticks < required_ticks ? " < " : " = ")
+        fvg_size_check := str.tostring(actual_ticks, "#.#") + comparison + str.tostring(required_ticks, "#.#") + " ticks"
+        size_valid := actual_ticks >= required_ticks
+    else if inv_fvg_active and not na(inv_fvg_overlap_top) and not na(inv_fvg_overlap_bottom)
+        float overlap_size_val = inv_fvg_overlap_top - inv_fvg_overlap_bottom
+        float actual_ticks = overlap_size_val / syminfo.mintick
+        float required_ticks = bpr_fvg_min_ticks
+        string comparison = actual_ticks > required_ticks ? " > " : (actual_ticks < required_ticks ? " < " : " = ")
+        fvg_size_check := str.tostring(actual_ticks, "#.#") + comparison + str.tostring(required_ticks, "#.#") + " ticks"
+        size_valid := actual_ticks >= required_ticks
+    color size_check_bg = size_valid ? valid_color : invalid_color
+    table.cell(debugTable, 0, 21, "#21. Size Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 21, fvg_size_check, text_color=color.black, bgcolor=size_check_bg, text_size=size.small)
+
+    // Row 22: Entry Trigger (close breach check)
+    string entry_trigger_text = "-"
+    bool entry_trigger_valid = false
+    if bpr_fvg_active
+        if bpr_fvg_is_bullish
+            entry_trigger_valid := close < bpr_fvg_bottom
+            entry_trigger_text := (entry_trigger_valid ? "✓ " : "✗ ") + "Close < FVG"
+        else
+            entry_trigger_valid := close > bpr_fvg_top
+            entry_trigger_text := (entry_trigger_valid ? "✓ " : "✗ ") + "Close > FVG"
+    else if inv_fvg_active
+        entry_trigger_valid := close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top
+        entry_trigger_text := (entry_trigger_valid ? "✓ " : "✗ ") + "In Overlap"
+    color entry_trigger_bg = entry_trigger_valid ? valid_color : invalid_color
+    table.cell(debugTable, 0, 22, "#22. Entry Trigger", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 22, entry_trigger_text, text_color=color.black, bgcolor=entry_trigger_bg, text_size=size.small)
+
+    // Row 23: Timeouts (Setup X/Y | Entry A/B)
+    string fvg_setup_timeout = "-"
+    string fvg_entry_timeout = "-"
+    color fvg_timeout_bg = neutral_color
+
+    // Setup timeout
+    if not na(bpr_fvg_bar_index)
+        int bars_since = bar_index - bpr_fvg_bar_index
+        fvg_setup_timeout := str.tostring(bars_since) + "/" + str.tostring(setup_timeout_bars)
+        if bars_since >= setup_timeout_bars
+            fvg_timeout_bg := color.new(color.red, 85)
+        else if bars_since >= setup_timeout_bars * 0.8
+            fvg_timeout_bg := color.new(color.red, 90)
+    else if not na(inv_fvg_bar_index)
+        int bars_since = bar_index - inv_fvg_bar_index
+        fvg_setup_timeout := str.tostring(bars_since) + "/" + str.tostring(setup_timeout_bars)
+        if bars_since >= setup_timeout_bars
+            fvg_timeout_bg := color.new(color.red, 85)
+        else if bars_since >= setup_timeout_bars * 0.8
+            fvg_timeout_bg := color.new(color.red, 90)
+
+    // Entry timeout (overrides if more critical)
+    if entry_signal_active and not na(entry_signal_bar_index)
+        int bars_since_entry = bar_index - entry_signal_bar_index
+        fvg_entry_timeout := str.tostring(bars_since_entry) + "/" + str.tostring(entry_timeout_bars)
+        if bars_since_entry >= entry_timeout_bars
+            fvg_timeout_bg := color.new(color.red, 85)
+        else if bars_since_entry >= entry_timeout_bars * 0.8
+            fvg_timeout_bg := color.new(color.red, 90)
+
+    string fvg_timeouts_combined = "Setup:" + fvg_setup_timeout + " | Entry:" + fvg_entry_timeout
+    table.cell(debugTable, 0, 23, "#23. Timeouts", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 23, fvg_timeouts_combined, text_color=color.black, bgcolor=fvg_timeout_bg, text_size=size.small)
+
+    // DEBUG MODE SECTION - Only show in debug mode for zombie diagnosis
     if debug_mode
-        // Header row
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". BOOL DEBUG", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-        table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
-        row := row + 1
+        // Header row (merged columns)
+        color debug_header_bg = color.new(color.gray, 50)
+        table.cell(debugTable, 0, 24, "#24. DEBUG BOOLS", text_color=color.white, bgcolor=debug_header_bg, text_size=size.small)
+        table.cell(debugTable, 1, 24, "", text_color=color.white, bgcolor=debug_header_bg, text_size=size.small)
 
-        // bpr_fvg_active
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        color bpr_active_bg = bpr_fvg_active ? color.new(color.red, 85) : value_bgcolor
-        table.cell(debugTable, 1, row, str.tostring(bpr_fvg_active), text_color=color.black, bgcolor=bpr_active_bg, text_size=size.small)
-        row := row + 1
+        // Row 25: Active Flags
+        string active_flags = "bpr=" + str.tostring(bpr_fvg_active) + " | inv=" + str.tostring(inv_fvg_active) + " | entry=" + str.tostring(entry_signal_active)
+        table.cell(debugTable, 0, 25, "#25. Active Flags", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, 25, active_flags, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
-        // inv_fvg_active
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". inv_fvg_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        color inv_active_bg = inv_fvg_active ? color.new(color.red, 85) : value_bgcolor
-        table.cell(debugTable, 1, row, str.tostring(inv_fvg_active), text_color=color.black, bgcolor=inv_active_bg, text_size=size.small)
-        row := row + 1
+        // Row 26: Trade Flags
+        string trade_flags = "entered=" + str.tostring(trade_entered) + " | ordered=" + str.tostring(order_placed)
+        table.cell(debugTable, 0, 26, "#26. Trade Flags", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, 26, trade_flags, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
-        // entry_signal_active
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". entry_signal_active", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, str.tostring(entry_signal_active), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
+        // Row 27: Bar Indices
+        string bar_idx_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
+        string inv_idx_str = na(inv_fvg_bar_index) ? "na" : str.tostring(inv_fvg_bar_index)
+        string bar_indices = "bpr:" + bar_idx_str + " | inv:" + inv_idx_str + " | cur:" + str.tostring(bar_index)
+        table.cell(debugTable, 0, 27, "#27. Bar Indices", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, 27, bar_indices, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
-        // trade_entered
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". trade_entered", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, str.tostring(trade_entered), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
+        // Row 28: Zone Check
+        bool in_correct_zone = (bpr_fvg_is_bullish and in_supply) or (not bpr_fvg_is_bullish and in_demand)
+        string zone_check = "in_zone=" + str.tostring(in_correct_zone) + " | in_window=" + str.tostring(in_trading_window)
+        table.cell(debugTable, 0, 28, "#28. Zone Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, 28, zone_check, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
-        // order_placed
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". order_placed", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, str.tostring(order_placed), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
-
-        // bpr_fvg_bar_index
-        string fvg_bar_index_str = na(bpr_fvg_bar_index) ? "na" : str.tostring(bpr_fvg_bar_index)
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bpr_fvg_bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, fvg_bar_index_str, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
-
-        // bar_index
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bar_index", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, str.tostring(bar_index), text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
-
-        // Bars since BPR FVG was last set to true (helps debug zombie states)
-        string bars_since_active = "never"
-        if not na(bpr_fvg_bar_index)
-            int bars_ago = bar_index - bpr_fvg_bar_index
-            bars_since_active := str.tostring(bars_ago) + " bars ago"
-        table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". bars since detect", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, row, bars_since_active, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
-        row := row + 1
+        // Row 29: Invalidation Reason
+        string inval_reason = bpr_fvg_active ? (bpr_fvg_invalidation_reason == "" ? "-" : bpr_fvg_invalidation_reason) : (inv_fvg_invalidation_reason == "" ? "-" : inv_fvg_invalidation_reason)
+        table.cell(debugTable, 0, 29, "#29. Invalidation", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+        table.cell(debugTable, 1, 29, inval_reason, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
     // SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress (moved below BARS BACK)
     string setup_timeout_debug = "-"
@@ -3229,9 +3242,8 @@ if bpr_fvg_active or inv_fvg_active
             setup_timeout_bg := value_bgcolor
         else
             setup_timeout_bg := color.new(color.green, 90)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". SETUP TIMEOUT", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_timeout_debug, text_color=color.black, bgcolor=setup_timeout_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 34, "#34. SETUP TIMEOUT", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 34, setup_timeout_debug, text_color=color.black, bgcolor=setup_timeout_bg, text_size=size.small)
 
     // Close Price Check - moved up before ENTRY TIMEOUT
     string close_check_text = "-"
@@ -3251,9 +3263,8 @@ if bpr_fvg_active or inv_fvg_active
         bool in_overlap = close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top
         close_check_text := (in_overlap ? "✓ " : "✗ ") + "In Overlap"
         close_check_valid := in_overlap
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Close Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, close_check_text, text_color=color.black, bgcolor=close_check_valid ? valid_color : invalid_color, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 35, "#35. Close Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 35, close_check_text, text_color=color.black, bgcolor=close_check_valid ? valid_color : invalid_color, text_size=size.small)
 
     // ENTRY TIMEOUT COUNTER - Shows bars since entry signal and timeout progress
     string entry_timeout_debug = "-"
@@ -3270,26 +3281,24 @@ if bpr_fvg_active or inv_fvg_active
             entry_timeout_bg := value_bgcolor
         else
             entry_timeout_bg := color.new(color.green, 90)
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENTRY TIMEOUT", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, entry_timeout_debug, text_color=color.black, bgcolor=entry_timeout_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 36, "#36. ENTRY TIMEOUT", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 36, entry_timeout_debug, text_color=color.black, bgcolor=entry_timeout_bg, text_size=size.small)
 
     // Size + Levels (consolidated)
     string fvg_size_text = "-"
-    bool size_valid = false
+    bool size_levels_valid = false
     if bpr_fvg_active and not na(bpr_fvg_top) and not na(bpr_fvg_bottom)
         float fvg_size = bpr_fvg_top - bpr_fvg_bottom
         float fvg_ticks = fvg_size / syminfo.mintick
         fvg_size_text := str.tostring(fvg_ticks, "#.#") + " ticks | " + str.tostring(bpr_fvg_bottom, format.mintick) + " - " + str.tostring(bpr_fvg_top, format.mintick)
-        size_valid := fvg_ticks >= bpr_fvg_min_ticks
+        size_levels_valid := fvg_ticks >= bpr_fvg_min_ticks
     else if inv_fvg_active and not na(inv_fvg_overlap_top) and not na(inv_fvg_overlap_bottom)
         float overlap_size = inv_fvg_overlap_top - inv_fvg_overlap_bottom
         float overlap_ticks = overlap_size / syminfo.mintick
         fvg_size_text := str.tostring(overlap_ticks, "#.#") + " ticks | " + str.tostring(inv_fvg_overlap_bottom, format.mintick) + " - " + str.tostring(inv_fvg_overlap_top, format.mintick)
-        size_valid := true  // Inverted FVG always valid once formed
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Size + Levels", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, fvg_size_text, text_color=color.black, bgcolor=size_valid ? valid_color : neutral_color, text_size=size.small)
-    row := row + 1
+        size_levels_valid := true  // Inverted FVG always valid once formed
+    table.cell(debugTable, 0, 37, "#37. Size + Levels", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 37, fvg_size_text, text_color=color.black, bgcolor=size_levels_valid ? valid_color : neutral_color, text_size=size.small)
 
     // Strategy Enabled Check
     string enabled_text = "-"
@@ -3300,9 +3309,8 @@ if bpr_fvg_active or inv_fvg_active
     else if inv_fvg_active
         enabled_text := use_inverted_fvg ? "✓ Enabled" : "✗ Disabled"
         strategy_enabled := use_inverted_fvg
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, enabled_text, text_color=color.black, bgcolor=strategy_enabled ? valid_color : invalid_color, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 38, "#38. Strategy", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 38, enabled_text, text_color=color.black, bgcolor=strategy_enabled ? valid_color : invalid_color, text_size=size.small)
 
     // ========================================================================
     // SETUP MONITOR ROWS (appended from separate table)
@@ -3315,9 +3323,8 @@ if bpr_fvg_active or inv_fvg_active
 
     // 1. FVG Pattern Type
     string setup_pattern_type = inv_fvg_active ? "INV FVG" : "BPR FVG"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Pattern Type", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_pattern_type, text_color=color.black, bgcolor=setup_valid_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 39, "#39. Pattern Type", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 39, setup_pattern_type, text_color=color.black, bgcolor=setup_valid_bg, text_size=size.small)
 
     // 2. Bars Back (middle candle)
     string setup_bars_back_text = "-"
@@ -3327,9 +3334,8 @@ if bpr_fvg_active or inv_fvg_active
     else if not na(inv_fvg_bar_index)
         int setup_bars_back = bar_index - inv_fvg_bar_index
         setup_bars_back_text := str.tostring(setup_bars_back) + " bars ago"
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Bars Back", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_bars_back_text, text_color=color.black, bgcolor=setup_neutral_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 40, "#40. Bars Back", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 40, setup_bars_back_text, text_color=color.black, bgcolor=setup_neutral_bg, text_size=size.small)
 
     // 3. Min Tick Size (show comparison: actual vs required)
     string setup_tick_size_text = "-"
@@ -3352,9 +3358,8 @@ if bpr_fvg_active or inv_fvg_active
         setup_tick_size_text := str.tostring(setup_actual_ticks, "#.#") + setup_comparison + str.tostring(setup_required_ticks, "#.#")
         setup_tick_size_valid := setup_actual_ticks >= setup_required_ticks
     color setup_tick_bg = setup_tick_size_valid ? setup_valid_bg : setup_invalid_bg
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Tick Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_tick_size_text, text_color=color.black, bgcolor=setup_tick_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 41, "#41. Tick Size", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 41, setup_tick_size_text, text_color=color.black, bgcolor=setup_tick_bg, text_size=size.small)
 
     // 4. Close Below/Above FVG
     string setup_close_breach_text = "-"
@@ -3373,21 +3378,18 @@ if bpr_fvg_active or inv_fvg_active
         setup_close_breached := close >= inv_fvg_overlap_bottom and close <= inv_fvg_overlap_top
         setup_close_breach_text := (setup_close_breached ? "✓ " : "✗ ") + "In Overlap"
     color setup_close_bg = setup_close_breached ? setup_valid_bg : setup_invalid_bg
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry Trigger", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_close_breach_text, text_color=color.black, bgcolor=setup_close_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 42, "#42. Entry Trigger", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 42, setup_close_breach_text, text_color=color.black, bgcolor=setup_close_bg, text_size=size.small)
 
     // 5. INV FVG Formed
     string setup_inv_formed_text = inv_fvg_active ? "✓ YES" : "✗ NO"
     color setup_inv_bg = inv_fvg_active ? setup_valid_bg : setup_neutral_bg
-    table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". INV FVG", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, row, setup_inv_formed_text, text_color=color.black, bgcolor=setup_inv_bg, text_size=size.small)
-    row := row + 1
+    table.cell(debugTable, 0, 43, "#43. INV FVG", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+    table.cell(debugTable, 1, 43, setup_inv_formed_text, text_color=color.black, bgcolor=setup_inv_bg, text_size=size.small)
 
 // Add blank row at bottom to keep table above TradingView logo
-table.cell(debugTable, 0, row, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
-table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
-row := row + 1
+table.cell(debugTable, 0, 30, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
+table.cell(debugTable, 1, 30, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
 
 // ============================================================================
 // DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
