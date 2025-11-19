@@ -2973,6 +2973,53 @@ table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Zone Depth", text_co
 table.cell(debugTable, 1, row, zone_depth_text, text_color=color.black, bgcolor=value_bgcolor, text_size=size.small)
 row := row + 1
 
+// SETUP TIMEOUT COUNTER - Shows bars since FVG detection and timeout progress
+string setup_timeout_text = "-"
+color setup_timeout_bg = value_bgcolor
+if not na(bpr_fvg_bar_index)
+    int bars_since_detection = bar_index - bpr_fvg_bar_index
+    setup_timeout_text := str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+    if bars_since_detection >= setup_timeout_bars
+        setup_timeout_bg := color.new(color.red, 85)
+    else if bars_since_detection >= setup_timeout_bars * 0.8
+        setup_timeout_bg := color.new(color.red, 90)
+    else if bars_since_detection >= setup_timeout_bars * 0.6
+        setup_timeout_bg := value_bgcolor
+    else
+        setup_timeout_bg := color.new(color.green, 90)
+else if not na(inv_fvg_bar_index)
+    int bars_since_detection = bar_index - inv_fvg_bar_index
+    setup_timeout_text := str.tostring(bars_since_detection) + " / " + str.tostring(setup_timeout_bars) + " bars"
+    if bars_since_detection >= setup_timeout_bars
+        setup_timeout_bg := color.new(color.red, 85)
+    else if bars_since_detection >= setup_timeout_bars * 0.8
+        setup_timeout_bg := color.new(color.red, 90)
+    else if bars_since_detection >= setup_timeout_bars * 0.6
+        setup_timeout_bg := value_bgcolor
+    else
+        setup_timeout_bg := color.new(color.green, 90)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Setup Timeout", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, setup_timeout_text, text_color=color.black, bgcolor=setup_timeout_bg, text_size=size.small)
+row := row + 1
+
+// ENTRY TIMEOUT COUNTER - Shows bars since entry signal and timeout progress
+string entry_timeout_text = "-"
+color entry_timeout_bg = value_bgcolor
+if entry_signal_active and not na(entry_signal_bar_index)
+    int bars_since_entry = bar_index - entry_signal_bar_index
+    entry_timeout_text := str.tostring(bars_since_entry) + " / " + str.tostring(entry_timeout_bars) + " bars"
+    if bars_since_entry >= entry_timeout_bars
+        entry_timeout_bg := color.new(color.red, 85)
+    else if bars_since_entry >= entry_timeout_bars * 0.8
+        entry_timeout_bg := color.new(color.red, 90)
+    else if bars_since_entry >= entry_timeout_bars * 0.6
+        entry_timeout_bg := value_bgcolor
+    else
+        entry_timeout_bg := color.new(color.green, 90)
+table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". Entry Timeout", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
+table.cell(debugTable, 1, row, entry_timeout_text, text_color=color.black, bgcolor=entry_timeout_bg, text_size=size.small)
+row := row + 1
+
 // ENGULFING DETECTION DIAGNOSTIC (only show in debug mode)
 if debug_mode
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". ENG OB DIAGNOSTIC", text_color=color.white, bgcolor=color.new(color.gray, 50), text_size=size.small)
@@ -3363,6 +3410,11 @@ if bpr_fvg_active or inv_fvg_active
     table.cell(debugTable, 0, row, "#" + str.tostring(row) + ". INV FVG", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
     table.cell(debugTable, 1, row, setup_inv_formed_text, text_color=color.black, bgcolor=setup_inv_bg, text_size=size.small)
     row := row + 1
+
+// Add blank row at bottom to keep table above TradingView logo
+table.cell(debugTable, 0, row, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
+table.cell(debugTable, 1, row, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
+row := row + 1
 
 // ============================================================================
 // DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
