@@ -143,13 +143,44 @@ if inNYSession
         currentNYHigh := math.max(currentNYHigh, high)
         currentNYLow := math.min(currentNYLow, low)
 
-// Plot session levels
-plot(i_showSessions ? asianHigh : na, "Asian High", color.new(color.orange, 50), 1, plot.style_line)
-plot(i_showSessions ? asianLow : na, "Asian Low", color.new(color.orange, 50), 1, plot.style_line)
-plot(i_showSessions ? londonHigh : na, "London High", color.new(color.blue, 50), 1, plot.style_line)
-plot(i_showSessions ? londonLow : na, "London Low", color.new(color.blue, 50), 1, plot.style_line)
-plot(i_showSessions ? prevNYHigh : na, "Prev NY High", color.new(color.purple, 50), 1, plot.style_line)
-plot(i_showSessions ? prevNYLow : na, "Prev NY Low", color.new(color.purple, 50), 1, plot.style_line)
+// Track which levels have been broken (invalidated)
+var bool asianHighBroken = false
+var bool asianLowBroken = false
+var bool londonHighBroken = false
+var bool londonLowBroken = false
+var bool prevNYHighBroken = false
+var bool prevNYLowBroken = false
+
+// Reset broken flags on new day
+if newDay
+    asianHighBroken := false
+    asianLowBroken := false
+    londonHighBroken := false
+    londonLowBroken := false
+    prevNYHighBroken := false
+    prevNYLowBroken := false
+
+// Check if price has broken through levels
+if not na(asianHigh) and high > asianHigh
+    asianHighBroken := true
+if not na(asianLow) and low < asianLow
+    asianLowBroken := true
+if not na(londonHigh) and high > londonHigh
+    londonHighBroken := true
+if not na(londonLow) and low < londonLow
+    londonLowBroken := true
+if not na(prevNYHigh) and high > prevNYHigh
+    prevNYHighBroken := true
+if not na(prevNYLow) and low < prevNYLow
+    prevNYLowBroken := true
+
+// Plot session levels (only if not broken)
+plot(i_showSessions and not asianHighBroken ? asianHigh : na, "Asian High", color.new(color.orange, 50), 2, plot.style_line)
+plot(i_showSessions and not asianLowBroken ? asianLow : na, "Asian Low", color.new(color.orange, 50), 2, plot.style_line)
+plot(i_showSessions and not londonHighBroken ? londonHigh : na, "London High", color.new(color.blue, 50), 2, plot.style_line)
+plot(i_showSessions and not londonLowBroken ? londonLow : na, "London Low", color.new(color.blue, 50), 2, plot.style_line)
+plot(i_showSessions and not prevNYHighBroken ? prevNYHigh : na, "Prev NY High", color.new(color.purple, 50), 2, plot.style_line)
+plot(i_showSessions and not prevNYLowBroken ? prevNYLow : na, "Prev NY Low", color.new(color.purple, 50), 2, plot.style_line)
 
 // ============================================================================
 // FVG DETECTION (Fair Value Gap)
@@ -397,18 +428,18 @@ if i_showDebugTable and barstate.islast
     table.cell(debugTable, 0, 0, "Gap & Go ORB", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 30))
     table.cell(debugTable, 1, 0, statusText, text_color=statusColor, text_size=size.normal, bgcolor=color.new(color.black, 50))
 
-    // Session Levels
+    // Session Levels (with broken indicators)
     table.cell(debugTable, 0, 1, "Asian Hi/Lo", text_color=color.white, text_size=size.small)
-    table.cell(debugTable, 1, 1, str.format("{0,number,#.##} / {1,number,#.##}", nz(asianHigh), nz(asianLow)),
-         text_color=color.orange, text_size=size.small)
+    asianStatus = (asianHighBroken ? "✗ " : "") + str.tostring(nz(asianHigh, 0), "#.##") + " / " + (asianLowBroken ? "✗ " : "") + str.tostring(nz(asianLow, 0), "#.##")
+    table.cell(debugTable, 1, 1, asianStatus, text_color=color.orange, text_size=size.small)
 
     table.cell(debugTable, 0, 2, "London Hi/Lo", text_color=color.white, text_size=size.small)
-    table.cell(debugTable, 1, 2, str.format("{0,number,#.##} / {1,number,#.##}", nz(londonHigh), nz(londonLow)),
-         text_color=color.blue, text_size=size.small)
+    londonStatus = (londonHighBroken ? "✗ " : "") + str.tostring(nz(londonHigh, 0), "#.##") + " / " + (londonLowBroken ? "✗ " : "") + str.tostring(nz(londonLow, 0), "#.##")
+    table.cell(debugTable, 1, 2, londonStatus, text_color=color.blue, text_size=size.small)
 
     table.cell(debugTable, 0, 3, "Prev NY Hi/Lo", text_color=color.white, text_size=size.small)
-    table.cell(debugTable, 1, 3, str.format("{0,number,#.##} / {1,number,#.##}", nz(prevNYHigh), nz(prevNYLow)),
-         text_color=color.purple, text_size=size.small)
+    nyStatus = (prevNYHighBroken ? "✗ " : "") + str.tostring(nz(prevNYHigh, 0), "#.##") + " / " + (prevNYLowBroken ? "✗ " : "") + str.tostring(nz(prevNYLow, 0), "#.##")
+    table.cell(debugTable, 1, 3, nyStatus, text_color=color.purple, text_size=size.small)
 
     // Separator
     table.cell(debugTable, 0, 4, "─────────────", text_color=color.gray, text_size=size.small)
