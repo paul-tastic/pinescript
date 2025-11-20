@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.0.8", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.0.9", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -2889,6 +2889,15 @@ if show_trade_summary
     // Clear and populate trade summary table
     table.clear(tradeTable, 0, 0, 7, MAX_TRADE_ROWS - 1)
 
+    // Calculate total P&L for header
+    float total_pnl = 0.0
+    int num_trades_for_pnl = array.size(trade_pnls)
+    if num_trades_for_pnl > 0
+        for i = 0 to num_trades_for_pnl - 1
+            total_pnl += array.get(trade_pnls, i)
+
+    string pnl_header = "P&L: $" + str.tostring(total_pnl, "#.00")
+
     // Header row - completely opaque for easy reading
     color header_bg = color.new(color.blue, 0)
     table.cell(tradeTable, 0, 0, "#", text_color=color.white, bgcolor=header_bg, text_size=size.small)
@@ -2897,16 +2906,17 @@ if show_trade_summary
     table.cell(tradeTable, 3, 0, "Entry", text_color=color.white, bgcolor=header_bg, text_size=size.small)
     table.cell(tradeTable, 4, 0, "Exit", text_color=color.white, bgcolor=header_bg, text_size=size.small)
     table.cell(tradeTable, 5, 0, "Strategy", text_color=color.white, bgcolor=header_bg, text_size=size.small)
-    table.cell(tradeTable, 6, 0, "P&L", text_color=color.white, bgcolor=header_bg, text_size=size.small)
+    table.cell(tradeTable, 6, 0, pnl_header, text_color=color.white, bgcolor=header_bg, text_size=size.small)
     table.cell(tradeTable, 7, 0, "Result", text_color=color.white, bgcolor=header_bg, text_size=size.small)
 
     // Populate trade rows (up to 10 trades) - only if trades exist
-    int num_trades = array.size(trade_results)  // Use results array as it's populated last
+    // Use minimum size across all arrays to ensure synchronization
+    int num_trades = math.min(array.size(trade_results), math.min(array.size(trade_entry_times), math.min(array.size(trade_exit_times), math.min(array.size(trade_entry_prices), math.min(array.size(trade_exit_prices), math.min(array.size(trade_strategies), array.size(trade_pnls)))))))
     if num_trades > 0
         for i = 0 to math.min(num_trades - 1, 9)
             int row = i + 1
 
-            // Get trade data
+            // Get trade data - all arrays guaranteed to have this index
             string entry_time_str = str.format_time(array.get(trade_entry_times, i), "HH:mm", "America/New_York")
             string exit_time_str = str.format_time(array.get(trade_exit_times, i), "HH:mm", "America/New_York")
             string entry_price_str = str.tostring(array.get(trade_entry_prices, i), format.mintick)
