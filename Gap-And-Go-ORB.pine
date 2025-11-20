@@ -86,37 +86,54 @@ inLondonSession = isInSession(i_londonStart, 0, i_londonEnd, 59)
 inNYSession = isInSession(i_nyStart, 0, i_nyEnd, 59)
 
 // Track session highs/lows
-var bool newDay = ta.change(time("D")) != 0
+bool newDay = ta.change(time("D")) != 0
 
+// Reset levels on new day
+if newDay
+    asianHigh := na
+    asianLow := na
+    londonHigh := na
+    londonLow := na
+    // Save previous NY session before reset
+    prevNYHigh := prevNYHigh  // Keep yesterday's value
+    prevNYLow := prevNYLow
+
+// Track Asian session
 if inAsianSession
-    if na(asianHigh) or newDay
+    if na(asianHigh)
         asianHigh := high
         asianLow := low
     else
         asianHigh := math.max(asianHigh, high)
         asianLow := math.min(asianLow, low)
 
+// Track London session
 if inLondonSession
-    if na(londonHigh) or newDay
+    if na(londonHigh)
         londonHigh := high
         londonLow := low
     else
         londonHigh := math.max(londonHigh, high)
         londonLow := math.min(londonLow, low)
 
-// Track previous NY session
+// Track NY session (becomes "previous" next day)
+var float currentNYHigh = na
+var float currentNYLow = na
+
 if inNYSession
-    if newDay
-        // New day - save yesterday's levels before resetting
-        prevNYHigh := nz(prevNYHigh)
-        prevNYLow := nz(prevNYLow)
+    if na(currentNYHigh)
+        currentNYHigh := high
+        currentNYLow := low
     else
-        if na(prevNYHigh)
-            prevNYHigh := high
-            prevNYLow := low
-        else
-            prevNYHigh := math.max(prevNYHigh, high)
-            prevNYLow := math.min(prevNYLow, low)
+        currentNYHigh := math.max(currentNYHigh, high)
+        currentNYLow := math.min(currentNYLow, low)
+
+// At end of NY session, save as previous day's levels
+if newDay and not na(currentNYHigh)
+    prevNYHigh := currentNYHigh
+    prevNYLow := currentNYLow
+    currentNYHigh := na
+    currentNYLow := na
 
 // Plot session levels
 plot(i_showSessions ? asianHigh : na, "Asian High", color.new(color.orange, 50), 1, plot.style_line)
@@ -160,15 +177,11 @@ if i_showFvgs and bullFvgValid
     box.new(bar_index[2], bullFvgTop, bar_index, bullFvgBottom,
          border_color=color.new(color.green, 70),
          bgcolor=color.new(color.green, 90))
-    line.new(bar_index, bullFvgEntry, bar_index + 10, bullFvgEntry,
-         color=color.new(color.green, 30), width=2, style=line.style_dashed)
 
 if i_showFvgs and bearFvgValid
     box.new(bar_index[2], bearFvgTop, bar_index, bearFvgBottom,
          border_color=color.new(color.red, 70),
          bgcolor=color.new(color.red, 90))
-    line.new(bar_index, bearFvgEntry, bar_index + 10, bearFvgEntry,
-         color=color.new(color.red, 30), width=2, style=line.style_dashed)
 
 // ============================================================================
 // TRADE LOGIC
