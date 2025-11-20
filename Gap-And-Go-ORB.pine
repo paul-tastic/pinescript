@@ -73,75 +73,91 @@ isInTradingWindow() =>
 // SESSION LEVEL TRACKING
 // ============================================================================
 
+// Get previous day's high and low using daily timeframe
+[prevDayHigh, prevDayLow] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+// Calculate session levels from intraday data
+// For Asian session (18:00 ET - 02:00 ET previous day)
 var float asianHigh = na
 var float asianLow = na
+var float asianSessionHigh = na
+var float asianSessionLow = na
+
+// For London session (03:00 ET - 07:00 ET previous day)
 var float londonHigh = na
 var float londonLow = na
+var float londonSessionHigh = na
+var float londonSessionLow = na
+
+// For Previous NY session (09:00 ET - 16:00 ET previous day)
 var float prevNYHigh = na
 var float prevNYLow = na
+var float nySessionHigh = na
+var float nySessionLow = na
 
 // Check if we're in each session
 inAsianSession = isInSession(i_asianStart, 0, i_asianEnd, 59)
 inLondonSession = isInSession(i_londonStart, 0, i_londonEnd, 59)
 inNYSession = isInSession(i_nyStart, 0, i_nyEnd, 59)
 
-// Track session highs/lows - PREVIOUS DAY ONLY
 bool newDay = ta.change(time("D")) != 0
 
-// Track current day's sessions (will become "previous" on new day)
-var float currentAsianHigh = na
-var float currentAsianLow = na
-var float currentLondonHigh = na
-var float currentLondonLow = na
-var float currentNYHigh = na
-var float currentNYLow = na
-
-// On new day, save yesterday's sessions as "previous" and reset current
-if newDay
-    if not na(currentAsianHigh)
-        asianHigh := currentAsianHigh
-        asianLow := currentAsianLow
-    if not na(currentLondonHigh)
-        londonHigh := currentLondonHigh
-        londonLow := currentLondonLow
-    if not na(currentNYHigh)
-        prevNYHigh := currentNYHigh
-        prevNYLow := currentNYLow
-
-    // Reset current tracking
-    currentAsianHigh := na
-    currentAsianLow := na
-    currentLondonHigh := na
-    currentLondonLow := na
-    currentNYHigh := na
-    currentNYLow := na
-
-// Track Asian session
+// Track sessions in real-time during the day
 if inAsianSession
-    if na(currentAsianHigh)
-        currentAsianHigh := high
-        currentAsianLow := low
+    if na(asianSessionHigh)
+        asianSessionHigh := high
+        asianSessionLow := low
     else
-        currentAsianHigh := math.max(currentAsianHigh, high)
-        currentAsianLow := math.min(currentAsianLow, low)
+        asianSessionHigh := math.max(asianSessionHigh, high)
+        asianSessionLow := math.min(asianSessionLow, low)
 
-// Track London session
 if inLondonSession
-    if na(currentLondonHigh)
-        currentLondonHigh := high
-        currentLondonLow := low
+    if na(londonSessionHigh)
+        londonSessionHigh := high
+        londonSessionLow := low
     else
-        currentLondonHigh := math.max(currentLondonHigh, high)
-        currentLondonLow := math.min(currentLondonLow, low)
+        londonSessionHigh := math.max(londonSessionHigh, high)
+        londonSessionLow := math.min(londonSessionLow, low)
 
-// Track NY session
 if inNYSession
-    if na(currentNYHigh)
-        currentNYHigh := high
-        currentNYLow := low
+    if na(nySessionHigh)
+        nySessionHigh := high
+        nySessionLow := low
     else
-        currentNYHigh := math.max(currentNYHigh, high)
-        currentNYLow := math.min(currentNYLow, low)
+        nySessionHigh := math.max(nySessionHigh, high)
+        nySessionLow := math.min(nySessionLow, low)
+
+// Save completed sessions as "previous day" levels at end of day
+if newDay
+    // Save yesterday's completed sessions
+    if not na(asianSessionHigh)
+        asianHigh := asianSessionHigh
+        asianLow := asianSessionLow
+    if not na(londonSessionHigh)
+        londonHigh := londonSessionHigh
+        londonLow := londonSessionLow
+    if not na(nySessionHigh)
+        prevNYHigh := nySessionHigh
+        prevNYLow := nySessionLow
+
+    // Reset for new day
+    asianSessionHigh := na
+    asianSessionLow := na
+    londonSessionHigh := na
+    londonSessionLow := na
+    nySessionHigh := na
+    nySessionLow := na
+
+// If no levels set yet (first load), use previous day's high/low as fallback
+if na(asianHigh)
+    asianHigh := prevDayHigh
+    asianLow := prevDayLow
+if na(londonHigh)
+    londonHigh := prevDayHigh
+    londonLow := prevDayLow
+if na(prevNYHigh)
+    prevNYHigh := prevDayHigh
+    prevNYLow := prevDayLow
 
 // Track which levels have been broken (invalidated)
 var bool asianHighBroken = false
