@@ -1,5 +1,4 @@
-// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © YourTradingName
+// © mach2fx
 // @version 1.0.0
 
 //@version=6
@@ -87,8 +86,10 @@ inLondonSession = isInSession(i_londonStart, 0, i_londonEnd, 59)
 inNYSession = isInSession(i_nyStart, 0, i_nyEnd, 59)
 
 // Track session highs/lows
+var bool newDay = ta.change(time("D")) != 0
+
 if inAsianSession
-    if na(asianHigh) or ta.change(time("D"))
+    if na(asianHigh) or newDay
         asianHigh := high
         asianLow := low
     else
@@ -96,7 +97,7 @@ if inAsianSession
         asianLow := math.min(asianLow, low)
 
 if inLondonSession
-    if na(londonHigh) or ta.change(time("D"))
+    if na(londonHigh) or newDay
         londonHigh := high
         londonLow := low
     else
@@ -105,7 +106,7 @@ if inLondonSession
 
 // Track previous NY session
 if inNYSession
-    if ta.change(time("D"))
+    if newDay
         // New day - save yesterday's levels before resetting
         prevNYHigh := nz(prevNYHigh)
         prevNYLow := nz(prevNYLow)
@@ -183,7 +184,7 @@ var float target2Price = na
 var bool target1Hit = false
 
 // Reset daily
-if ta.change(time("D"))
+if newDay
     inLongTrade := false
     inShortTrade := false
     entryPrice := na
