@@ -1,8 +1,9 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © YourTradingName
+// @version 1.0.0
 
 //@version=6
-strategy("Gap & Go ORB", overlay=true, initial_capital=50000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0.04, slippage=2)
+strategy("Gap & Go ORB v1.0.0", overlay=true, initial_capital=50000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0.04, slippage=2)
 
 // ============================================================================
 // INPUTS
