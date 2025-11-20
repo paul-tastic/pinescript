@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.0.9", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.0.10", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -96,15 +96,15 @@ bgcolor(not in_trading_window ? color.new(color.gray, 90) : na, title="Non-Tradi
 
 
 // ============================================================================
-// SESSION HIGH/LOW TRACKING
+// SESSION HIGH/LOW TRACKING - CALCULATED ONCE PER SESSION USING HTF DATA
 // ============================================================================
 // Session times (America/New_York):
-// - Asian: 18:00 - 02:00 (6pm to 2am)
-// - London: 03:00 - 09:00 (3am to 9am)
-// - Previous Day NY: 09:30 - 16:00 (previous trading day)
-// All sessions reset at 09:00 ET - Asian/London reset for today, Prev Day calculated from yesterday
+// - Asian: 18:00 - 02:00 (6pm to 2am) - calculated at 02:00 from 1H bars
+// - London: 03:00 - 09:00 (3am to 9am) - calculated at 09:00 from 1H bars
+// - Previous Day NY: 09:30 - 16:00 (previous trading day) - calculated at 08:00 from 1H bars
+// All values persist for the full day, cleared at midnight
 
-// Track session highs and lows
+// Track session highs and lows (persist all day)
 var float asian_high = na
 var float asian_low = na
 var float london_high = na
@@ -116,55 +116,93 @@ var float prev_day_low = na
 int hour_et = hour(time, "America/New_York")
 int minute_et = minute(time, "America/New_York")
 
-// At 09:00 ET: Calculate Previous Day NY session from historical data and reset current day sessions
-if hour_et == 9 and minute_et == 0
-    // Calculate Previous Day NY High/Low from historical bars
-    // Look back through bars to find previous day's NY session (09:30-16:00)
+// Calculate Previous Day NY High/Low at 08:00 ET using 1H timeframe
+// This runs once per day and stores the values for the full trading day
+// Previous Day session: 09:30-16:00 previous trading day
+if hour_et == 8 and minute_et == 0
+    // Get 1H bars and look back to find previous day's NY session
+    [high_1h, low_1h, time_1h] = request.security(syminfo.tickerid, "60", [high, low, time], lookahead=barmerge.lookahead_off)
+
     float temp_prev_high = na
     float temp_prev_low = na
 
-    // Loop through last 500 bars to find previous day's NY session
-    for i = 1 to 500
-        int bar_time = time[i]
-        int bar_hour = hour(bar_time, "America/New_York")
-        int bar_minute = minute(bar_time, "America/New_York")
-        int bar_day = dayofmonth(bar_time, "America/New_York")
+    // Look back through 1H bars (need less bars since each = 1 hour)
+    // 30 bars = 30 hours = more than enough to find yesterday's session
+    for i = 1 to 30
+        int bar_time_1h = request.security(syminfo.tickerid, "60", time[i], lookahead=barmerge.lookahead_off)
+        int bar_hour_1h = hour(bar_time_1h, "America/New_York")
+        int bar_day_1h = dayofmonth(bar_time_1h, "America/New_York")
         int current_day = dayofmonth(time, "America/New_York")
 
         // Check if this bar is from previous day's NY session (09:30-16:00)
-        bool is_prev_day = bar_day != current_day
-        bool is_ny_time = (bar_hour == 9 and bar_minute >= 30) or (bar_hour >= 10 and bar_hour < 16)
+        bool is_prev_day = bar_day_1h != current_day
+        bool is_ny_time = (bar_hour_1h >= 9 and bar_hour_1h < 16)
 
         if is_prev_day and is_ny_time
-            if na(temp_prev_high) or high[i] > temp_prev_high
-                temp_prev_high := high[i]
-            if na(temp_prev_low) or low[i] < temp_prev_low
-                temp_prev_low := low[i]
+            float bar_high = request.security(syminfo.tickerid, "60", high[i], lookahead=barmerge.lookahead_off)
+            float bar_low = request.security(syminfo.tickerid, "60", low[i], lookahead=barmerge.lookahead_off)
+
+            if na(temp_prev_high) or bar_high > temp_prev_high
+                temp_prev_high := bar_high
+            if na(temp_prev_low) or bar_low < temp_prev_low
+                temp_prev_low := bar_low
 
     prev_day_high := temp_prev_high
     prev_day_low := temp_prev_low
 
-    // Reset current day sessions
-    asian_high := na
-    asian_low := na
-    london_high := na
-    london_low := na
+// Calculate Asian High/Low at 02:00 ET using 1H timeframe
+// Asian session: 18:00-02:00 (just ended)
+if hour_et == 2 and minute_et == 0
+    float temp_asian_high = na
+    float temp_asian_low = na
 
-// Asian session: 18:00 - 02:00 (6pm to 2am)
-bool in_asian_session = (hour_et >= 18) or (hour_et < 2)
-if in_asian_session
-    if na(asian_high) or high > asian_high
-        asian_high := high
-    if na(asian_low) or low < asian_low
-        asian_low := low
+    // Look back through recent 1H bars to find Asian session (18:00-02:00)
+    // Need up to 8 bars (18, 19, 20, 21, 22, 23, 00, 01)
+    for i = 0 to 10
+        int bar_time_1h = request.security(syminfo.tickerid, "60", time[i], lookahead=barmerge.lookahead_off)
+        int bar_hour_1h = hour(bar_time_1h, "America/New_York")
 
-// London session: 03:00 - 09:00 (3am to 9am)
-bool in_london_session = hour_et >= 3 and hour_et < 9
-if in_london_session
-    if na(london_high) or high > london_high
-        london_high := high
-    if na(london_low) or low < london_low
-        london_low := low
+        // Asian session: 18:00-02:00 (crosses midnight)
+        bool is_asian_time = (bar_hour_1h >= 18) or (bar_hour_1h < 2)
+
+        if is_asian_time
+            float bar_high = request.security(syminfo.tickerid, "60", high[i], lookahead=barmerge.lookahead_off)
+            float bar_low = request.security(syminfo.tickerid, "60", low[i], lookahead=barmerge.lookahead_off)
+
+            if na(temp_asian_high) or bar_high > temp_asian_high
+                temp_asian_high := bar_high
+            if na(temp_asian_low) or bar_low < temp_asian_low
+                temp_asian_low := bar_low
+
+    asian_high := temp_asian_high
+    asian_low := temp_asian_low
+
+// Calculate London High/Low at 09:00 ET using 1H timeframe
+// London session: 03:00-09:00 (just ended)
+if hour_et == 9 and minute_et == 0
+    float temp_london_high = na
+    float temp_london_low = na
+
+    // Look back through recent 1H bars to find London session (03:00-09:00)
+    // Need up to 6 bars (03, 04, 05, 06, 07, 08)
+    for i = 0 to 8
+        int bar_time_1h = request.security(syminfo.tickerid, "60", time[i], lookahead=barmerge.lookahead_off)
+        int bar_hour_1h = hour(bar_time_1h, "America/New_York")
+
+        // London session: 03:00-09:00
+        bool is_london_time = bar_hour_1h >= 3 and bar_hour_1h < 9
+
+        if is_london_time
+            float bar_high = request.security(syminfo.tickerid, "60", high[i], lookahead=barmerge.lookahead_off)
+            float bar_low = request.security(syminfo.tickerid, "60", low[i], lookahead=barmerge.lookahead_off)
+
+            if na(temp_london_high) or bar_high > temp_london_high
+                temp_london_high := bar_high
+            if na(temp_london_low) or bar_low < temp_london_low
+                temp_london_low := bar_low
+
+    london_high := temp_london_high
+    london_low := temp_london_low
 
 // ============================================================================
 // ZONE VISUALIZATION - Draw zones during trading window on current day
@@ -372,6 +410,14 @@ if barstate.isnew
         array.clear(trade_strategies)
         array.clear(trade_pnls)
         array.clear(trade_results)
+
+        // Clear session levels (will be recalculated during the day)
+        asian_high := na
+        asian_low := na
+        london_high := na
+        london_low := na
+        prev_day_high := na
+        prev_day_low := na
 
     last_trade_day := current_day
 
