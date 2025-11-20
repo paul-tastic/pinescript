@@ -1,0 +1,433 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © YourTradingName
+
+//@version=6
+strategy("Gap & Go ORB", overlay=true, initial_capital=50000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0.04, slippage=2)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Trading Window
+var g1 = "═══════════ Trading Window ═══════════"
+i_startHour = input.int(9, "Start Hour (ET)", minval=0, maxval=23, group=g1)
+i_startMin = input.int(30, "Start Minute", minval=0, maxval=59, group=g1)
+i_endHour = input.int(11, "End Hour (ET)", minval=0, maxval=23, group=g1)
+i_endMin = input.int(0, "End Minute", minval=0, maxval=59, group=g1)
+
+// Risk Management
+var g2 = "═══════════ Risk Management ═══════════"
+i_maxRisk = input.float(500, "Max Risk per Trade ($)", minval=1, step=10, group=g2)
+i_useMultipleTargets = input.bool(true, "Use Multiple Targets", group=g2)
+i_target1RR = input.float(1.5, "Target 1 R:R", minval=0.5, step=0.5, group=g2)
+i_target1Pct = input.int(50, "Target 1 % of Position", minval=1, maxval=100, group=g2)
+i_target2RR = input.float(2.0, "Target 2 R:R", minval=0.5, step=0.5, group=g2)
+i_singleTargetRR = input.float(2.0, "Single Target R:R (if not using multiple)", minval=0.5, step=0.5, group=g2)
+i_pointValue = input.float(5.0, "Point Value ($)", minval=0.01, step=0.25, group=g2, tooltip="Dollar value per 1 point move (e.g., ES=50, NQ=20, YM=5)")
+
+// FVG Settings
+var g3 = "═══════════ FVG Settings ═══════════"
+i_minFvgSize = input.float(0.10, "Minimum FVG Size ($)", minval=0.01, step=0.05, group=g3)
+i_showFvgs = input.bool(true, "Show FVGs on Chart", group=g3)
+
+// Display Settings
+var g5 = "═══════════ Display Settings ═══════════"
+i_showDebugTable = input.bool(true, "Show Debug Table", group=g5)
+i_showTradeBox = input.bool(true, "Show Trade Box", group=g5)
+
+// Session Settings
+var g4 = "═══════════ Session Levels ═══════════"
+i_showSessions = input.bool(true, "Show Session Levels", group=g4)
+i_asianStart = input.int(18, "Asian Session Start (ET)", minval=0, maxval=23, group=g4)
+i_asianEnd = input.int(2, "Asian Session End (ET)", minval=0, maxval=23, group=g4)
+i_londonStart = input.int(3, "London Session Start (ET)", minval=0, maxval=23, group=g4)
+i_londonEnd = input.int(7, "London Session End (ET)", minval=0, maxval=23, group=g4)
+i_nyStart = input.int(9, "NY Session Start (ET)", minval=0, maxval=23, group=g4)
+i_nyEnd = input.int(16, "NY Session End (ET)", minval=0, maxval=23, group=g4)
+
+// ============================================================================
+// TIMEZONE & TIME FUNCTIONS
+// ============================================================================
+
+// Convert ET to exchange time (assuming chart is in exchange timezone)
+// Note: This is a simplified version - for production you may need to handle DST
+getETHour(offset = 0) =>
+    hour(time, "America/New_York") + offset
+
+getETMinute() =>
+    minute(time, "America/New_York")
+
+isInSession(startH, startM, endH, endM) =>
+    currH = getETHour()
+    currM = getETMinute()
+
+    if startH > endH // Session crosses midnight
+        (currH > startH or currH < endH) or (currH == startH and currM >= startM) or (currH == endH and currM < endM)
+    else
+        (currH > startH or (currH == startH and currM >= startM)) and (currH < endH or (currH == endH and currM < endM))
+
+isInTradingWindow() =>
+    isInSession(i_startHour, i_startMin, i_endHour, i_endMin)
+
+// ============================================================================
+// SESSION LEVEL TRACKING
+// ============================================================================
+
+var float asianHigh = na
+var float asianLow = na
+var float londonHigh = na
+var float londonLow = na
+var float prevNYHigh = na
+var float prevNYLow = na
+
+// Check if we're in each session
+inAsianSession = isInSession(i_asianStart, 0, i_asianEnd, 59)
+inLondonSession = isInSession(i_londonStart, 0, i_londonEnd, 59)
+inNYSession = isInSession(i_nyStart, 0, i_nyEnd, 59)
+
+// Track session highs/lows
+if inAsianSession
+    if na(asianHigh) or ta.change(time("D"))
+        asianHigh := high
+        asianLow := low
+    else
+        asianHigh := math.max(asianHigh, high)
+        asianLow := math.min(asianLow, low)
+
+if inLondonSession
+    if na(londonHigh) or ta.change(time("D"))
+        londonHigh := high
+        londonLow := low
+    else
+        londonHigh := math.max(londonHigh, high)
+        londonLow := math.min(londonLow, low)
+
+// Track previous NY session
+if inNYSession
+    if ta.change(time("D"))
+        // New day - save yesterday's levels before resetting
+        prevNYHigh := nz(prevNYHigh)
+        prevNYLow := nz(prevNYLow)
+    else
+        if na(prevNYHigh)
+            prevNYHigh := high
+            prevNYLow := low
+        else
+            prevNYHigh := math.max(prevNYHigh, high)
+            prevNYLow := math.min(prevNYLow, low)
+
+// Plot session levels
+plot(i_showSessions ? asianHigh : na, "Asian High", color.new(color.orange, 50), 1, plot.style_line)
+plot(i_showSessions ? asianLow : na, "Asian Low", color.new(color.orange, 50), 1, plot.style_line)
+plot(i_showSessions ? londonHigh : na, "London High", color.new(color.blue, 50), 1, plot.style_line)
+plot(i_showSessions ? londonLow : na, "London Low", color.new(color.blue, 50), 1, plot.style_line)
+plot(i_showSessions ? prevNYHigh : na, "Prev NY High", color.new(color.purple, 50), 1, plot.style_line)
+plot(i_showSessions ? prevNYLow : na, "Prev NY Low", color.new(color.purple, 50), 1, plot.style_line)
+
+// ============================================================================
+// FVG DETECTION (Fair Value Gap)
+// ============================================================================
+
+// FVG occurs when there's a gap between candle 1 high and candle 3 low (bullish)
+// or between candle 1 low and candle 3 high (bearish)
+
+// Bullish FVG: gap UP (candle 1 high < candle 3 low)
+bullFvgTop = low
+bullFvgBottom = high[2]
+bullFvgExists = bullFvgBottom < bullFvgTop
+bullFvgSize = bullFvgExists ? bullFvgTop - bullFvgBottom : 0
+bullFvgValid = bullFvgExists and bullFvgSize >= i_minFvgSize
+
+// Bearish FVG: gap DOWN (candle 1 low > candle 3 high)
+bearFvgTop = low[2]
+bearFvgBottom = high
+bearFvgExists = bearFvgBottom < bearFvgTop
+bearFvgSize = bearFvgExists ? bearFvgTop - bearFvgBottom : 0
+bearFvgValid = bearFvgExists and bearFvgSize >= i_minFvgSize
+
+// Entry levels at FVG mid-point
+bullFvgEntry = bullFvgValid ? (bullFvgTop + bullFvgBottom) / 2 : na
+bearFvgEntry = bearFvgValid ? (bearFvgTop + bearFvgBottom) / 2 : na
+
+// Stop loss at candle #1 (the first candle of the 3-candle pattern)
+bullFvgStop = bullFvgValid ? low[2] : na
+bearFvgStop = bearFvgValid ? high[2] : na
+
+// Visualize FVGs
+if i_showFvgs and bullFvgValid
+    box.new(bar_index[2], bullFvgTop, bar_index, bullFvgBottom,
+         border_color=color.new(color.green, 70),
+         bgcolor=color.new(color.green, 90))
+    line.new(bar_index, bullFvgEntry, bar_index + 10, bullFvgEntry,
+         color=color.new(color.green, 30), width=2, style=line.style_dashed)
+
+if i_showFvgs and bearFvgValid
+    box.new(bar_index[2], bearFvgTop, bar_index, bearFvgBottom,
+         border_color=color.new(color.red, 70),
+         bgcolor=color.new(color.red, 90))
+    line.new(bar_index, bearFvgEntry, bar_index + 10, bearFvgEntry,
+         color=color.new(color.red, 30), width=2, style=line.style_dashed)
+
+// ============================================================================
+// TRADE LOGIC
+// ============================================================================
+
+// Track if we're in a position
+var bool inLongTrade = false
+var bool inShortTrade = false
+var float entryPrice = na
+var float stopPrice = na
+var float target1Price = na
+var float target2Price = na
+var bool target1Hit = false
+
+// Reset daily
+if ta.change(time("D"))
+    inLongTrade := false
+    inShortTrade := false
+    entryPrice := na
+    stopPrice := na
+    target1Price := na
+    target2Price := na
+    target1Hit := false
+
+// Entry conditions
+longCondition = bullFvgValid and isInTradingWindow() and not inLongTrade and not inShortTrade
+shortCondition = bearFvgValid and isInTradingWindow() and not inShortTrade and not inLongTrade
+
+// Calculate position size based on max risk (rounded to even number for easier 50% exits)
+calcPositionSize(entryPrice, stopPrice) =>
+    riskPerContract = math.abs(entryPrice - stopPrice)
+    if riskPerContract > 0
+        rawSize = i_maxRisk / riskPerContract
+        // Round to nearest even number
+        evenSize = math.floor(rawSize / 2) * 2
+        evenSize > 0 ? evenSize : 2
+    else
+        2
+
+// LONG ENTRY
+if longCondition
+    entryPrice := bullFvgEntry
+    stopPrice := bullFvgStop
+
+    posSize = calcPositionSize(entryPrice, stopPrice)
+    riskAmount = math.abs(entryPrice - stopPrice)
+
+    if i_useMultipleTargets
+        target1Price := entryPrice + (riskAmount * i_target1RR)
+        target2Price := entryPrice + (riskAmount * i_target2RR)
+        strategy.entry("Long", strategy.long, qty=posSize, limit=entryPrice)
+    else
+        target1Price := entryPrice + (riskAmount * i_singleTargetRR)
+        strategy.entry("Long", strategy.long, qty=posSize, limit=entryPrice)
+
+    inLongTrade := true
+    target1Hit := false
+
+// SHORT ENTRY
+if shortCondition
+    entryPrice := bearFvgEntry
+    stopPrice := bearFvgStop
+
+    posSize = calcPositionSize(entryPrice, stopPrice)
+    riskAmount = math.abs(entryPrice - stopPrice)
+
+    if i_useMultipleTargets
+        target1Price := entryPrice - (riskAmount * i_target1RR)
+        target2Price := entryPrice - (riskAmount * i_target2RR)
+        strategy.entry("Short", strategy.short, qty=posSize, limit=entryPrice)
+    else
+        target1Price := entryPrice - (riskAmount * i_singleTargetRR)
+        strategy.entry("Short", strategy.short, qty=posSize, limit=entryPrice)
+
+    inShortTrade := true
+    target1Hit := false
+
+// EXIT LOGIC
+if inLongTrade and strategy.position_size > 0
+    // Stop loss
+    strategy.exit("Long SL", "Long", stop=stopPrice, qty_percent=100)
+
+    // Multiple targets
+    if i_useMultipleTargets and not target1Hit
+        if high >= target1Price
+            exitQty = math.floor(strategy.position_size * i_target1Pct / 100)
+            strategy.close("Long", qty=exitQty, comment="TP1")
+            target1Hit := true
+
+    // Final target
+    if i_useMultipleTargets and target1Hit
+        strategy.exit("Long TP2", "Long", limit=target2Price)
+    else if not i_useMultipleTargets
+        strategy.exit("Long TP", "Long", limit=target1Price)
+
+if inShortTrade and strategy.position_size < 0
+    // Stop loss
+    strategy.exit("Short SL", "Short", stop=stopPrice, qty_percent=100)
+
+    // Multiple targets
+    if i_useMultipleTargets and not target1Hit
+        if low <= target1Price
+            exitQty = math.floor(math.abs(strategy.position_size) * i_target1Pct / 100)
+            strategy.close("Short", qty=exitQty, comment="TP1")
+            target1Hit := true
+
+    // Final target
+    if i_useMultipleTargets and target1Hit
+        strategy.exit("Short TP2", "Short", limit=target2Price)
+    else if not i_useMultipleTargets
+        strategy.exit("Short TP", "Short", limit=target1Price)
+
+// Reset trade flags when position closes
+if strategy.position_size == 0
+    if inLongTrade or inShortTrade
+        inLongTrade := false
+        inShortTrade := false
+        entryPrice := na
+        stopPrice := na
+        target1Price := na
+        target2Price := na
+        target1Hit := false
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+// Plot entry, stop, and targets for active trades
+plot(inLongTrade or inShortTrade ? entryPrice : na, "Entry", color.new(color.yellow, 0), 2, plot.style_circles)
+plot(inLongTrade or inShortTrade ? stopPrice : na, "Stop", color.new(color.red, 0), 2, plot.style_circles)
+plot(inLongTrade or inShortTrade ? target1Price : na, "Target 1", color.new(color.green, 0), 2, plot.style_circles)
+plot(i_useMultipleTargets and (inLongTrade or inShortTrade) ? target2Price : na, "Target 2", color.new(color.lime, 0), 2, plot.style_circles)
+
+// Background color for trading window
+bgcolor(isInTradingWindow() ? color.new(color.blue, 95) : na, title="Trading Window")
+
+// ============================================================================
+// TRADE BOX VISUALIZATION
+// ============================================================================
+
+var box tradeBox = na
+
+if i_showTradeBox
+    if (inLongTrade or inShortTrade) and strategy.position_size != 0
+        // Delete old box
+        if not na(tradeBox)
+            box.delete(tradeBox)
+
+        // Determine box colors and positions
+        isLong = strategy.position_size > 0
+        boxTop = isLong ? target2Price : entryPrice
+        boxBottom = isLong ? stopPrice : target2Price
+        boxColor = isLong ? color.new(color.green, 85) : color.new(color.red, 85)
+        borderColor = isLong ? color.new(color.green, 50) : color.new(color.red, 50)
+
+        // Create trade box
+        tradeBox := box.new(bar_index - 5, boxTop, bar_index + 20, boxBottom,
+             border_color=borderColor,
+             bgcolor=boxColor,
+             border_width=2,
+             extend=extend.right)
+    else
+        // Close trade box when no position
+        if not na(tradeBox)
+            box.delete(tradeBox)
+            tradeBox := na
+
+// ============================================================================
+// DEBUG TABLE
+// ============================================================================
+
+var table debugTable = na
+
+if i_showDebugTable and barstate.islast
+    // Create table
+    if na(debugTable)
+        debugTable := table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 10), border_width=2, border_color=color.gray)
+
+    // Determine current status
+    var string statusText = "Waiting for Session"
+    var color statusColor = color.gray
+
+    if not isInTradingWindow()
+        if getETHour() < i_startHour or (getETHour() == i_startHour and getETMinute() < i_startMin)
+            statusText := "Pre-Market"
+            statusColor := color.gray
+        else
+            statusText := "Window Closed"
+            statusColor := color.orange
+    else
+        if strategy.position_size != 0
+            statusText := strategy.position_size > 0 ? "IN LONG" : "IN SHORT"
+            statusColor := strategy.position_size > 0 ? color.green : color.red
+        else if inLongTrade or inShortTrade
+            statusText := "Setup Pending"
+            statusColor := color.yellow
+        else if bullFvgValid or bearFvgValid
+            statusText := "FVG Detected!"
+            statusColor := color.aqua
+        else
+            statusText := "Scanning..."
+            statusColor := color.blue
+
+    // Header
+    table.cell(debugTable, 0, 0, "Gap & Go ORB", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 30))
+    table.cell(debugTable, 1, 0, statusText, text_color=statusColor, text_size=size.normal, bgcolor=color.new(color.black, 50))
+
+    // Session Levels
+    table.cell(debugTable, 0, 1, "Asian Hi/Lo", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 1, str.format("{0,number,#.##} / {1,number,#.##}", nz(asianHigh), nz(asianLow)),
+         text_color=color.orange, text_size=size.small)
+
+    table.cell(debugTable, 0, 2, "London Hi/Lo", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 2, str.format("{0,number,#.##} / {1,number,#.##}", nz(londonHigh), nz(londonLow)),
+         text_color=color.blue, text_size=size.small)
+
+    table.cell(debugTable, 0, 3, "Prev NY Hi/Lo", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 3, str.format("{0,number,#.##} / {1,number,#.##}", nz(prevNYHigh), nz(prevNYLow)),
+         text_color=color.purple, text_size=size.small)
+
+    // Separator
+    table.cell(debugTable, 0, 4, "─────────────", text_color=color.gray, text_size=size.small)
+    table.cell(debugTable, 1, 4, "─────────────", text_color=color.gray, text_size=size.small)
+
+    // Trade Info
+    table.cell(debugTable, 0, 5, "Entry", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 5, (inLongTrade or inShortTrade) ? str.format("{0,number,#.##}", entryPrice) : "─",
+         text_color=color.yellow, text_size=size.small)
+
+    table.cell(debugTable, 0, 6, "Stop Loss", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 6, (inLongTrade or inShortTrade) ? str.format("{0,number,#.##}", stopPrice) : "─",
+         text_color=color.red, text_size=size.small)
+
+    table.cell(debugTable, 0, 7, "Target 1", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 7, (inLongTrade or inShortTrade) ? str.format("{0,number,#.##}", target1Price) : "─",
+         text_color=color.green, text_size=size.small)
+
+    table.cell(debugTable, 0, 8, "Target 2", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 8, (i_useMultipleTargets and (inLongTrade or inShortTrade)) ? str.format("{0,number,#.##}", target2Price) : "─",
+         text_color=color.lime, text_size=size.small)
+
+    // Separator
+    table.cell(debugTable, 0, 9, "─────────────", text_color=color.gray, text_size=size.small)
+    table.cell(debugTable, 1, 9, "─────────────", text_color=color.gray, text_size=size.small)
+
+    // Risk Calculations
+    table.cell(debugTable, 0, 10, "Position Size", text_color=color.white, text_size=size.small)
+    positionQty = (inLongTrade or inShortTrade) ? calcPositionSize(entryPrice, stopPrice) : 0
+    table.cell(debugTable, 1, 10, str.tostring(positionQty) + " contracts",
+         text_color=color.aqua, text_size=size.small)
+
+    table.cell(debugTable, 0, 11, "Point Value", text_color=color.white, text_size=size.small)
+    table.cell(debugTable, 1, 11, "$" + str.tostring(i_pointValue),
+         text_color=color.white, text_size=size.small)
+
+    table.cell(debugTable, 0, 12, "Risk/Contract", text_color=color.white, text_size=size.small)
+    riskPerContract = (inLongTrade or inShortTrade) ? math.abs(entryPrice - stopPrice) : 0
+    table.cell(debugTable, 1, 12, (inLongTrade or inShortTrade) ? str.format("${0,number,#.##}", riskPerContract) : "─",
+         text_color=color.orange, text_size=size.small)
+
+    table.cell(debugTable, 0, 13, "Total Risk", text_color=color.white, text_size=size.small)
+    totalRisk = (inLongTrade or inShortTrade) ? riskPerContract * positionQty : 0
+    table.cell(debugTable, 1, 13, (inLongTrade or inShortTrade) ? str.format("${0,number,#.##}", totalRisk) : "─",
+         text_color=color.red, text_size=size.small)
