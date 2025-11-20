@@ -410,10 +410,12 @@ if i_showTradeBox
 
 var table debugTable = na
 
-if i_showDebugTable and barstate.islast
-    // Create table
-    if na(debugTable)
-        debugTable := table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 10), border_width=2, border_color=color.gray)
+if i_showDebugTable
+    // Delete and recreate table on each bar to ensure it's always visible
+    if not na(debugTable)
+        table.delete(debugTable)
+
+    debugTable := table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 10), border_width=2, border_color=color.gray)
 
     // Determine current status
     var string statusText = "Waiting for Session"
