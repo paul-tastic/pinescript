@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.0.11", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.0.14", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -258,6 +258,10 @@ var float bpr_fvg_candle_low = na  // Low of the candle that created the FVG (fo
 var box bpr_fvg_box = na  // Yellow box around FVG
 var string bpr_fvg_invalidation_reason = ""  // Track why BPR FVG was cleared (for debugging)
 var int bpr_entry_triggered_bar = na  // Bar when BPR entry first triggered (for INV FVG upgrade grace period)
+var int bpr_fvg_invalidated_bar = na  // Bar when BPR FVG was invalidated (for debug persistence)
+var string bpr_fvg_last_invalidation_reason = ""  // Keep last invalidation reason for display
+var bool bpr_fvg_last_is_bullish = false  // Keep last direction for display
+var label bpr_fvg_invalidation_label = na  // Label to show why BPR FVG was invalidated (persists for troubleshooting)
 
 // Track Inverted FVG specific state
 var bool inv_fvg_active = false  // Inverted FVG has been detected (overlap found)
@@ -352,6 +356,21 @@ if barstate.isnew
         prev_day_high := na
         prev_day_low := na
 
+        // Clear BPR FVG state for new day
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_invalidation_reason := ""
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        bpr_entry_triggered_bar := na
+        bpr_fvg_invalidated_bar := na
+        bpr_fvg_last_invalidation_reason := ""
+        bpr_fvg_last_is_bullish := false
+
     last_trade_day := current_day
 
 // DEBUG: Track if clearing logic actually executes
@@ -445,7 +464,7 @@ if not in_trading_window
     bpr_fvg_bar_index := na
     bpr_fvg_candle_high := na
     bpr_fvg_candle_low := na
-    bpr_fvg_invalidation_reason := "Outside trading window"
+    bpr_fvg_invalidation_reason := ""  // Clear invalidation reason outside window
     bpr_entry_triggered_bar := na  // Clear upgrade window tracker
 
     // Clear Inverted FVG state
@@ -1512,6 +1531,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                 if deeper_than_last_trade
                     bpr_fvg_active := true
                     bpr_fvg_is_bullish := true
+                    bpr_fvg_invalidation_reason := ""  // Clear old invalidation reason for new setup
                     bpr_fvg_bottom := high[2]  // Bottom of gap
                     bpr_fvg_top := low  // Top of gap
                     bpr_fvg_bar_index := bar_index
@@ -1561,6 +1581,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                 if deeper_than_last_trade
                     bpr_fvg_active := true
                     bpr_fvg_is_bullish := false
+                    bpr_fvg_invalidation_reason := ""  // Clear old invalidation reason for new setup
                     bpr_fvg_top := low[2]  // Top of gap
                     bpr_fvg_bottom := high  // Bottom of gap
                     bpr_fvg_bar_index := bar_index
@@ -1576,13 +1597,14 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                         bpr_fvg_candle_high := high[2]
                         bpr_fvg_candle_low := low[2]
 
-                    // Invalidation level: lowest low of the 3 candles involved
-                    bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
+                    // Invalidation level: highest high of the 3 candles involved
+                    bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
 
 // INVALIDATION: Price closes beyond invalidation level (deeper into zone)
 // This catches price going BACK INTO the zone (wrong direction), not price breaching THROUGH the FVG
 // Don't run this invalidation once entry signal is active
-if bpr_fvg_active and not entry_signal_active
+// IMPORTANT: Use barstate.isconfirmed to run at bar close (same timing as entry trigger to prevent race condition)
+if bpr_fvg_active and not entry_signal_active and barstate.isconfirmed
     bool should_invalidate_fvg = false
 
     if bpr_fvg_is_bullish
@@ -1591,12 +1613,17 @@ if bpr_fvg_active and not entry_signal_active
             should_invalidate_fvg := true
             bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
     else
-        // Bearish FVG (bullish trade): invalidated if close goes LOWER than invalidation level (back into demand)
-        if close < bpr_fvg_invalidation_level
+        // Bearish FVG (bullish trade): invalidated if close goes HIGHER than invalidation level (back into supply)
+        if close > bpr_fvg_invalidation_level
             should_invalidate_fvg := true
-            bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
+            bpr_fvg_invalidation_reason := "Price beyond invalidation (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
 
     if should_invalidate_fvg
+        // Save invalidation info for debug persistence (2 bars)
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1611,6 +1638,24 @@ if bpr_fvg_active and not entry_signal_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if not na(bpr_fvg_invalidation_label)
+            label.delete(bpr_fvg_invalidation_label)
+
+        label_text = "BPR FVG INVALIDATED\n" +
+                     (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" +
+                     "Bar #" + str.tostring(bar_index) + "\n" +
+                     bpr_fvg_last_invalidation_reason
+
+        bpr_fvg_invalidation_label := label.new(
+            bar_index,
+            bpr_fvg_last_is_bullish ? low : high,
+            label_text,
+            color=color.new(color.red, 20),
+            textcolor=color.white,
+            style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down,
+            size=size.small)
 
         // Clear Inverted FVG state when BPR FVG is invalidated
         inv_fvg_active := false
@@ -2957,6 +3002,9 @@ else if eng_ob_active or bpr_fvg_active or inv_fvg_active
     // For Inverted FVG, trade direction matches the variable
     bool trade_is_bullish = eng_ob_active ? eng_ob_is_bullish : (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish)
     value_bgcolor := trade_is_bullish ? color.new(color.green, 85) : color.new(color.red, 85)
+else if not na(bpr_fvg_invalidated_bar) and (bar_index - bpr_fvg_invalidated_bar) <= 2
+    status := "INVALIDATED"
+    value_bgcolor := color.new(color.orange, 70)
 else if supply_triggered or demand_triggered
     status := supply_triggered ? "In Supply" : "In Demand"
     value_bgcolor := supply_triggered ? color.new(color.red, 85) : color.new(color.green, 85)
@@ -3182,26 +3230,34 @@ if eng_ob_active and not na(eng_ob_bar_index)
 // ============================================================================
 // FVG SECTION (BPR FVG / INVERTED FVG - combined, only when either is active)
 // ============================================================================
-if bpr_fvg_active or inv_fvg_active
+// Show debug info if active OR if invalidated within last 2 bars
+bool show_bpr_debug = bpr_fvg_active or inv_fvg_active or (not na(bpr_fvg_invalidated_bar) and (bar_index - bpr_fvg_invalidated_bar) <= 2)
+
+if show_bpr_debug
     // Header row (merged columns)
     color fvg_header_bg = color.new(color.gray, 50)
     string fvg_title = inv_fvg_active ? "INVERTED FVG" : "BPR FVG"
     table.cell(debugTable, 0, 18, "#18. " + fvg_title, text_color=color.white, bgcolor=fvg_header_bg, text_size=size.small)
     table.cell(debugTable, 1, 18, "", text_color=color.white, bgcolor=fvg_header_bg, text_size=size.small)
 
+    // Determine if showing active or invalidated state
+    bool showing_invalidated = not (bpr_fvg_active or inv_fvg_active) and not na(bpr_fvg_invalidated_bar) and (bar_index - bpr_fvg_invalidated_bar) <= 2
+
     // Determine trade direction for color coding
     // For BPR FVG: trade direction is INVERTED from FVG direction
     // For Inverted FVG: trade direction matches the variable
-    bool fvg_trade_is_bullish = bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish
+    // Use saved values if showing invalidated state
+    bool fvg_trade_is_bullish = showing_invalidated ? not bpr_fvg_last_is_bullish : (bpr_fvg_active ? not bpr_fvg_is_bullish : inv_fvg_is_bullish)
     color valid_color = fvg_trade_is_bullish ? color.new(color.green, 85) : color.new(color.red, 85)
     color invalid_color = fvg_trade_is_bullish ? color.new(color.red, 85) : color.new(color.green, 85)
     color neutral_color = value_bgcolor
 
     // Row 19: Pattern Type + Direction
-    string pattern_dir = inv_fvg_active ? "INV FVG" : "BPR FVG"
+    string pattern_dir = showing_invalidated ? "BPR FVG [INVAL]" : (inv_fvg_active ? "INV FVG" : "BPR FVG")
     pattern_dir := pattern_dir + " (" + (fvg_trade_is_bullish ? "Long" : "Short") + ")"
+    color pattern_bg = showing_invalidated ? color.new(color.orange, 70) : valid_color
     table.cell(debugTable, 0, 19, "#19. Pattern", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-    table.cell(debugTable, 1, 19, pattern_dir, text_color=color.black, bgcolor=valid_color, text_size=size.small)
+    table.cell(debugTable, 1, 19, pattern_dir, text_color=color.black, bgcolor=pattern_bg, text_size=size.small)
 
     // Row 20: Timeouts (Setup X/Y | Entry A/B)
     string fvg_setup_timeout = "-"
@@ -3267,10 +3323,11 @@ if bpr_fvg_active or inv_fvg_active
         table.cell(debugTable, 0, 25, "#25. Zone Check", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
         table.cell(debugTable, 1, 25, zone_check, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
 
-        // Row 26: Invalidation Reason
-        string inval_reason = bpr_fvg_active ? (bpr_fvg_invalidation_reason == "" ? "-" : bpr_fvg_invalidation_reason) : (inv_fvg_invalidation_reason == "" ? "-" : inv_fvg_invalidation_reason)
+        // Row 26: Invalidation Reason (use saved value if showing invalidated state)
+        string inval_reason = showing_invalidated ? bpr_fvg_last_invalidation_reason : (bpr_fvg_active ? (bpr_fvg_invalidation_reason == "" ? "-" : bpr_fvg_invalidation_reason) : (inv_fvg_invalidation_reason == "" ? "-" : inv_fvg_invalidation_reason))
+        color inval_bg = showing_invalidated ? color.new(color.orange, 70) : neutral_color
         table.cell(debugTable, 0, 26, "#26. Invalidation", text_color=color.white, bgcolor=label_bgcolor, text_size=size.small)
-        table.cell(debugTable, 1, 26, inval_reason, text_color=color.black, bgcolor=neutral_color, text_size=size.small)
+        table.cell(debugTable, 1, 26, inval_reason, text_color=color.black, bgcolor=inval_bg, text_size=size.small)
 
     // Size + Levels + Tick Comparison (consolidated)
     string fvg_size_text = "-"
