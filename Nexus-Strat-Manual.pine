@@ -453,6 +453,19 @@ if not in_trading_window
         trade_type_label := na
 
     // Clear BPR FVG state
+    if bpr_fvg_active
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := "Outside trading window"
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
     if not na(bpr_fvg_box)
         box.delete(bpr_fvg_box)
         bpr_fvg_box := na
@@ -701,6 +714,19 @@ if eng_ob_active and not na(eng_ob_bar_index)
         trade_entered := false
 
         // Clear BPR FVG state (may be active alongside ENG OB)
+        if bpr_fvg_active
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "Entry signal timeout: " + timeout_reason
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -779,6 +805,19 @@ if eng_ob_active
         entry_sl := na
 
         // Clear BPR FVG state (may be active alongside ENG OB)
+        if bpr_fvg_active
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "ENG OB zone disabled"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -834,6 +873,11 @@ if bpr_fvg_active
         should_invalidate_bpr := true
 
     if should_invalidate_bpr
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := "Zone disabled"
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -846,6 +890,13 @@ if bpr_fvg_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
         // If BPR FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "BPR FVG"
@@ -943,6 +994,19 @@ if barstate.isnew and was_outside_zones
         entry_sl := na
 
         // Clear BPR FVG state (may be active alongside ENG OB)
+        if bpr_fvg_active
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "ENG OB entered opposite zone"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1008,6 +1072,19 @@ if barstate.isnew and was_outside_zones
         entry_sl := na
 
         // Clear BPR FVG state (may be active alongside ENG OB)
+        if bpr_fvg_active
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "ENG OB entered opposite zone"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1063,6 +1140,11 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         should_invalidate_bpr_zone := true
 
     if should_invalidate_bpr_zone
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := "Entered opposite zone"
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1075,6 +1157,13 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
         // If BPR FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "BPR FVG"
@@ -1311,6 +1400,11 @@ if entry_signal_active
 
         else if active_entry_strategy == "BPR FVG"
             // BPR FVG strategy - clear BPR FVG state
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "Opposite zone reached"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
             bpr_fvg_active := false
             bpr_fvg_is_bullish := false
             bpr_fvg_top := na
@@ -1326,8 +1420,20 @@ if entry_signal_active
                 box.delete(bpr_fvg_box)
                 bpr_fvg_box := na
 
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         else if active_entry_strategy == "Inverted FVG"
             // Inverted FVG strategy - clear both BPR FVG and Inverted FVG state
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "Opposite zone reached"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
             bpr_fvg_active := false
             bpr_fvg_is_bullish := false
             bpr_fvg_top := na
@@ -1354,6 +1460,13 @@ if entry_signal_active
             if not na(inv_fvg_overlap_box)
                 box.delete(inv_fvg_overlap_box)
                 inv_fvg_overlap_box := na
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
         else if active_entry_strategy == "Breaker Block"
             // Breaker Block strategy - clear ENG OB state
@@ -1643,19 +1756,9 @@ if bpr_fvg_active and not entry_signal_active and barstate.isconfirmed
         if not na(bpr_fvg_invalidation_label)
             label.delete(bpr_fvg_invalidation_label)
 
-        string label_text = "BPR FVG INVALIDATED\n" +
-                            (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" +
-                            "Bar #" + str.tostring(bar_index) + "\n" +
-                            bpr_fvg_last_invalidation_reason
+        string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
 
-        bpr_fvg_invalidation_label := label.new(
-            bar_index,
-            bpr_fvg_last_is_bullish ? low : high,
-            label_text,
-            color=color.new(color.red, 20),
-            textcolor=color.white,
-            style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down,
-            size=size.small)
+        bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
         // Clear Inverted FVG state when BPR FVG is invalidated
         inv_fvg_active := false
@@ -1675,6 +1778,11 @@ if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
     if bars_since_bpr >= setup_timeout_bars
         bpr_fvg_invalidation_reason := "Timeout (" + str.tostring(bars_since_bpr) + " bars)"
 
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1701,6 +1809,13 @@ if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
 // INVALIDATION: Clear BPR FVG when zones are disabled
 if bpr_fvg_active
@@ -1714,6 +1829,11 @@ if bpr_fvg_active
         bpr_fvg_invalidation_reason := "Demand zone disabled"
 
     if should_invalidate_fvg_zone
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1740,6 +1860,13 @@ if bpr_fvg_active
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
 // INVALIDATION: Clear BPR FVG when entering opposite zone
 if barstate.isnew and was_outside_zones and bpr_fvg_active
@@ -1753,6 +1880,11 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         bpr_fvg_invalidation_reason := "Entered opposite zone (supply)"
 
     if should_invalidate_opposite
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -1779,6 +1911,13 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
 // Visualize BPR FVG with dotted blue outline and darker yellow fill
 if bpr_fvg_active
@@ -2322,6 +2461,11 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
                 eng_ob_box := na
         else if active_entry_strategy == "BPR FVG"
             // BPR FVG strategy
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(bars_since_entry_signal) + " bars)"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
             bpr_fvg_active := false
             bpr_fvg_is_bullish := false
             bpr_fvg_top := na
@@ -2335,8 +2479,21 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
             if not na(bpr_fvg_box)
                 box.delete(bpr_fvg_box)
                 bpr_fvg_box := na
+
+            // Create invalidation label for troubleshooting (persists on chart)
+            if debug_mode
+                if not na(bpr_fvg_invalidation_label)
+                    label.delete(bpr_fvg_invalidation_label)
+                string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+                bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
+
         else if active_entry_strategy == "Inverted FVG"
             // Inverted FVG strategy (clears both BPR FVG and Inverted FVG state)
+            // Save invalidation info for label
+            bpr_fvg_invalidated_bar := bar_index
+            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(bars_since_entry_signal) + " bars)"
+            bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
             bpr_fvg_active := false
             bpr_fvg_is_bullish := false
             bpr_fvg_top := na
@@ -2800,17 +2957,6 @@ if bpr_fvg_active
     bool should_clear_zombie = false
     string zombie_reason = ""
 
-    // Check 6: Inconsistent state - bpr_fvg_active = TRUE but conditions don't support it
-    // This catches replay mode zombies where the state is stuck from a previous bar
-    // CRITICAL: Run this check FIRST before timeout/zone checks, as it's the most specific zombie detector
-    if not entry_signal_active and not trade_entered
-        // BPR FVG should only be active if we're CURRENTLY IN the zone that spawned it
-        // in_supply/in_demand check if current bar's high/low actually touch the zone range
-        bool in_correct_zone = (bpr_fvg_is_bullish and in_supply) or (not bpr_fvg_is_bullish and in_demand)
-        if not in_correct_zone
-            should_clear_zombie := true
-            zombie_reason := "not in spawning zone"
-
     // Check 1: bar_index is na (already caught by safety check, but double-check)
     if not should_clear_zombie and na(bpr_fvg_bar_index)
         should_clear_zombie := true
@@ -2840,6 +2986,11 @@ if bpr_fvg_active
             zombie_reason := "entered opposite zone"
 
     if should_clear_zombie
+        // Save invalidation info for label
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := "ZOMBIE CLEARED: " + zombie_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
@@ -2853,6 +3004,13 @@ if bpr_fvg_active
         if not na(bpr_fvg_box)
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
+
+        // Create invalidation label for troubleshooting (persists on chart)
+        if debug_mode
+            if not na(bpr_fvg_invalidation_label)
+                label.delete(bpr_fvg_invalidation_label)
+            string label_text = "BPR FVG INVALIDATED\n" + (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" + "Bar #" + str.tostring(bar_index) + "\n" + bpr_fvg_last_invalidation_reason
+            bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low : high, label_text, color=color.new(color.red, 20), textcolor=color.white, style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down, size=size.small)
 
 // Same zombie detection for Inverted FVG
 if inv_fvg_active
