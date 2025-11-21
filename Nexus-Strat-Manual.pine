@@ -1643,10 +1643,10 @@ if bpr_fvg_active and not entry_signal_active and barstate.isconfirmed
         if not na(bpr_fvg_invalidation_label)
             label.delete(bpr_fvg_invalidation_label)
 
-        label_text = "BPR FVG INVALIDATED\n" +
-                     (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" +
-                     "Bar #" + str.tostring(bar_index) + "\n" +
-                     bpr_fvg_last_invalidation_reason
+        string label_text = "BPR FVG INVALIDATED\n" +
+                            (bpr_fvg_last_is_bullish ? "BEARISH" : "BULLISH") + " Trade\n" +
+                            "Bar #" + str.tostring(bar_index) + "\n" +
+                            bpr_fvg_last_invalidation_reason
 
         bpr_fvg_invalidation_label := label.new(
             bar_index,
