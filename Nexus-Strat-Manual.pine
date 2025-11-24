@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.2.7", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.2.8", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -1526,17 +1526,23 @@ if bpr_fvg_active and barstate.isconfirmed
                 bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
     else
         // ENTRY INVALIDATION (after entry signal active):
-        // Structure broken - price closes through the FVG gap
+        // SAME LOGIC as setup invalidation - check BOTH directions using formation extremes
         if bpr_fvg_is_bullish
-            // Bullish FVG (bearish trade): invalidate if close goes BELOW FVG bottom (broke structure down)
-            if close < bpr_fvg_bottom
+            // Bullish FVG (bearish trade in supply): invalidate if price goes outside formation range in EITHER direction
+            if close < bpr_fvg_formation_low
                 should_invalidate_fvg := true
-                bpr_fvg_invalidation_reason := "Structure broken (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_bottom, format.mintick) + ")"
+                bpr_fvg_invalidation_reason := "Structure broken (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
+            else if close > bpr_fvg_formation_high
+                should_invalidate_fvg := true
+                bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_formation_high, format.mintick) + ")"
         else
-            // Bearish FVG (bullish trade): invalidate if close goes ABOVE FVG top (broke structure up)
-            if close > bpr_fvg_top
+            // Bearish FVG (bullish trade in demand): invalidate if price goes outside formation range in EITHER direction
+            if close > bpr_fvg_formation_high
                 should_invalidate_fvg := true
-                bpr_fvg_invalidation_reason := "Structure broken (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_top, format.mintick) + ")"
+                bpr_fvg_invalidation_reason := "Structure broken (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_formation_high, format.mintick) + ")"
+            else if close < bpr_fvg_formation_low
+                should_invalidate_fvg := true
+                bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
 
     if should_invalidate_fvg
         // Save invalidation info for debug persistence (2 bars)
@@ -2411,7 +2417,8 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
 // TRADE EXECUTION - Track when limit order is filled
 // ============================================================================
 // STEP 3: Create GREEN/RED boxes when trade is entered (generic for all strategies)
-if entry_signal_active and not trade_entered
+// Use order_placed instead of entry_signal_active to handle cases where setup invalidates after order placement
+if order_placed and not trade_entered
     // Check if we now have an open position (stop order was filled)
     if strategy.position_size != 0
         trade_entered := true
