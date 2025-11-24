@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.2.4", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.2.7", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -70,6 +70,9 @@ show_debug_table = input.bool(true, "Show Debug Table", group="Debug", tooltip="
 //     - Trade result (win/loss/breakeven)
 //     - Strategy used (MSS OB, BPR FVG, INV FVG, etc.)
 //     - Win rate and P&L stats
+// [ ] User option: Move SL to breakeven at 50% TP (alternative to current trailing stop)
+//     - When price reaches 50% of TP distance, move SL to entry (or entry + tick)
+//     - Less aggressive than trailing stop, locks in breakeven earlier
 //
 // IMPLEMENTATION TASKS:
 // [ ] Breaker Block detection and entry logic
@@ -263,6 +266,8 @@ var bool bpr_fvg_is_bullish = false  // True = bullish FVG (in supply), False = 
 var float bpr_fvg_top = na  // Top of the FVG
 var float bpr_fvg_bottom = na  // Bottom of the FVG
 var float bpr_fvg_invalidation_level = na  // Highest/lowest of 3-candle pattern for invalidation
+var float bpr_fvg_formation_low = na  // Lowest low of 3-candle formation (for bullish FVG retracement check)
+var float bpr_fvg_formation_high = na  // Highest high of 3-candle formation (for bearish FVG retracement check)
 var int bpr_fvg_bar_index = na  // Bar index where FVG was detected
 var float bpr_fvg_candle_high = na  // High of the candle that created the FVG (for SL)
 var float bpr_fvg_candle_low = na  // Low of the candle that created the FVG (for SL)
@@ -420,6 +425,8 @@ if barstate.isnew
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
@@ -1385,6 +1392,10 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                     // Invalidation level: highest high of the 3 candles involved
                     bpr_fvg_invalidation_level := math.max(high[2], math.max(high[1], high))
 
+                    // Formation extremes: track lowest low and highest high of 3-candle pattern
+                    bpr_fvg_formation_low := math.min(low[2], math.min(low[1], low))
+                    bpr_fvg_formation_high := math.max(high[2], math.max(high[1], high))
+
                     // Calculate and freeze BPR FVG grade at detection time (bullish FVG = bearish trade in supply)
                     bpr_fvg_grade := "G"  // Always has Gap/FVG
                     // Check if ENG OB also active (add E if so - ENG OB would form AFTER BPR FVG)
@@ -1459,6 +1470,10 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                     // Invalidation level: lowest low of the 3 candles involved (bearish FVG)
                     bpr_fvg_invalidation_level := math.min(low[2], math.min(low[1], low))
 
+                    // Formation extremes: track lowest low and highest high of 3-candle pattern
+                    bpr_fvg_formation_low := math.min(low[2], math.min(low[1], low))
+                    bpr_fvg_formation_high := math.max(high[2], math.max(high[1], high))
+
                     // Calculate and freeze BPR FVG grade at detection time (bearish FVG = bullish trade in demand)
                     bpr_fvg_grade := "G"  // Always has Gap/FVG
                     // Check if ENG OB also active (add E if so - ENG OB would form AFTER BPR FVG)
@@ -1492,17 +1507,23 @@ if bpr_fvg_active and barstate.isconfirmed
 
     if not entry_signal_active
         // SETUP INVALIDATION (before entry signal):
-        // Reversal failed - price continues in original direction beyond 3-candle pattern
+        // Check BOTH directions: reversal failed OR wrong direction for trade
         if bpr_fvg_is_bullish
-            // Bullish FVG (bearish trade): invalidate if close goes ABOVE highest high (reversal failed, still bullish)
-            if close > bpr_fvg_invalidation_level
+            // Bullish FVG (bearish trade in supply): invalidate if price goes outside formation range in EITHER direction
+            if close < bpr_fvg_formation_low
                 should_invalidate_fvg := true
-                bpr_fvg_invalidation_reason := "Reversal failed (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
+                bpr_fvg_invalidation_reason := "Reversal failed (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
+            else if close > bpr_fvg_formation_high
+                should_invalidate_fvg := true
+                bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_formation_high, format.mintick) + ")"
         else
-            // Bearish FVG (bullish trade): invalidate if close goes BELOW lowest low (reversal failed, still bearish)
-            if close < bpr_fvg_invalidation_level
+            // Bearish FVG (bullish trade in demand): invalidate if price goes outside formation range in EITHER direction
+            if close > bpr_fvg_formation_high
                 should_invalidate_fvg := true
-                bpr_fvg_invalidation_reason := "Reversal failed (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_invalidation_level, format.mintick) + ")"
+                bpr_fvg_invalidation_reason := "Reversal failed (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_formation_high, format.mintick) + ")"
+            else if close < bpr_fvg_formation_low
+                should_invalidate_fvg := true
+                bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
     else
         // ENTRY INVALIDATION (after entry signal active):
         // Structure broken - price closes through the FVG gap
@@ -1523,11 +1544,25 @@ if bpr_fvg_active and barstate.isconfirmed
         bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
         bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
 
+        // Create invalidation label for troubleshooting (persists for 2 bars)
+        string label_text = "BPR FVG INVALIDATED\n" + bpr_fvg_invalidation_reason
+        bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low - (high - low) * 3 : high + (high - low) * 3,
+         label_text,
+         color=color.new(color.red, 20),
+         textcolor=color.white,
+         style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down,
+         size=size.small)
+
+        // CRITICAL: Cancel all pending orders FIRST (prevents ghost fills)
+        strategy.cancel_all()
+
         bpr_fvg_active := false
         bpr_fvg_is_bullish := false
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
@@ -1538,7 +1573,6 @@ if bpr_fvg_active and barstate.isconfirmed
             box.delete(bpr_fvg_box)
             bpr_fvg_box := na
 
-
         // Clear Inverted FVG state when BPR FVG is invalidated
         inv_fvg_active := false
         inv_fvg_is_bullish := false
@@ -1551,61 +1585,7 @@ if bpr_fvg_active and barstate.isconfirmed
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
 
-// INVALIDATION: Price continuing in original direction (reversal failed)
-// For bullish FVG (bearish trade in supply): invalidate if price closes BELOW formation low (continuing down, no reversal)
-// For bearish FVG (bullish trade in demand): invalidate if price closes ABOVE formation high (continuing up, no reversal)
-// Wait for bar close (barstate.isconfirmed) before invalidating
-if bpr_fvg_active and not na(bpr_fvg_invalidation_level) and barstate.isconfirmed
-    bool should_invalidate_retracement = false
-
-    if bpr_fvg_is_bullish
-        // Bullish FVG (bearish trade in supply): invalidate if CLOSE drops below formation low (price continuing down, reversal failed)
-        // Note: bpr_fvg_invalidation_level for bullish FVG = highest high, but we check the LOWEST low of formation
-        // We need to track the formation low separately - for now check against the opposite end
-        if close < bpr_fvg_bottom
-            should_invalidate_retracement := true
-            bpr_fvg_invalidation_reason := "Price continued down (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_bottom, format.mintick) + ")"
-    else
-        // Bearish FVG (bullish trade in demand): invalidate if CLOSE rises above formation high (price continuing up, reversal failed)
-        if close > bpr_fvg_top
-            should_invalidate_retracement := true
-            bpr_fvg_invalidation_reason := "Price continued up (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_top, format.mintick) + ")"
-
-    if should_invalidate_retracement
-        // Save invalidation info for debug persistence
-        bpr_fvg_invalidated_bar := bar_index
-        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
-        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
-
-        // Clear BPR FVG state
-        bpr_fvg_active := false
-        bpr_fvg_is_bullish := false
-        bpr_fvg_top := na
-        bpr_fvg_bottom := na
-        bpr_fvg_invalidation_level := na
-        bpr_fvg_bar_index := na
-        bpr_fvg_candle_high := na
-        bpr_fvg_candle_low := na
-        bpr_entry_triggered_bar := na
-
-        // Delete FVG box
-        if not na(bpr_fvg_box)
-            box.delete(bpr_fvg_box)
-            bpr_fvg_box := na
-
-        // Clear Inverted FVG state when BPR FVG is invalidated
-        inv_fvg_active := false
-        inv_fvg_is_bullish := false
-        inv_fvg_overlap_top := na
-        inv_fvg_overlap_bottom := na
-        inv_fvg_bar_index := na
-        inv_fvg_reversal_candle_high := na
-        inv_fvg_reversal_candle_low := na
-        if not na(inv_fvg_overlap_box)
-            box.delete(inv_fvg_overlap_box)
-            inv_fvg_overlap_box := na
-
-        // If BPR FVG had an active entry signal, clear it
+        // Clear entry signal state (prevents order placement after invalidation)
         if entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
             entry_signal_active := false
             active_entry_strategy := ""
@@ -1614,13 +1594,6 @@ if bpr_fvg_active and not na(bpr_fvg_invalidation_level) and barstate.isconfirme
             entry_sl := na
             entry_signal_bar_index := na
             order_placed := false
-
-            // Cancel pending limit orders
-            strategy.cancel("Long")
-            strategy.cancel("Short")
-            strategy.cancel("Full SL")
-            strategy.cancel("TP/SL Long")
-            strategy.cancel("TP/SL Short")
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
@@ -1638,6 +1611,8 @@ if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
@@ -1683,6 +1658,8 @@ if bpr_fvg_active
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
@@ -1728,6 +1705,8 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
@@ -2794,6 +2773,8 @@ if bpr_fvg_active
         bpr_fvg_top := na
         bpr_fvg_bottom := na
         bpr_fvg_invalidation_level := na
+        bpr_fvg_formation_low := na
+        bpr_fvg_formation_high := na
         bpr_fvg_bar_index := na
         bpr_fvg_candle_high := na
         bpr_fvg_candle_low := na
