@@ -3094,7 +3094,9 @@ if eng_ob_active or bpr_fvg_active or inv_fvg_active or entry_signal_active
 // ============================================================================
 // DEBUG TABLE - DYNAMIC (expands based on active setup)
 // ============================================================================
-// Only show if user has enabled it
+// TEMPORARILY DISABLED: Commented out to reduce scope count from 559 to ~460
+// TODO: Rework this section to be more efficient
+/*
 if show_debug_table
     // Calculate max rows needed (will adjust dynamically)
     var int MAX_DEBUG_ROWS = 50
@@ -3565,6 +3567,8 @@ if show_debug_table
     // Add blank row at bottom to keep table above TradingView logo
     table.cell(debugTable, 0, 33, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
     table.cell(debugTable, 1, 33, "", text_color=color.white, bgcolor=color.new(color.white, 100), text_size=size.small)
+*/
+// END OF COMMENTED DEBUG TABLE
 
 // ============================================================================
 // DAILY STATS TABLE (HIDDEN FOR DEBUGGING)
