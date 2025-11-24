@@ -1549,6 +1549,77 @@ if bpr_fvg_active and barstate.isconfirmed
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
 
+// INVALIDATION: Price continuing in original direction (reversal failed)
+// For bullish FVG (bearish trade in supply): invalidate if price closes BELOW formation low (continuing down, no reversal)
+// For bearish FVG (bullish trade in demand): invalidate if price closes ABOVE formation high (continuing up, no reversal)
+// Wait for bar close (barstate.isconfirmed) before invalidating
+if bpr_fvg_active and not na(bpr_fvg_invalidation_level) and barstate.isconfirmed
+    bool should_invalidate_retracement = false
+
+    if bpr_fvg_is_bullish
+        // Bullish FVG (bearish trade in supply): invalidate if CLOSE drops below formation low (price continuing down, reversal failed)
+        // Note: bpr_fvg_invalidation_level for bullish FVG = highest high, but we check the LOWEST low of formation
+        // We need to track the formation low separately - for now check against the opposite end
+        if close < bpr_fvg_bottom
+            should_invalidate_retracement := true
+            bpr_fvg_invalidation_reason := "Price continued down (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_bottom, format.mintick) + ")"
+    else
+        // Bearish FVG (bullish trade in demand): invalidate if CLOSE rises above formation high (price continuing up, reversal failed)
+        if close > bpr_fvg_top
+            should_invalidate_retracement := true
+            bpr_fvg_invalidation_reason := "Price continued up (" + str.tostring(close, format.mintick) + " > " + str.tostring(bpr_fvg_top, format.mintick) + ")"
+
+    if should_invalidate_retracement
+        // Save invalidation info for debug persistence
+        bpr_fvg_invalidated_bar := bar_index
+        bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
+        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
+
+        // Clear BPR FVG state
+        bpr_fvg_active := false
+        bpr_fvg_is_bullish := false
+        bpr_fvg_top := na
+        bpr_fvg_bottom := na
+        bpr_fvg_invalidation_level := na
+        bpr_fvg_bar_index := na
+        bpr_fvg_candle_high := na
+        bpr_fvg_candle_low := na
+        bpr_entry_triggered_bar := na
+
+        // Delete FVG box
+        if not na(bpr_fvg_box)
+            box.delete(bpr_fvg_box)
+            bpr_fvg_box := na
+
+        // Clear Inverted FVG state when BPR FVG is invalidated
+        inv_fvg_active := false
+        inv_fvg_is_bullish := false
+        inv_fvg_overlap_top := na
+        inv_fvg_overlap_bottom := na
+        inv_fvg_bar_index := na
+        inv_fvg_reversal_candle_high := na
+        inv_fvg_reversal_candle_low := na
+        if not na(inv_fvg_overlap_box)
+            box.delete(inv_fvg_overlap_box)
+            inv_fvg_overlap_box := na
+
+        // If BPR FVG had an active entry signal, clear it
+        if entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
+            entry_signal_active := false
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
+            entry_signal_bar_index := na
+            order_placed := false
+
+            // Cancel pending limit orders
+            strategy.cancel("Long")
+            strategy.cancel("Short")
+            strategy.cancel("Full SL")
+            strategy.cancel("TP/SL Long")
+            strategy.cancel("TP/SL Short")
+
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
     int bars_since_bpr = bar_index - bpr_fvg_bar_index
