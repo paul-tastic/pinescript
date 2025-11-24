@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.2.2", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.2.4", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -570,6 +570,7 @@ if in_supply
     // Reset deepest on fresh entry after being outside
     if was_outside_zones
         supply_highest_high := high
+        supply_trade_executed_level := na  // Reset zone execution level for fresh entry
         was_outside_zones := false
     // Otherwise, track highest high in supply zone
     else if na(supply_highest_high) or high > supply_highest_high
@@ -582,6 +583,7 @@ if in_demand
     // Reset deepest on fresh entry after being outside
     if was_outside_zones
         demand_lowest_low := low
+        demand_trade_executed_level := na  // Reset zone execution level for fresh entry
         was_outside_zones := false
     // Otherwise, track lowest low in demand zone
     else if na(demand_lowest_low) or low < demand_lowest_low
