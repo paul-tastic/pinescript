@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.2.8", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.3.1", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -237,7 +237,6 @@ var int eng_ob_bar_index = na
 var float eng_ob_candle_high = na
 var float eng_ob_candle_low = na
 var box eng_ob_box = na  // Yellow box around ENG OB candle for visual debug
-var label eng_ob_diamond = na  // Black diamond marker for ENG OB detection
 
 // Track engulfing detection separately for grading (not tied to MSS OB strategy)
 var bool engulfing_detected_for_grade = false  // True if engulfing pattern detected in current setup
@@ -277,7 +276,6 @@ var int bpr_entry_triggered_bar = na  // Bar when BPR entry first triggered (for
 var int bpr_fvg_invalidated_bar = na  // Bar when BPR FVG was invalidated (for debug persistence)
 var string bpr_fvg_last_invalidation_reason = ""  // Keep last invalidation reason for display
 var bool bpr_fvg_last_is_bullish = false  // Keep last direction for display
-var label bpr_fvg_invalidation_label = na  // Label to show why BPR FVG was invalidated (persists for troubleshooting)
 
 // Track Inverted FVG specific state
 var bool inv_fvg_active = false  // Inverted FVG has been detected (overlap found)
@@ -997,9 +995,6 @@ if eng_ob_active
         // Bullish setup invalidated if price makes new lower low than ENG OB candle's low WHILE IN DEMAND ZONE
         if low < eng_ob_candle_low
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1050,9 +1045,6 @@ if eng_ob_active
         // Bearish setup invalidated if price makes new higher high than ENG OB candle's high WHILE IN SUPPLY ZONE
         if high > eng_ob_candle_high
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1119,9 +1111,6 @@ if entry_signal_active
         if active_entry_strategy == "MSS OB"
             // MSS OB strategy - clear ENG OB state
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1196,9 +1185,6 @@ if entry_signal_active
         else if active_entry_strategy == "Breaker Block"
             // Breaker Block strategy - clear ENG OB state
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -1245,89 +1231,7 @@ if entry_signal_active
             box.delete(live_sl_box)
             live_sl_box := na
 
-// Track which candle made the deepest penetration (only show current)
-var label deepest_demand_label = na
-var label deepest_supply_label = na
-
-// Update deepest marker when new deepest is found - place below/above candle to avoid covering it
-if demand_triggered and not na(demand_lowest_low) and low == demand_lowest_low
-    // Delete old label
-    if not na(deepest_demand_label)
-        label.delete(deepest_demand_label)
-    // Create new label below the candle low
-    deepest_demand_label := label.new(bar_index, low, "●", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.blue, size=size.tiny, style=label.style_label_up, textalign=text.align_center)
-
-if supply_triggered and not na(supply_highest_high) and high == supply_highest_high
-    // Delete old label
-    if not na(deepest_supply_label)
-        label.delete(deepest_supply_label)
-    // Create new label above the candle high
-    deepest_supply_label := label.new(bar_index, high, "●", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.orange, size=size.tiny, style=label.style_label_down, textalign=text.align_center)
-
-// ============================================================================
-// SETUP ICONS - Visual indicators for each setup type
-// ============================================================================
-
-// ENG OB Detection: Black diamond when engulfing pattern detected
-// Using label instead of plotshape so it can be deleted when invalidated
-if is_bullish_engulfing
-    eng_ob_diamond := label.new(bar_index, low, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.black, size=size.normal, style=label.style_none, textalign=text.align_center)
-else if is_bearish_engulfing
-    eng_ob_diamond := label.new(bar_index, high, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.black, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-// MSS OB Confirmation: Red/green diamond stacked on ENG OB when MSS fractal broken
-// Show ONLY on the bar where MSS OB was confirmed (not every bar after)
-// Uses labels with vertical offset so both ENG OB and MSS OB diamonds are visible
-bool show_mss_bullish = not na(mss_ob_confirmed_bar) and bar_index == mss_ob_confirmed_bar and entry_is_bullish and active_entry_strategy == "MSS OB"
-bool show_mss_bearish = not na(mss_ob_confirmed_bar) and bar_index == mss_ob_confirmed_bar and not entry_is_bullish and active_entry_strategy == "MSS OB"
-
-// Calculate offset for MSS diamond positioning
-float mss_offset = (high - low) * 1.5
-
-// Bullish trade: MSS diamond below ENG OB diamond (both below candle)
-if show_mss_bullish
-    label.new(bar_index, low - mss_offset, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.green, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-// Bearish trade: MSS diamond above ENG OB diamond (both above candle)
-if show_mss_bearish
-    label.new(bar_index, high + mss_offset, "◆", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.red, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-// BPR FVG Detection: Square when BPR FVG detected (ONLY on detection bar)
-// Maroon = bullish FVG in supply (leads to bearish trade)
-// Blue = bearish FVG in demand (leads to bullish trade)
-// Show icon ONLY on the bar where BPR FVG was detected
-bool show_bpr_fvg_bullish_trade = not na(bpr_fvg_bar_index) and bar_index == bpr_fvg_bar_index and not bpr_fvg_is_bullish  // Bearish FVG = bullish trade
-bool show_bpr_fvg_bearish_trade = not na(bpr_fvg_bar_index) and bar_index == bpr_fvg_bar_index and bpr_fvg_is_bullish  // Bullish FVG = bearish trade
-
-// Inverted FVG: Purple square stacked on BPR FVG when overlap detected (ONLY on detection bar)
-// Shows both the original BPR color and purple to indicate the inversion
-// Show icon ONLY on the bar where Inverted FVG was detected
-bool show_inv_fvg_bullish_trade = not na(inv_fvg_bar_index) and bar_index == inv_fvg_bar_index and inv_fvg_is_bullish  // Bullish inverted trade
-bool show_inv_fvg_bearish_trade = not na(inv_fvg_bar_index) and bar_index == inv_fvg_bar_index and not inv_fvg_is_bullish  // Bearish inverted trade
-
-// Calculate offset: Use ATR or fixed tick offset for consistent vertical spacing
-// Base offset: 2x the candle range (more spacing than before)
-float base_icon_offset = (high - low) * 2.0
-
-// BULLISH TRADE ICONS (stacked below candle) - shown on detection bar only
-if show_bpr_fvg_bullish_trade or show_inv_fvg_bullish_trade
-    // BPR FVG icon (maroon square) - closest to candle
-    if show_bpr_fvg_bullish_trade
-        label.new(bar_index, low, "■", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.maroon, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-    // INV FVG icon (purple square) - stacked below BPR icon with offset
-    if show_inv_fvg_bullish_trade
-        label.new(bar_index, low - base_icon_offset, "■", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.purple, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-// BEARISH TRADE ICONS (stacked above candle) - shown on detection bar only
-if show_bpr_fvg_bearish_trade or show_inv_fvg_bearish_trade
-    // BPR FVG icon (blue square) - closest to candle
-    if show_bpr_fvg_bearish_trade
-        label.new(bar_index, high, "■", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.blue, size=size.normal, style=label.style_none, textalign=text.align_center)
-
-    // INV FVG icon (purple square) - stacked above BPR icon with offset
-    if show_inv_fvg_bearish_trade
-        label.new(bar_index, high + base_icon_offset, "■", xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 100), textcolor=color.purple, size=size.normal, style=label.style_none, textalign=text.align_center)
+// Labels removed for cleaner chart view
 
 // ============================================================================
 // BPR FVG DETECTION
@@ -1544,22 +1448,25 @@ if bpr_fvg_active and barstate.isconfirmed
                 should_invalidate_fvg := true
                 bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
 
-    if should_invalidate_fvg
+    if should_invalidate_fvg and not trade_entered
+        // Only invalidate if trade hasn't been entered yet
+        // Once trade is entered, let TP/SL orders handle the exit
+
         // Save invalidation info for debug persistence (2 bars)
         bpr_fvg_invalidated_bar := bar_index
         bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
         bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
 
-        // Create invalidation label for troubleshooting (persists for 2 bars)
-        string label_text = "BPR FVG INVALIDATED\n" + bpr_fvg_invalidation_reason
-        bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low - (high - low) * 3 : high + (high - low) * 3,
-         label_text,
-         color=color.new(color.red, 20),
-         textcolor=color.white,
-         style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down,
-         size=size.small)
+        // TEMPORARILY DISABLED: Create invalidation label for troubleshooting (persists for 2 bars)
+        // string label_text = "BPR FVG INVALIDATED\n" + bpr_fvg_invalidation_reason
+        // bpr_fvg_invalidation_label := label.new(bar_index, bpr_fvg_last_is_bullish ? low - (high - low) * 3 : high + (high - low) * 3,
+        //  label_text,
+        //  color=color.new(color.red, 20),
+        //  textcolor=color.white,
+        //  style=bpr_fvg_last_is_bullish ? label.style_label_up : label.style_label_down,
+        //  size=size.small)
 
-        // CRITICAL: Cancel all pending orders FIRST (prevents ghost fills)
+        // Cancel all pending orders (prevents ghost fills on unfilled entry orders)
         strategy.cancel_all()
 
         bpr_fvg_active := false
@@ -1592,14 +1499,17 @@ if bpr_fvg_active and barstate.isconfirmed
             inv_fvg_overlap_box := na
 
         // Clear entry signal state (prevents order placement after invalidation)
+        // BUT: Don't clear order_placed, entry_price, entry_tp, entry_sl - we need these for fill detection!
         if entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
             entry_signal_active := false
-            active_entry_strategy := ""
-            entry_price := na
-            entry_tp := na
-            entry_sl := na
+            // DON'T clear these - needed for TP/SL boxes when fill is detected:
+            // active_entry_strategy := ""
+            // entry_price := na
+            // entry_tp := na
+            // entry_sl := na
             entry_signal_bar_index := na
-            order_placed := false
+            // DON'T clear order_placed here - we still need to detect fills even after invalidation
+            // order_placed := false
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
@@ -1653,7 +1563,8 @@ if bpr_fvg_active
         should_invalidate_fvg_zone := true
         bpr_fvg_invalidation_reason := "Demand zone disabled"
 
-    if should_invalidate_fvg_zone
+    if should_invalidate_fvg_zone and not trade_entered
+        // Only invalidate if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
         bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
@@ -1700,7 +1611,8 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         should_invalidate_opposite := true
         bpr_fvg_invalidation_reason := "Entered opposite zone (supply)"
 
-    if should_invalidate_opposite
+    if should_invalidate_opposite and not trade_entered
+        // Only invalidate if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
         bpr_fvg_last_invalidation_reason := bpr_fvg_invalidation_reason
@@ -2076,9 +1988,6 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
         // Clear any lingering ENG OB setup when BPR/INV FVG entry signal activates
         if eng_ob_active
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -2261,9 +2170,6 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
         if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
             // ENG OB-based strategies
             eng_ob_active := false
-            if not na(eng_ob_diamond)
-                label.delete(eng_ob_diamond)
-                eng_ob_diamond := na
             eng_ob_is_bullish := false
             eng_ob_deepest_level := na
             eng_ob_bar_index := na
@@ -2418,9 +2324,11 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
 // ============================================================================
 // STEP 3: Create GREEN/RED boxes when trade is entered (generic for all strategies)
 // Use order_placed instead of entry_signal_active to handle cases where setup invalidates after order placement
+
 if order_placed and not trade_entered
-    // Check if we now have an open position (stop order was filled)
-    if strategy.position_size != 0
+    // Check if we now have an open position (limit order was filled)
+    // Use strategy.opentrades to reliably detect when entry order fills
+    if strategy.opentrades > 0
         trade_entered := true
 
         // Record the deepest level where this trade was executed (becomes new zone edge)
@@ -2769,7 +2677,8 @@ if bpr_fvg_active
             should_clear_zombie := true
             zombie_reason := "entered opposite zone"
 
-    if should_clear_zombie
+    if should_clear_zombie and not trade_entered
+        // Only clear zombie state if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
         bpr_fvg_last_invalidation_reason := "ZOMBIE CLEARED: " + zombie_reason
@@ -2825,7 +2734,8 @@ if inv_fvg_active
             should_clear_inv_zombie := true
             inv_zombie_reason := "entered opposite zone"
 
-    if should_clear_inv_zombie
+    if should_clear_inv_zombie and not trade_entered
+        // Only clear zombie state if trade hasn't been entered yet
         inv_fvg_active := false
         inv_fvg_is_bullish := false
         inv_fvg_overlap_top := na
