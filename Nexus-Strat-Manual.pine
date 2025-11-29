@@ -507,8 +507,10 @@ if barstate.isnew
 
 // STATE CONFLICT: Position exists but trade_entered is false
 // This catches orphaned positions from replay mode timing issues
-// ALWAYS close and cancel when this happens - no exceptions
-if strategy.position_size != 0 and not trade_entered
+// IMPORTANT: Also check that order_placed is false - if we have an order placed,
+// the position might have JUST filled and trade_entered hasn't been set yet (timing issue)
+// Only treat it as orphaned if there's NO pending order that could explain the position
+if strategy.position_size != 0 and not trade_entered and not order_placed
     // STEP 1: Cancel ALL pending orders FIRST (TP, SL, trailing stops, etc.)
     // This is critical - pending exit orders can prevent close_all from working
     strategy.cancel_all()
