@@ -29,6 +29,7 @@ risk_per_trade = input.float(500.0, "Risk Per Trade ($)", minval=1.0, group="Tra
 setup_timeout_bars = input.int(25, "Setup Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate setup after this many bars if no entry signal triggers (ENG OB: before MSS crosses | BPR/INV FVG: before entry trigger)")
 entry_timeout_bars = input.int(25, "Entry Timeout (bars)", minval=1, group="Trade Settings", tooltip="Invalidate entry signal after this many bars if trade doesn't execute")
 grace_ticks = input.float(0.0, "Grace Ticks (SL Padding)", minval=0.0, step=0.25, group="Trade Settings", tooltip="Add extra ticks to stop loss for safety margin (maintains 2:1 RR)")
+use_be_at_half_tp = input.bool(false, "Move SL to BE at 50% TP", group="Trade Settings", tooltip="When price reaches 50% of TP distance, move SL to breakeven +/- 2 ticks to cover commission")
 use_trailing_stop = input.bool(false, "Enable Trailing Stop at TP", group="Trade Settings", tooltip="At TP: close 50%, move SL to breakeven+tick, trail remaining 50%")
 trailing_atr_multiplier = input.float(2.0, "Trailing Stop ATR Multiplier", minval=0.5, step=0.5, group="Trade Settings", tooltip="ATR multiplier for trailing stop distance")
 trailing_atr_length = input.int(14, "ATR Length for Trailing", minval=1, group="Trade Settings", tooltip="Period for ATR calculation")
@@ -63,15 +64,14 @@ show_debug_table = input.bool(true, "Show Debug Table", group="Debug", tooltip="
 // TODO LIST - PENDING FEATURES
 // ============================================================================
 // FEATURE REQUESTS:
-// [ ] User config: max trades per day limit
 // [ ] Daily trade summary table showing:
 //     - Entry price/time
 //     - Exit price/time
 //     - Trade result (win/loss/breakeven)
 //     - Strategy used (MSS OB, BPR FVG, INV FVG, etc.)
 //     - Win rate and P&L stats
-// [ ] User option: Move SL to breakeven at 50% TP (alternative to current trailing stop)
-//     - When price reaches 50% of TP distance, move SL to entry (or entry + tick)
+// [x] User option: Move SL to breakeven at 50% TP (alternative to current trailing stop)
+//     - When price reaches 50% of TP distance, move SL to BE +/- 2 ticks (commission coverage)
 //     - Less aggressive than trailing stop, locks in breakeven earlier
 //
 // IMPLEMENTATION TASKS:
@@ -315,6 +315,10 @@ var float breakeven_plus_tick = na  // Breakeven + 1 tick level (direction-aware
 var float trailing_high_water_mark = na  // Highest high (long) or lowest low (short) since TP hit - used to calculate trailing stop
 var float current_trailing_stop = na  // Current trailing stop level (updated on every bar)
 
+// Track breakeven at 50% TP state
+var bool half_tp_hit = false  // Price reached 50% of TP distance, SL moved to BE
+var float breakeven_level = na  // Breakeven +/- 2 ticks level for commission coverage
+
 // Track if limit order has been placed for current entry signal
 var bool order_placed = false
 var int order_placed_bar = -1  // Track which bar the order was placed on
@@ -466,6 +470,10 @@ if not in_trading_window
     breakeven_plus_tick := na
     trailing_high_water_mark := na
     current_trailing_stop := na
+
+    // Reset breakeven at 50% TP state
+    half_tp_hit := false
+    breakeven_level := na
 
     // Clear BPR FVG state (with debug label)
     if bpr_fvg_active
@@ -2503,6 +2511,46 @@ if use_trailing_stop and tp_hit and trade_entered and strategy.position_size != 
             strategy.exit("Trail", "Short", stop=new_stop)
             current_trailing_stop := new_stop
 
+// ============================================================================
+// BREAKEVEN AT 50% TP - Move SL to breakeven when price reaches 50% of TP
+// ============================================================================
+// This is a simpler alternative to trailing stop - just locks in breakeven earlier
+// Does NOT close any position, just moves the stop loss
+if use_be_at_half_tp and not use_trailing_stop and trade_entered and not half_tp_hit and strategy.position_size != 0
+    // Calculate 50% TP level
+    float tp_distance = math.abs(entry_tp - entry_price)
+    float half_tp_distance = tp_distance / 2
+
+    bool half_tp_reached = false
+
+    if entry_is_bullish
+        // Long: 50% TP is entry + half the distance to TP
+        float half_tp_level = entry_price + half_tp_distance
+        half_tp_reached := high >= half_tp_level
+    else
+        // Short: 50% TP is entry - half the distance to TP
+        float half_tp_level = entry_price - half_tp_distance
+        half_tp_reached := low <= half_tp_level
+
+    if half_tp_reached
+        half_tp_hit := true
+
+        // Calculate breakeven +/- 2 ticks to cover commission
+        if entry_is_bullish
+            // Long: BE + 2 ticks (stop is below, so we want price above entry)
+            breakeven_level := entry_price + (2 * syminfo.mintick)
+        else
+            // Short: BE - 2 ticks (stop is above, so we want price below entry)
+            breakeven_level := entry_price - (2 * syminfo.mintick)
+
+        // Cancel existing SL order and place new one at breakeven level
+        if entry_is_bullish
+            strategy.cancel("TP/SL Long")
+            strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=breakeven_level)
+        else
+            strategy.cancel("TP/SL Short")
+            strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=breakeven_level)
+
 // Check if trade has exited (TP or SL hit)
 if trade_entered and strategy.position_size == 0
     // FIRST: Close any remaining position and cancel all pending orders
@@ -2553,6 +2601,10 @@ if trade_entered and strategy.position_size == 0
     breakeven_plus_tick := na
     trailing_high_water_mark := na
     current_trailing_stop := na
+
+    // Reset breakeven at 50% TP state
+    half_tp_hit := false
+    breakeven_level := na
 
     // Persist TP/SL boxes for the day (don't delete, just stop extending)
     // Add them to daily arrays so they stay visible until 20:00
