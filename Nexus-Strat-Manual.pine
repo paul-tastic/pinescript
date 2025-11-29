@@ -509,9 +509,19 @@ if barstate.isnew
 // This catches orphaned positions from replay mode timing issues
 // ALWAYS close and cancel when this happens - no exceptions
 if strategy.position_size != 0 and not trade_entered
-    // FORCE CLOSE on every tick until position is gone
-    strategy.close_all()
+    // STEP 1: Cancel ALL pending orders FIRST (TP, SL, trailing stops, etc.)
+    // This is critical - pending exit orders can prevent close_all from working
     strategy.cancel_all()
+
+    // STEP 2: Close the position explicitly by direction
+    // Use strategy.close() with the entry ID to ensure it closes
+    if strategy.position_size > 0
+        strategy.close("Long", comment="STATE CONFLICT", immediately=true)
+    else if strategy.position_size < 0
+        strategy.close("Short", comment="STATE CONFLICT", immediately=true)
+
+    // STEP 3: Also call close_all as backup
+    strategy.close_all(comment="STATE CONFLICT CLEANUP", immediately=true)
 
     // Reset all state immediately (don't wait for label check)
     entry_signal_active := false
