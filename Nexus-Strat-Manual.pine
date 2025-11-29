@@ -489,6 +489,48 @@ if not in_trading_window
     demand_trade_executed_level := na
     supply_trade_executed_level := na
 
+// ============================================================================
+// STATE CONFLICT DETECTION - Reconcile internal state with actual position
+// ============================================================================
+// This catches scenarios where entry fills and SL hits on same bar in replay mode,
+// causing our state tracking to get out of sync with TradingView's actual position.
+
+// Track state conflict for debug display
+var bool state_conflict_detected = false
+var string state_conflict_type = ""
+var int state_conflict_bar = na
+
+// CONFLICT TYPE 1: We have a position but don't know about it (orphaned position)
+// This is the dangerous case - auto-close it
+if strategy.position_size != 0 and not trade_entered and not entry_signal_active
+    state_conflict_detected := true
+    state_conflict_type := "ORPHAN: Position exists but trade_entered=false"
+    state_conflict_bar := bar_index
+
+    // Create warning label
+    label.new(bar_index, high + (syminfo.mintick * 20),
+              "STATE CONFLICT\nOrphaned position closed\nPos: " + str.tostring(strategy.position_size) + "\nBar: " + str.tostring(bar_index),
+              color=color.orange, textcolor=color.black, style=label.style_label_down, size=size.small)
+
+    // Force close the orphaned position
+    strategy.close_all()
+    strategy.cancel_all()
+
+// CONFLICT TYPE 2: We think we're in trade but no position exists
+// This is less dangerous - just reset our state
+if strategy.position_size == 0 and trade_entered
+    state_conflict_detected := true
+    state_conflict_type := "GHOST: trade_entered=true but no position"
+    state_conflict_bar := bar_index
+
+    // Create warning label
+    label.new(bar_index, low - (syminfo.mintick * 20),
+              "STATE CONFLICT\nGhost trade state reset\ntrade_entered was true\nBar: " + str.tostring(bar_index),
+              color=color.yellow, textcolor=color.black, style=label.style_label_up, size=size.small)
+
+    // Note: The regular exit handler at line ~2555 will clean this up,
+    // but this label helps us see when it happens
+
 // Track when trade enters
 if entry_signal_active and not trade_entered and strategy.position_size != 0
     last_position_entry := strategy.position_avg_price
@@ -3002,7 +3044,11 @@ if show_debug_table
     // #0 Status
     string status = "-"
     color status_bg = value_bg
-    if not in_trading_window
+    // Check for state conflict first (highest priority)
+    if state_conflict_detected and not na(state_conflict_bar) and (bar_index - state_conflict_bar) <= 3
+        status := "STATE CONFLICT"
+        status_bg := color.new(color.orange, 50)
+    else if not in_trading_window
         status := "Inactive"
     else if max_trades_hit
         status := "MAX TRADES"
