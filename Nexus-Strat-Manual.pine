@@ -1368,6 +1368,8 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                     bpr_fvg_active := true
                     bpr_fvg_is_bullish := true
                     bpr_fvg_invalidation_reason := ""  // Clear old invalidation reason for new setup
+                    bpr_fvg_invalidated_bar := na  // Clear ghost invalidation
+                    bpr_fvg_last_invalidation_reason := ""  // Clear ghost invalidation
                     bpr_fvg_bottom := high[2]  // Bottom of gap
                     bpr_fvg_top := low  // Top of gap
                     bpr_fvg_bar_index := bar_index
@@ -1446,6 +1448,8 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_
                     bpr_fvg_active := true
                     bpr_fvg_is_bullish := false
                     bpr_fvg_invalidation_reason := ""  // Clear old invalidation reason for new setup
+                    bpr_fvg_invalidated_bar := na  // Clear ghost invalidation
+                    bpr_fvg_last_invalidation_reason := ""  // Clear ghost invalidation
                     bpr_fvg_top := low[2]  // Top of gap
                     bpr_fvg_bottom := high  // Bottom of gap
                     bpr_fvg_bar_index := bar_index
