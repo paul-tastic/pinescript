@@ -501,13 +501,14 @@ var string state_conflict_type = ""
 var int state_conflict_bar = na
 
 // CONFLICT TYPE 1: We have a position but don't know about it (orphaned position)
-// This is the dangerous case - auto-close it
-if strategy.position_size != 0 and not trade_entered and not entry_signal_active
+// This is the dangerous case - auto-close it and reset all state
+// Only trigger ONCE per conflict (check that we haven't already handled this bar)
+if strategy.position_size != 0 and not trade_entered and not entry_signal_active and (na(state_conflict_bar) or bar_index != state_conflict_bar)
     state_conflict_detected := true
     state_conflict_type := "ORPHAN: Position exists but trade_entered=false"
     state_conflict_bar := bar_index
 
-    // Create warning label
+    // Create warning label (only once per conflict)
     label.new(bar_index, high + (syminfo.mintick * 20),
               "STATE CONFLICT\nOrphaned position closed\nPos: " + str.tostring(strategy.position_size) + "\nBar: " + str.tostring(bar_index),
               color=color.orange, textcolor=color.black, style=label.style_label_down, size=size.small)
@@ -516,20 +517,47 @@ if strategy.position_size != 0 and not trade_entered and not entry_signal_active
     strategy.close_all()
     strategy.cancel_all()
 
+    // Reset ALL trade-related state to ensure clean slate
+    trade_entered := false
+    order_placed := false
+    order_placed_bar := -1
+    entry_signal_active := false
+    active_entry_strategy := ""
+    entry_is_bullish := false
+    entry_price := na
+    entry_tp := na
+    entry_sl := na
+    entry_signal_bar_index := na
+
+    // Reset trailing stop state
+    tp_hit := false
+    breakeven_plus_tick := na
+    trailing_high_water_mark := na
+    current_trailing_stop := na
+    half_tp_hit := false
+    breakeven_level := na
+
+    // Clear frozen grades
+    eng_ob_grade := ""
+    bpr_fvg_grade := ""
+
+    // Record exit bar for cooldown
+    last_exit_bar := bar_index
+
 // CONFLICT TYPE 2: We think we're in trade but no position exists
-// This is less dangerous - just reset our state
-if strategy.position_size == 0 and trade_entered
+// This is less dangerous - the regular exit handler will clean this up
+// Only trigger ONCE per conflict
+if strategy.position_size == 0 and trade_entered and (na(state_conflict_bar) or bar_index != state_conflict_bar)
     state_conflict_detected := true
     state_conflict_type := "GHOST: trade_entered=true but no position"
     state_conflict_bar := bar_index
 
-    // Create warning label
+    // Create warning label (only once per conflict)
     label.new(bar_index, low - (syminfo.mintick * 20),
               "STATE CONFLICT\nGhost trade state reset\ntrade_entered was true\nBar: " + str.tostring(bar_index),
               color=color.yellow, textcolor=color.black, style=label.style_label_up, size=size.small)
 
-    // Note: The regular exit handler at line ~2555 will clean this up,
-    // but this label helps us see when it happens
+    // Note: The regular exit handler will clean this up on the same bar
 
 // Track when trade enters
 if entry_signal_active and not trade_entered and strategy.position_size != 0
