@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.3.1", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.3.2", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -148,22 +148,28 @@ if na(london_high) or (hour_et == 10 and minute_et == 0)
     london_low := london_low_d
 
 // ============================================================================
-// ZONE VISUALIZATION - Draw zones during trading window on current day
+// ZONE VISUALIZATION - Draw zones from 09:00 to 18:00 NY time
 // ============================================================================
 // Get current time info
 int current_hour = hour(time, "America/New_York")
 int current_minute = minute(time, "America/New_York")
 bool is_new_day = ta.change(dayofmonth(time, "America/New_York")) != 0
 
+// Zone display window (independent of trading window)
+int zone_start_hour = 9
+int zone_end_hour = 18
+int zone_time_minutes = current_hour * 60 + current_minute
+bool in_zone_window = zone_time_minutes >= (zone_start_hour * 60) and zone_time_minutes < (zone_end_hour * 60)
+
 // Track zone boxes
 var box supply_zone_box = na
 var box demand_zone_box = na
 var int zone_start_bar = na
 
-// At trading window start, create new zone boxes for the day
-// Create boxes when entering trading window on a new day OR if boxes don't exist yet
-bool at_trading_start = current_hour == trading_start_hour and current_minute == trading_start_minute
-bool should_create_boxes = at_trading_start and (is_new_day or na(supply_zone_box) or na(demand_zone_box))
+// At zone window start (09:00), create new zone boxes for the day
+// Create boxes when entering zone window on a new day OR if boxes don't exist yet
+bool at_zone_start = current_hour == zone_start_hour and current_minute == 0
+bool should_create_boxes = at_zone_start and (is_new_day or na(supply_zone_box) or na(demand_zone_box))
 
 if should_create_boxes
     zone_start_bar := bar_index
@@ -190,21 +196,21 @@ if should_create_boxes
                                    border_width=1,
                                    extend=extend.none)
 
-// Update zone boxes to extend to current bar + 2 bars into future (within trading window)
-if show_zones and in_trading_window
+// Update zone boxes to extend to current bar + 2 bars into future (within zone window)
+if show_zones and in_zone_window
     if supply_configured and not na(supply_zone_box)
         box.set_right(supply_zone_box, bar_index + 3)
     if demand_configured and not na(demand_zone_box)
         box.set_right(demand_zone_box, bar_index + 3)
-else if show_zones and current_hour == trading_end_hour and current_minute == trading_end_minute
-    // Stop extending at trading window end
+else if show_zones and current_hour == zone_end_hour and current_minute == 0
+    // Stop extending at zone window end (18:00)
     if supply_configured and not na(supply_zone_box)
         box.set_right(supply_zone_box, bar_index)
     if demand_configured and not na(demand_zone_box)
         box.set_right(demand_zone_box, bar_index)
 
-// If show_zones is disabled OR outside trading window, delete any existing boxes
-if not show_zones or not in_trading_window
+// If show_zones is disabled OR outside zone window, delete any existing boxes
+if not show_zones or not in_zone_window
     if not na(supply_zone_box)
         box.delete(supply_zone_box)
         supply_zone_box := na
