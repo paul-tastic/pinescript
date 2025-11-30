@@ -259,6 +259,11 @@ var float entry_price = na  // Entry price (regardless of strategy)
 var float entry_tp = na     // Take profit level
 var float entry_sl = na     // Stop loss level
 var int entry_signal_bar_index = na  // Bar index when entry signal triggered (for timeout tracking)
+var int setup_bars_elapsed = 0  // Bars since setup detected (freezes when entry triggers)
+var int entry_bars_elapsed = 0  // Bars since entry signal triggered (freezes when trade fills)
+
+// Zombie/state conflict detection (log only, don't auto-clear)
+var string zombie_detected = ""  // Non-empty if zombie state detected (for debug display)
 
 // Track MSS OB specific state (one of four entry strategies)
 var float target_fractal_level_mss = na  // Fractal level for MSS OB strategy
@@ -609,6 +614,10 @@ if position_just_closed
     inv_fvg_overlap_top := na
     inv_fvg_overlap_bottom := na
 
+    // Reset timeout counters for next setup
+    setup_bars_elapsed := 0
+    entry_bars_elapsed := 0
+
 // TRACK TRADE P&L - when closedtrades increments
 if current_closed_trades > last_closed_trades
     // A new trade just closed - get the P&L from the most recent closed trade
@@ -792,6 +801,21 @@ if bar_index > 0 and in_trading_window
         engulfing_detected_for_grade := true
         engulfing_detected_bar := bar_index
 
+// ============================================================================
+// SETUP/ENTRY COUNTERS - Increment based on current phase
+// ============================================================================
+// These counters are the source of truth for timeout tracking
+// - setup_bars_elapsed: increments while setup active, freezes when entry triggers
+// - entry_bars_elapsed: increments while entry active, freezes when trade fills
+if barstate.isnew
+    if (eng_ob_active or bpr_fvg_active or inv_fvg_active) and not entry_signal_active and not has_position
+        // Setup phase: increment setup counter
+        setup_bars_elapsed += 1
+    else if entry_signal_active and not has_position
+        // Entry phase: increment entry counter (setup counter frozen)
+        entry_bars_elapsed += 1
+    // When has_position is true, both counters are frozen
+
 // INVALIDATION: ENG OB setup timeout (before MSS OB entry signal triggers) or at trading end time
 if eng_ob_active and not na(eng_ob_bar_index)
     bool should_invalidate_timeout = false
@@ -799,10 +823,9 @@ if eng_ob_active and not na(eng_ob_bar_index)
 
     // Check if ENG OB setup has exceeded timeout (ONLY if entry signal hasn't triggered yet)
     if not entry_signal_active and not has_position
-        int bars_since_setup = bar_index - eng_ob_bar_index
-        if bars_since_setup >= setup_timeout_bars
+        if setup_bars_elapsed >= setup_timeout_bars
             should_invalidate_timeout := true
-            timeout_reason := "Setup timeout (" + str.tostring(bars_since_setup) + "/" + str.tostring(setup_timeout_bars) + " bars)"
+            timeout_reason := "Setup timeout (" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars) + " bars)"
 
     // Check if it's past trading end time (applies to ALL setups, including active trades)
     int current_hour = hour(time, "America/New_York")
@@ -819,6 +842,10 @@ if eng_ob_active and not na(eng_ob_bar_index)
         // Close any open positions and cancel pending orders
         strategy.close_all()
         strategy.cancel_all()
+
+        // Reset timeout counters
+        setup_bars_elapsed := 0
+        entry_bars_elapsed := 0
 
         // Clear frozen grades
         eng_ob_grade := ""
@@ -1015,6 +1042,7 @@ if is_bullish_engulfing
     eng_ob_deepest_level := demand_lowest_low
     target_fractal_level_mss := na
     mss_ob_confirmed_bar := na  // Reset fractal search for new ENG OB
+    setup_bars_elapsed := 0  // Reset setup counter for new setup
 
     // Determine which candle is the actual OB candle (the one that made the deepest low)
     // For bullish engulfing, the OB candle is whichever made the lowest low
@@ -1059,6 +1087,7 @@ else if is_bearish_engulfing
     eng_ob_deepest_level := supply_highest_high
     target_fractal_level_mss := na
     mss_ob_confirmed_bar := na  // Reset fractal search for new ENG OB
+    setup_bars_elapsed := 0  // Reset setup counter for new setup
 
     // Determine which candle is the actual OB candle (the one that made the highest high)
     // For bearish engulfing, the OB candle is whichever made the highest high
@@ -1396,6 +1425,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not has_po
                     bpr_fvg_bottom := high[2]  // Bottom of gap
                     bpr_fvg_top := low  // Top of gap
                     bpr_fvg_bar_index := bar_index
+                    setup_bars_elapsed := 0  // Reset setup counter for new setup
 
                     // Track candle for SL - whichever of the 3 candles made the highest high
                     if high >= high[1] and high >= high[2]
@@ -1476,6 +1506,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not has_po
                     bpr_fvg_top := low[2]  // Top of gap
                     bpr_fvg_bottom := high  // Bottom of gap
                     bpr_fvg_bar_index := bar_index
+                    setup_bars_elapsed := 0  // Reset setup counter for new setup
 
                     // Track candle for SL - whichever of the 3 candles made the lowest low
                     if low <= low[1] and low <= low[2]
@@ -1630,9 +1661,8 @@ if bpr_fvg_active and barstate.isconfirmed
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
-    int bars_since_bpr = bar_index - bpr_fvg_bar_index
-    if bars_since_bpr >= setup_timeout_bars
-        bpr_fvg_invalidation_reason := "Timeout (" + str.tostring(bars_since_bpr) + " bars)"
+    if setup_bars_elapsed >= setup_timeout_bars
+        bpr_fvg_invalidation_reason := "Timeout (" + str.tostring(setup_bars_elapsed) + " bars)"
 
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
@@ -1668,6 +1698,9 @@ if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
 
+        // Reset timeout counters
+        setup_bars_elapsed := 0
+        entry_bars_elapsed := 0
 
 // INVALIDATION: Clear BPR FVG when zones are disabled
 if bpr_fvg_active
@@ -1813,9 +1846,8 @@ if inv_fvg_active
 
 // INVALIDATION: Inverted FVG timeout after N bars without entry signal
 if inv_fvg_active and not entry_signal_active and not na(inv_fvg_bar_index)
-    int bars_since_inv = bar_index - inv_fvg_bar_index
-    if bars_since_inv >= setup_timeout_bars
-        inv_fvg_invalidation_reason := "Timeout (" + str.tostring(bars_since_inv) + " bars)"
+    if setup_bars_elapsed >= setup_timeout_bars
+        inv_fvg_invalidation_reason := "Timeout (" + str.tostring(setup_bars_elapsed) + " bars)"
 
         inv_fvg_active := false
         inv_fvg_is_bullish := false
@@ -1829,6 +1861,10 @@ if inv_fvg_active and not entry_signal_active and not na(inv_fvg_bar_index)
         if not na(inv_fvg_overlap_box)
             box.delete(inv_fvg_overlap_box)
             inv_fvg_overlap_box := na
+
+        // Reset timeout counters
+        setup_bars_elapsed := 0
+        entry_bars_elapsed := 0
 
 // INVALIDATION: Clear Inverted FVG when entering opposite zone
 if barstate.isnew and was_outside_zones and inv_fvg_active
@@ -1986,6 +2022,7 @@ if use_mss_ob and eng_ob_active and not entry_signal_active and not has_position
         // MSS OB entry signal triggered
         entry_signal_active := true
         entry_signal_bar_index := bar_index
+        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
         active_entry_strategy := "MSS OB"
         entry_is_bullish := eng_ob_is_bullish
         mss_ob_confirmed_bar := bar_index  // Record when MSS OB was confirmed for icon plotting
@@ -2101,6 +2138,7 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not has_positi
         // Now activate entry signal based on whether INV FVG pattern was found
         entry_signal_active := true
         entry_signal_bar_index := bar_index
+        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
 
         // Clear any lingering ENG OB setup when BPR/INV FVG entry signal activates
         if eng_ob_active
@@ -2273,6 +2311,8 @@ if use_breaker_block and eng_ob_active and not entry_signal_active
 
     if breaker_triggered
         entry_signal_active := true
+        entry_signal_bar_index := bar_index
+        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
         active_entry_strategy := "Breaker Block"
         // Needs: entry_price, entry_tp, entry_sl
 
@@ -2281,8 +2321,7 @@ if use_breaker_block and eng_ob_active and not entry_signal_active
 // ============================================================================
 // Invalidate entry signal after N bars if limit order doesn't fill
 if entry_signal_active and not has_position and not na(entry_signal_bar_index)
-    int bars_since_entry_signal = bar_index - entry_signal_bar_index
-    if bars_since_entry_signal >= entry_timeout_bars
+    if entry_bars_elapsed >= entry_timeout_bars
         // Entry signal timed out - clear ALL strategy-specific state
         if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
             // ENG OB-based strategies
@@ -2301,7 +2340,7 @@ if entry_signal_active and not has_position and not na(entry_signal_bar_index)
             // BPR FVG strategy
             // Save invalidation info for label
             bpr_fvg_invalidated_bar := bar_index
-            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(bars_since_entry_signal) + " bars)"
+            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(entry_bars_elapsed) + " bars)"
             bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
 
             bpr_fvg_active := false
@@ -2323,7 +2362,7 @@ if entry_signal_active and not has_position and not na(entry_signal_bar_index)
             // Inverted FVG strategy (clears both BPR FVG and Inverted FVG state)
             // Save invalidation info for label
             bpr_fvg_invalidated_bar := bar_index
-            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(bars_since_entry_signal) + " bars)"
+            bpr_fvg_last_invalidation_reason := "Entry timeout (" + str.tostring(entry_bars_elapsed) + " bars)"
             bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
 
             bpr_fvg_active := false
@@ -2357,6 +2396,10 @@ if entry_signal_active and not has_position and not na(entry_signal_bar_index)
         strategy.cancel("Full SL")  // Cancel SL order if placed
         strategy.cancel("TP/SL Long")  // Cancel combined TP/SL order
         strategy.cancel("TP/SL Short")  // Cancel combined TP/SL order
+
+        // Reset timeout counters
+        setup_bars_elapsed := 0
+        entry_bars_elapsed := 0
 
         // Clear frozen grades
         eng_ob_grade := ""
@@ -2698,118 +2741,59 @@ if has_position and not na(tp_box) and not na(sl_box)
                 box.set_top(live_sl_box, current_trailing_stop)
 
 // ============================================================================
-// COMPREHENSIVE ZOMBIE STATE DETECTION - Run right before debug table
+// ZOMBIE/STATE CONFLICT DETECTION - Log only, don't auto-clear
 // ============================================================================
-// This catches any inconsistent state where bpr_fvg_active is TRUE but should be FALSE
-// Common zombie causes:
-// 1. bpr_fvg_active = TRUE but not in supply/demand zone AND not in trading window
-// 2. bpr_fvg_active = TRUE but zone was disabled (clear_supply or clear_demand)
-// 3. bpr_fvg_active = TRUE but bpr_fvg_bar_index is na
-// 4. bpr_fvg_active = TRUE but exceeded timeout
+// Detects inconsistent state for debugging. Does NOT clear state automatically.
+// If zombie_detected is non-empty, investigate why normal invalidation didn't fire.
 
-if bpr_fvg_active
-    bool should_clear_zombie = false
-    string zombie_reason = ""
+// Reset zombie detection each bar
+zombie_detected := ""
 
-    // Check 1: bar_index is na (already caught by safety check, but double-check)
-    if not should_clear_zombie and na(bpr_fvg_bar_index)
-        should_clear_zombie := true
-        zombie_reason := "bar_index is na"
-
-    // Check 2: Zone disabled
-    if not should_clear_zombie and ((bpr_fvg_is_bullish and clear_supply) or (not bpr_fvg_is_bullish and clear_demand))
-        should_clear_zombie := true
-        zombie_reason := "zone disabled"
-
-    // Check 3: Timeout exceeded
-    if not should_clear_zombie and not entry_signal_active and not na(bpr_fvg_bar_index)
-        int bars_since_detect = bar_index - bpr_fvg_bar_index
-        if bars_since_detect >= setup_timeout_bars
-            should_clear_zombie := true
-            zombie_reason := "timeout (" + str.tostring(bars_since_detect) + " bars)"
-
-    // Check 4: Not in zone AND not in trading window (stale state from previous session)
-    if not should_clear_zombie and not in_supply and not in_demand and not in_trading_window
-        should_clear_zombie := true
-        zombie_reason := "not in zone and not in window"
-
-    // Check 5: Entered opposite zone (fresh entry after being outside both zones)
-    if not should_clear_zombie and barstate.isnew and was_outside_zones
-        if (bpr_fvg_is_bullish and in_demand) or (not bpr_fvg_is_bullish and in_supply)
-            should_clear_zombie := true
-            zombie_reason := "entered opposite zone"
-
-    if should_clear_zombie and not has_position
-        // Only clear zombie state if trade hasn't been entered yet
-        // Save invalidation info for label
-        bpr_fvg_invalidated_bar := bar_index
-        bpr_fvg_last_invalidation_reason := "ZOMBIE CLEARED: " + zombie_reason
-        bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
-
-        bpr_fvg_active := false
-        bpr_fvg_is_bullish := false
-        bpr_fvg_top := na
-        bpr_fvg_bottom := na
-        bpr_fvg_invalidation_level := na
-        bpr_fvg_formation_low := na
-        bpr_fvg_formation_high := na
-        bpr_fvg_bar_index := na
-        bpr_fvg_candle_high := na
-        bpr_fvg_candle_low := na
-        bpr_fvg_invalidation_reason := "ZOMBIE CLEARED: " + zombie_reason
-
-        if not na(bpr_fvg_box)
-            box.delete(bpr_fvg_box)
-            bpr_fvg_box := na
-
-
-// Same zombie detection for Inverted FVG
-if inv_fvg_active
-    bool should_clear_inv_zombie = false
-    string inv_zombie_reason = ""
-
+// Check BPR FVG for zombie state
+if bpr_fvg_active and not has_position
     // Check 1: bar_index is na
-    if na(inv_fvg_bar_index)
-        should_clear_inv_zombie := true
-        inv_zombie_reason := "bar_index is na"
+    if na(bpr_fvg_bar_index)
+        zombie_detected := "BPR: bar_index na"
 
-    // Check 2: Zone disabled
-    else if (inv_fvg_is_bullish and clear_demand) or (not inv_fvg_is_bullish and clear_supply)
-        should_clear_inv_zombie := true
-        inv_zombie_reason := "zone disabled"
+    // Check 2: Zone disabled but still active
+    else if (bpr_fvg_is_bullish and clear_supply) or (not bpr_fvg_is_bullish and clear_demand)
+        zombie_detected := "BPR: zone disabled"
 
-    // Check 3: Timeout exceeded
-    else if not entry_signal_active and not na(inv_fvg_bar_index)
-        int bars_since_inv_detect = bar_index - inv_fvg_bar_index
-        if bars_since_inv_detect >= setup_timeout_bars
-            should_clear_inv_zombie := true
-            inv_zombie_reason := "timeout (" + str.tostring(bars_since_inv_detect) + " bars)"
+    // Check 3: Timeout exceeded but still active
+    else if not entry_signal_active and setup_bars_elapsed >= setup_timeout_bars
+        zombie_detected := "BPR: timeout " + str.tostring(setup_bars_elapsed)
 
     // Check 4: Not in zone AND not in trading window
     else if not in_supply and not in_demand and not in_trading_window
-        should_clear_inv_zombie := true
-        inv_zombie_reason := "not in zone and not in window"
+        zombie_detected := "BPR: outside zones+window"
 
-    // Check 5: Entered opposite zone
-    else if barstate.isnew and was_outside_zones
-        if (inv_fvg_is_bullish and in_supply) or (not inv_fvg_is_bullish and in_demand)
-            should_clear_inv_zombie := true
-            inv_zombie_reason := "entered opposite zone"
+// Check INV FVG for zombie state
+if inv_fvg_active and not has_position and zombie_detected == ""
+    // Check 1: bar_index is na
+    if na(inv_fvg_bar_index)
+        zombie_detected := "INV: bar_index na"
 
-    if should_clear_inv_zombie and not has_position
-        // Only clear zombie state if trade hasn't been entered yet
-        inv_fvg_active := false
-        inv_fvg_is_bullish := false
-        inv_fvg_overlap_top := na
-        inv_fvg_overlap_bottom := na
-        inv_fvg_reversal_candle_high := na
-        inv_fvg_reversal_candle_low := na
-        inv_fvg_bar_index := na
-        inv_fvg_invalidation_reason := "ZOMBIE CLEARED: " + inv_zombie_reason
+    // Check 2: Zone disabled
+    else if (inv_fvg_is_bullish and clear_demand) or (not inv_fvg_is_bullish and clear_supply)
+        zombie_detected := "INV: zone disabled"
 
-        if not na(inv_fvg_overlap_box)
-            box.delete(inv_fvg_overlap_box)
-            inv_fvg_overlap_box := na
+    // Check 3: Timeout exceeded
+    else if not entry_signal_active and setup_bars_elapsed >= setup_timeout_bars
+        zombie_detected := "INV: timeout " + str.tostring(setup_bars_elapsed)
+
+    // Check 4: Not in zone AND not in trading window
+    else if not in_supply and not in_demand and not in_trading_window
+        zombie_detected := "INV: outside zones+window"
+
+// Check ENG OB for zombie state
+if eng_ob_active and not has_position and zombie_detected == ""
+    // Check 1: bar_index is na
+    if na(eng_ob_bar_index)
+        zombie_detected := "ENG: bar_index na"
+
+    // Check 2: Timeout exceeded
+    else if not entry_signal_active and setup_bars_elapsed >= setup_timeout_bars
+        zombie_detected := "ENG: timeout " + str.tostring(setup_bars_elapsed)
 
 // ============================================================================
 // TRADE SUMMARY TABLE - Shows all trades taken during the trading day
@@ -3106,25 +3090,23 @@ if show_debug_table
         table.cell(debugTable, 0, 6, "#6 Fractal", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 6, fractal_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
-        // #7 Timeout
-        string timeout_text = "-"
+        // #7 Timeout - Show both setup and entry counters (using actual tracked variables)
+        string timeout_text = "S:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars)
+        if entry_signal_active or has_position
+            // Entry phase started - show both (setup frozen, entry incrementing or frozen)
+            timeout_text += " | E:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
         color timeout_bg = value_bg
-        if not na(eng_ob_bar_index)
-            int bars_setup = bar_index - eng_ob_bar_index
-            timeout_text := "Setup:" + str.tostring(bars_setup) + "/" + str.tostring(setup_timeout_bars)
-            if entry_signal_active and not na(entry_signal_bar_index)
-                int bars_entry = bar_index - entry_signal_bar_index
-                timeout_text := timeout_text + " | Entry:" + str.tostring(bars_entry) + "/" + str.tostring(entry_timeout_bars)
-            if bars_setup >= setup_timeout_bars * 0.8
-                timeout_bg := color.new(color.red, 90)
+        // Highlight if either counter is near timeout
+        if (not entry_signal_active and not has_position and setup_bars_elapsed >= setup_timeout_bars * 0.8) or (entry_signal_active and not has_position and entry_bars_elapsed >= entry_timeout_bars * 0.8)
+            timeout_bg := color.new(color.red, 90)
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-        // #8 Bar Indices
-        string bar_text = "-"
+        // #8 Bar Indices - Show the actual counter values we're tracking
+        string bar_text = "Setup:" + str.tostring(setup_bars_elapsed) + " | Entry:" + str.tostring(entry_bars_elapsed)
         if not na(eng_ob_bar_index)
-            bar_text := "ENG:" + str.tostring(eng_ob_bar_index) + " | Cur:" + str.tostring(bar_index) + " | Diff:" + str.tostring(bar_index - eng_ob_bar_index)
-        table.cell(debugTable, 0, 8, "#8 Bars", text_color=color.white, bgcolor=label_bg, text_size=size.small)
+            bar_text += " | ENG@" + str.tostring(eng_ob_bar_index)
+        table.cell(debugTable, 0, 8, "#8 Counters", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 8, bar_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
     else if show_bpr_section or show_inv_section or show_invalidated
@@ -3151,18 +3133,15 @@ if show_debug_table
         table.cell(debugTable, 0, 6, "#6 Size/Lvls", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 6, size_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
-        // #7 Timeout
-        string timeout_text = "-"
+        // #7 Timeout - Show both setup and entry counters (using actual tracked variables)
+        string timeout_text = "S:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars)
+        if entry_signal_active or has_position
+            // Entry phase started - show both (setup frozen, entry incrementing or frozen)
+            timeout_text += " | E:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
         color timeout_bg = value_bg
-        int ref_bar = show_inv_section ? inv_fvg_bar_index : bpr_fvg_bar_index
-        if not na(ref_bar)
-            int bars_setup = bar_index - ref_bar
-            timeout_text := "Setup:" + str.tostring(bars_setup) + "/" + str.tostring(setup_timeout_bars)
-            if entry_signal_active and not na(entry_signal_bar_index)
-                int bars_entry = bar_index - entry_signal_bar_index
-                timeout_text := timeout_text + " | Entry:" + str.tostring(bars_entry) + "/" + str.tostring(entry_timeout_bars)
-            if bars_setup >= setup_timeout_bars * 0.8
-                timeout_bg := color.new(color.red, 90)
+        // Highlight if either counter is near timeout
+        if (not entry_signal_active and not has_position and setup_bars_elapsed >= setup_timeout_bars * 0.8) or (entry_signal_active and not has_position and entry_bars_elapsed >= entry_timeout_bars * 0.8)
+            timeout_bg := color.new(color.red, 90)
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
@@ -3178,3 +3157,8 @@ if show_debug_table
             inval_text := inv_fvg_invalidation_reason
         table.cell(debugTable, 0, 8, "#8 Inval", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 8, inval_text, text_color=color.black, bgcolor=inval_bg, text_size=size.small)
+
+    // #9 Zombie/State Conflict Detection (shown for all sections)
+    if zombie_detected != ""
+        table.cell(debugTable, 0, 9, "#9 ZOMBIE", text_color=color.white, bgcolor=color.new(color.red, 50), text_size=size.small)
+        table.cell(debugTable, 1, 9, zombie_detected, text_color=color.white, bgcolor=color.new(color.red, 50), text_size=size.small)
