@@ -623,17 +623,21 @@ if current_closed_trades > last_closed_trades
     // A new trade just closed - get the P&L from the most recent closed trade
     float trade_pnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
     float exit_price = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
+    float trade_entry_price = strategy.closedtrades.entry_price(strategy.closedtrades - 1)
 
     // Update daily stats
     today_trade_count += 1
     today_pnl += trade_pnl
 
-    // Determine result
-    string result = trade_pnl > 0 ? "WIN" : (trade_pnl < 0 ? "LOSS" : "BE")
+    // Determine result - BE if exit within grace_ticks of entry (accounts for commission coverage)
+    float tick_distance = math.abs(exit_price - trade_entry_price) / syminfo.mintick
+    string result = "BE"
+    if tick_distance > grace_ticks + 2  // grace_ticks + 2 for commission buffer
+        result := trade_pnl > 0 ? "WIN" : "LOSS"
 
-    if trade_pnl > 0
+    if result == "WIN"
         today_wins += 1
-    else if trade_pnl < 0
+    else if result == "LOSS"
         today_losses += 1
 
     // Capture trade exit data for summary table
