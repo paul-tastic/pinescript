@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.3.3", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.3.4", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -77,6 +77,7 @@ show_debug_table = input.bool(true, "Show Debug Table", group="Debug", tooltip="
 // IMPLEMENTATION TASKS:
 // [ ] Breaker Block detection and entry logic
 // [ ] MSS OB crossing detection (stop invalidation after cross)
+// [ ] MSS OB: Consider allowing ANY fractal cross to count for setup validity, even after the setup is formed
 //
 // ============================================================================
 // ZONE DETECTION
