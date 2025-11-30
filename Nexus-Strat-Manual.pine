@@ -42,9 +42,9 @@ float point_value = syminfo.pointvalue
 // INPUTS - ENTRY STRATEGIES (can enable multiple)
 // ============================================================================
 use_mss_ob = input.bool(true, "MSS OB", group="Entry Strategies", tooltip="Market Structure Shift Order Block - enters when price crosses opposite fractal level")
-use_bpr_fvg = input.bool(false, "Balanced Price Range FVG", group="Entry Strategies", tooltip="Fair Value Gap within balanced price range")
+use_bpr_fvg = input.bool(true, "Balanced Price Range FVG", group="Entry Strategies", tooltip="Fair Value Gap within balanced price range")
 bpr_fvg_min_ticks = input.float(2.0, "BPR FVG Min Size (ticks)", minval=0.0, step=0.25, group="Entry Strategies", tooltip="Minimum FVG size in ticks - smaller FVGs will be ignored")
-use_inverted_fvg = input.bool(false, "Inverted FVG", group="Entry Strategies", tooltip="Inverted Fair Value Gap entry")
+use_inverted_fvg = input.bool(true, "Inverted FVG", group="Entry Strategies", tooltip="Inverted Fair Value Gap entry")
 use_breaker_block = input.bool(false, "Breaker Block", group="Entry Strategies", tooltip="Breaker Block entry pattern")
 
 // ============================================================================
