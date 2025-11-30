@@ -1080,7 +1080,7 @@ if is_bullish_engulfing
     eng_ob_deepest_level := demand_lowest_low
     target_fractal_level_mss := na
     mss_ob_confirmed_bar := na  // Reset fractal search for new ENG OB
-    setup_bars_elapsed := 0  // Reset setup counter for new setup
+    setup_bars_elapsed := 1  // Start setup counter at 1 for new setup
 
     // Determine which candle is the actual OB candle (the one that made the deepest low)
     // For bullish engulfing, the OB candle is whichever made the lowest low
@@ -1125,7 +1125,7 @@ else if is_bearish_engulfing
     eng_ob_deepest_level := supply_highest_high
     target_fractal_level_mss := na
     mss_ob_confirmed_bar := na  // Reset fractal search for new ENG OB
-    setup_bars_elapsed := 0  // Reset setup counter for new setup
+    setup_bars_elapsed := 1  // Start setup counter at 1 for new setup
 
     // Determine which candle is the actual OB candle (the one that made the highest high)
     // For bearish engulfing, the OB candle is whichever made the highest high
@@ -1463,7 +1463,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not has_po
                     bpr_fvg_bottom := high[2]  // Bottom of gap
                     bpr_fvg_top := low  // Top of gap
                     bpr_fvg_bar_index := bar_index
-                    setup_bars_elapsed := 0  // Reset setup counter for new setup
+                    setup_bars_elapsed := 1  // Start setup counter at 1 for new setup
 
                     // Track candle for SL - whichever of the 3 candles made the highest high
                     if high >= high[1] and high >= high[2]
@@ -1544,7 +1544,7 @@ if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not has_po
                     bpr_fvg_top := low[2]  // Top of gap
                     bpr_fvg_bottom := high  // Bottom of gap
                     bpr_fvg_bar_index := bar_index
-                    setup_bars_elapsed := 0  // Reset setup counter for new setup
+                    setup_bars_elapsed := 1  // Start setup counter at 1 for new setup
 
                     // Track candle for SL - whichever of the 3 candles made the lowest low
                     if low <= low[1] and low <= low[2]
@@ -2060,7 +2060,7 @@ if use_mss_ob and eng_ob_active and not entry_signal_active and not has_position
         // MSS OB entry signal triggered
         entry_signal_active := true
         entry_signal_bar_index := bar_index
-        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
+        entry_bars_elapsed := 1  // Start entry counter at 1 for new entry signal
         active_entry_strategy := "MSS OB"
         entry_is_bullish := eng_ob_is_bullish
         mss_ob_confirmed_bar := bar_index  // Record when MSS OB was confirmed for icon plotting
@@ -2176,7 +2176,7 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not has_positi
         // Now activate entry signal based on whether INV FVG pattern was found
         entry_signal_active := true
         entry_signal_bar_index := bar_index
-        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
+        entry_bars_elapsed := 1  // Start entry counter at 1 for new entry signal
 
         // Clear any lingering ENG OB setup when BPR/INV FVG entry signal activates
         if eng_ob_active
@@ -2350,7 +2350,7 @@ if use_breaker_block and eng_ob_active and not entry_signal_active
     if breaker_triggered
         entry_signal_active := true
         entry_signal_bar_index := bar_index
-        entry_bars_elapsed := 0  // Reset entry counter for new entry signal
+        entry_bars_elapsed := 1  // Start entry counter at 1 for new entry signal
         active_entry_strategy := "Breaker Block"
         // Needs: entry_price, entry_tp, entry_sl
 
