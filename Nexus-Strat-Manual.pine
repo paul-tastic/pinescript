@@ -855,15 +855,53 @@ if eng_ob_active and not na(eng_ob_bar_index)
         pending_entry_order := false
         pending_order_bar := na
 
+        // Clear ENG OB state
+        eng_ob_active := false
+        eng_ob_is_bullish := false
+        eng_ob_deepest_level := na
+        eng_ob_bar_index := na
+        eng_ob_candle_high := na
+        eng_ob_candle_low := na
+        target_fractal_level_mss := na
+        mss_ob_confirmed_bar := na
+        if not na(eng_ob_box)
+            box.delete(eng_ob_box)
+            eng_ob_box := na
+
         // Clear BPR FVG state (with debug label)
         if bpr_fvg_active
             // Save invalidation info for label
             bpr_fvg_invalidated_bar := bar_index
-            bpr_fvg_last_invalidation_reason := "Entry signal timeout: " + timeout_reason
+            bpr_fvg_last_invalidation_reason := "Setup timeout: " + timeout_reason
             bpr_fvg_last_is_bullish := bpr_fvg_is_bullish
 
+            bpr_fvg_active := false
+            bpr_fvg_is_bullish := false
+            bpr_fvg_top := na
+            bpr_fvg_bottom := na
+            bpr_fvg_invalidation_level := na
+            bpr_fvg_bar_index := na
+            bpr_fvg_candle_high := na
+            bpr_fvg_candle_low := na
+            if not na(bpr_fvg_box)
+                box.delete(bpr_fvg_box)
+                bpr_fvg_box := na
 
-        // Use helper functions to clear state (reduces scope count)
+        // Clear INV FVG state
+        if inv_fvg_active
+            inv_fvg_active := false
+            inv_fvg_is_bullish := false
+            inv_fvg_overlap_top := na
+            inv_fvg_overlap_bottom := na
+            inv_fvg_bar_index := na
+            if not na(inv_fvg_overlap_box)
+                box.delete(inv_fvg_overlap_box)
+                inv_fvg_overlap_box := na
+
+        // Clear entry signal state
+        entry_signal_active := false
+        active_entry_strategy := ""
+        entry_signal_bar_index := na
 
 // INVALIDATION: Clear setup when zones are disabled
 // Only invalidate if the disabled zone MATCHES the setup's zone
