@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.3.5", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.0", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -311,8 +311,21 @@ var box live_sl_box = na  // Live SL box (updates in real-time as trailing stop 
 // Track trade type label
 var label trade_type_label = na  // Label showing which strategy is active
 
-// Track if we've already entered a trade for this setup
-var bool trade_entered = false
+// ============================================================================
+// TRADE STATE MACHINE - Single source of truth using PineScript built-ins
+// ============================================================================
+// DERIVED STATE (computed each bar - no manual tracking needed)
+bool has_position = strategy.position_size != 0
+bool was_in_position = nz(has_position[1], false)
+bool position_just_opened = has_position and not was_in_position
+bool position_just_closed = not has_position and was_in_position
+
+// PENDING ORDER STATE - track our limit entry order
+var bool pending_entry_order = false
+var int pending_order_bar = na
+
+// Track the bar on which the last trade exited (prevent same-bar re-entry)
+var int last_exit_bar = -1
 
 // Track setup grades - frozen at detection time for each setup type
 var string eng_ob_grade = ""  // ENG OB grade (used by MSS OB and Breaker Block)
@@ -327,13 +340,6 @@ var float current_trailing_stop = na  // Current trailing stop level (updated on
 // Track breakeven at 50% TP state
 var bool half_tp_hit = false  // Price reached 50% of TP distance, SL moved to BE
 var float breakeven_level = na  // Breakeven +/- 2 ticks level for commission coverage
-
-// Track if limit order has been placed for current entry signal
-var bool order_placed = false
-var int order_placed_bar = -1  // Track which bar the order was placed on
-
-// Track the bar on which the last trade exited (prevent same-bar re-entry)
-var int last_exit_bar = -1
 
 // Track bars to wait after exit before allowing new setups (cooldown period)
 cooldown_bars = input.int(2, "Cooldown After Exit (bars)", minval=0, group="Trade Settings", tooltip="Number of bars to wait after trade exit before detecting new setups")
@@ -469,10 +475,9 @@ if not in_trading_window
     eng_ob_grade := ""
     bpr_fvg_grade := ""
 
-    // Reset trade flags
-    trade_entered := false
-    order_placed := false
-    order_placed_bar := -1
+    // Reset pending order state
+    pending_entry_order := false
+    pending_order_bar := na
 
     // Reset trailing stop state
     tp_hit := false
@@ -499,112 +504,112 @@ if not in_trading_window
     supply_trade_executed_level := na
 
 // ============================================================================
-// STATE CONFLICT DETECTION - Reconcile internal state with actual position
+// TRADE STATE MACHINE - Position open/close handling
 // ============================================================================
-// This catches scenarios where entry fills and SL hits on same bar in replay mode,
-// causing our state tracking to get out of sync with TradingView's actual position.
+// Track closed trades for P&L calculation
+var int last_closed_trades = 0
+int current_closed_trades = strategy.closedtrades
 
-// Track state conflict for debug display
-var bool state_conflict_detected = false
-var string state_conflict_type = ""
-var int state_conflict_bar = na
-var bool state_conflict_label_created = false  // Prevent duplicate labels
+// ON POSITION OPEN - runs once when limit order fills
+if position_just_opened
+    last_position_entry := strategy.position_avg_price
 
-// Reset label flag on new bar
-if barstate.isnew
-    state_conflict_label_created := false
+    // Record the deepest level where this trade was executed (becomes new zone edge)
+    if entry_is_bullish
+        demand_trade_executed_level := demand_lowest_low
+    else
+        supply_trade_executed_level := supply_highest_high
 
-// STATE CONFLICT: Position exists but trade_entered is false
-// This catches orphaned positions from replay mode timing issues
-// IMPORTANT: Also check that order_placed is false - if we have an order placed,
-// the position might have JUST filled and trade_entered hasn't been set yet (timing issue)
-// Only treat it as orphaned if there's NO pending order that could explain the position
-if strategy.position_size != 0 and not trade_entered and not order_placed
-    // STEP 1: Cancel ALL pending orders FIRST (TP, SL, trailing stops, etc.)
-    // This is critical - pending exit orders can prevent close_all from working
+    // Capture trade entry data for summary table
+    array.push(trade_entry_times, time)
+    array.push(trade_entry_prices, strategy.position_avg_price)
+    array.push(trade_strategies, active_entry_strategy)
+    array.push(trade_1h_trends, current_1h_trend)
+    array.push(trade_quantities, math.abs(strategy.position_size))
+    array.push(trade_directions, entry_is_bullish ? "Long" : "Short")
+
+    // Store the frozen grade based on which strategy triggered
+    string trade_grade_to_store = ""
+    if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
+        trade_grade_to_store := eng_ob_grade
+    else if active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG"
+        trade_grade_to_store := bpr_fvg_grade
+    array.push(trade_grades, trade_grade_to_store)
+
+    // Place TP and SL orders now that trade has entered
+    if use_trailing_stop
+        // Trailing stop mode: place TP order for 50% and SL for 100%
+        float tp_qty = math.abs(strategy.position_size) / 2
+        if entry_is_bullish
+            strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
+            strategy.exit("Full SL", "Long", stop=entry_sl)
+        else
+            strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
+            strategy.exit("Full SL", "Short", stop=entry_sl)
+    else
+        // Standard exit: full position at TP/SL
+        if entry_is_bullish
+            strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
+        else
+            strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
+
+    // Calculate breakeven + 1 tick (direction-aware for commission coverage)
+    if entry_is_bullish
+        breakeven_plus_tick := entry_price + syminfo.mintick
+    else
+        breakeven_plus_tick := entry_price - syminfo.mintick
+
+// ON POSITION CLOSE - runs once when trade exits (TP/SL hit)
+if position_just_closed
+    // Record exit bar to prevent same-bar re-entry
+    last_exit_bar := bar_index
+
+    // Cancel any lingering orders (safety cleanup)
     strategy.cancel_all()
 
-    // STEP 2: Close the position explicitly by direction
-    // Use strategy.close() with the entry ID to ensure it closes
-    if strategy.position_size > 0
-        strategy.close("Long", comment="STATE CONFLICT", immediately=true)
-    else if strategy.position_size < 0
-        strategy.close("Short", comment="STATE CONFLICT", immediately=true)
-
-    // STEP 3: Also call close_all as backup
-    strategy.close_all(comment="STATE CONFLICT CLEANUP", immediately=true)
-
-    // Reset all state immediately (don't wait for label check)
+    // Clear entry signal state
     entry_signal_active := false
-    order_placed := false
-    order_placed_bar := -1
+    pending_entry_order := false
+    pending_order_bar := na
     active_entry_strategy := ""
     entry_is_bullish := false
     entry_price := na
     entry_tp := na
     entry_sl := na
     entry_signal_bar_index := na
+
+    // Clear frozen grades
+    eng_ob_grade := ""
+    bpr_fvg_grade := ""
+
+    // Reset trailing stop state
     tp_hit := false
     breakeven_plus_tick := na
     trailing_high_water_mark := na
     current_trailing_stop := na
+
+    // Reset breakeven at 50% TP state
     half_tp_hit := false
     breakeven_level := na
-    eng_ob_grade := ""
-    bpr_fvg_grade := ""
-    last_exit_bar := bar_index
 
-    // Only create label ONCE per bar
-    if not state_conflict_label_created
-        state_conflict_detected := true
-        state_conflict_type := "ORPHAN: Position exists but trade_entered=false"
-        state_conflict_bar := bar_index
-        state_conflict_label_created := true
-        label.new(bar_index, high + (syminfo.mintick * 20),
-                  "STATE CONFLICT - CLOSING\nPos: " + str.tostring(strategy.position_size) + "\nBar: " + str.tostring(bar_index),
-                  color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+    // Clear all setup states
+    eng_ob_active := false
+    eng_ob_is_bullish := false
+    eng_ob_box := na
 
-// GHOST STATE: We think we're in trade but no position exists
-// IMPORTANT: Exclude normal TP/SL exits - those increment strategy.closedtrades
-if strategy.position_size == 0 and trade_entered and strategy.closedtrades == last_closed_trades
-    // Reset state
-    trade_entered := false
-    entry_signal_active := false
-    order_placed := false
+    bpr_fvg_active := false
+    bpr_fvg_is_bullish := false
+    bpr_fvg_top := na
+    bpr_fvg_bottom := na
+    bpr_fvg_invalidation_level := na
+    bpr_fvg_bar_index := na
 
-    if not state_conflict_label_created
-        state_conflict_detected := true
-        state_conflict_type := "GHOST: trade_entered=true but no position"
-        state_conflict_bar := bar_index
-        state_conflict_label_created := true
-        label.new(bar_index, low - (syminfo.mintick * 20),
-                  "GHOST STATE - RESET\nBar: " + str.tostring(bar_index),
-                  color=color.yellow, textcolor=color.black, style=label.style_label_up, size=size.small)
+    inv_fvg_active := false
+    inv_fvg_is_bullish := false
+    inv_fvg_overlap_top := na
+    inv_fvg_overlap_bottom := na
 
-// Track when trade enters
-if entry_signal_active and not trade_entered and strategy.position_size != 0
-    last_position_entry := strategy.position_avg_price
-
-    // Capture trade entry data for summary table
-    array.push(trade_entry_times, time)
-    array.push(trade_entry_prices, strategy.position_avg_price)
-    array.push(trade_strategies, active_entry_strategy)
-    array.push(trade_1h_trends, current_1h_trend)  // Use the already-calculated 1H trend
-    array.push(trade_quantities, math.abs(strategy.position_size))  // Store absolute position size
-    array.push(trade_directions, entry_is_bullish ? "Long" : "Short")  // Store trade direction
-
-    // Store the frozen grade based on which strategy triggered
-    string trade_grade_to_store = ""
-    if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
-        trade_grade_to_store := eng_ob_grade  // Use frozen ENG OB grade
-    else if active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG"
-        trade_grade_to_store := bpr_fvg_grade  // Use frozen BPR FVG grade
-    array.push(trade_grades, trade_grade_to_store)
-
-// Track when trade exits and calculate P&L using strategy's closed trade P&L
-var int last_closed_trades = 0
-int current_closed_trades = strategy.closedtrades
-
+// TRACK TRADE P&L - when closedtrades increments
 if current_closed_trades > last_closed_trades
     // A new trade just closed - get the P&L from the most recent closed trade
     float trade_pnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
@@ -793,7 +798,7 @@ if eng_ob_active and not na(eng_ob_bar_index)
     string timeout_reason = ""
 
     // Check if ENG OB setup has exceeded timeout (ONLY if entry signal hasn't triggered yet)
-    if not entry_signal_active and not trade_entered
+    if not entry_signal_active and not has_position
         int bars_since_setup = bar_index - eng_ob_bar_index
         if bars_since_setup >= setup_timeout_bars
             should_invalidate_timeout := true
@@ -819,8 +824,9 @@ if eng_ob_active and not na(eng_ob_bar_index)
         eng_ob_grade := ""
         bpr_fvg_grade := ""
 
-        // Reset trade flag
-        trade_entered := false
+        // Reset pending order state
+        pending_entry_order := false
+        pending_order_bar := na
 
         // Clear BPR FVG state (with debug label)
         if bpr_fvg_active
@@ -883,7 +889,8 @@ if bpr_fvg_active
 
         // If BPR FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "BPR FVG"
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
 // INVALIDATION: Clear Inverted FVG when zones are disabled (INDEPENDENT of ENG OB)
 if inv_fvg_active
@@ -910,7 +917,8 @@ if inv_fvg_active
 
         // If Inverted FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "Inverted FVG"
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
 // INVALIDATION: Clear setup when entering the OPPOSITE zone (fresh zone entry)
 // Bullish setup (from demand) invalidated by entering supply zone
@@ -969,7 +977,8 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
 
         // If BPR FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "BPR FVG"
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
 // INVALIDATION: Clear Inverted FVG when entering OPPOSITE zone (INDEPENDENT of ENG OB)
 if barstate.isnew and was_outside_zones and inv_fvg_active
@@ -996,7 +1005,8 @@ if barstate.isnew and was_outside_zones and inv_fvg_active
 
         // If Inverted FVG had an active entry signal, clear it
         if entry_signal_active and active_entry_strategy == "Inverted FVG"
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
 // When ENG OB forms, activate it and record deepest level + capture the OB candle + calculate grade
 if is_bullish_engulfing
@@ -1120,7 +1130,8 @@ if eng_ob_active
             entry_price := na
             entry_tp := na
             entry_sl := na
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
             // Delete the yellow box when invalidated
             if not na(eng_ob_box)
@@ -1170,7 +1181,8 @@ if eng_ob_active
             entry_price := na
             entry_tp := na
             entry_sl := na
-            order_placed := false
+            pending_entry_order := false
+            pending_order_bar := na
 
             // Delete the yellow box when invalidated
             if not na(eng_ob_box)
@@ -1315,7 +1327,8 @@ if entry_signal_active
         entry_price := na
         entry_tp := na
         entry_sl := na
-        order_placed := false
+        pending_entry_order := false
+        pending_order_bar := na
 
         // Delete TP/SL boxes (both original and live, shared across all strategies)
         if not na(tp_box)
@@ -1345,7 +1358,7 @@ if entry_signal_active
 // Check if ANY of the 3 FVG candles touched the zone
 // Don't detect new FVGs when we already have an active entry signal, active trade, or within cooldown
 bool in_cooldown = last_exit_bar >= 0 and (bar_index - last_exit_bar) < cooldown_bars
-if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and not max_trades_hit and bar_index >= 2 and in_trading_window and (in_supply or in_demand)
+if use_bpr_fvg and not bpr_fvg_active and not entry_signal_active and not has_position and not in_cooldown and not max_trades_hit and bar_index >= 2 and in_trading_window and (in_supply or in_demand)
     // Bearish setup: detect bullish FVG in supply zone
     // Check if current candle OR previous 2 candles touched supply zone
     bool supply_touched_by_fvg_candles = false
@@ -1552,7 +1565,7 @@ if bpr_fvg_active and barstate.isconfirmed
                 should_invalidate_fvg := true
                 bpr_fvg_invalidation_reason := "Wrong direction (" + str.tostring(close, format.mintick) + " < " + str.tostring(bpr_fvg_formation_low, format.mintick) + ")"
 
-    if should_invalidate_fvg and not trade_entered
+    if should_invalidate_fvg and not has_position
         // Only invalidate if trade hasn't been entered yet
         // Once trade is entered, let TP/SL orders handle the exit
 
@@ -1603,7 +1616,7 @@ if bpr_fvg_active and barstate.isconfirmed
             inv_fvg_overlap_box := na
 
         // Clear entry signal state (prevents order placement after invalidation)
-        // BUT: Don't clear order_placed, entry_price, entry_tp, entry_sl - we need these for fill detection!
+        // BUT: Don't clear pending_entry_order, entry_price, entry_tp, entry_sl - we need these for fill detection!
         if entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
             entry_signal_active := false
             // DON'T clear these - needed for TP/SL boxes when fill is detected:
@@ -1612,8 +1625,8 @@ if bpr_fvg_active and barstate.isconfirmed
             // entry_tp := na
             // entry_sl := na
             entry_signal_bar_index := na
-            // DON'T clear order_placed here - we still need to detect fills even after invalidation
-            // order_placed := false
+            // DON'T clear pending_entry_order here - we still need to detect fills even after invalidation
+            // pending_entry_order := false
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
@@ -1667,7 +1680,7 @@ if bpr_fvg_active
         should_invalidate_fvg_zone := true
         bpr_fvg_invalidation_reason := "Demand zone disabled"
 
-    if should_invalidate_fvg_zone and not trade_entered
+    if should_invalidate_fvg_zone and not has_position
         // Only invalidate if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
@@ -1715,7 +1728,7 @@ if barstate.isnew and was_outside_zones and bpr_fvg_active
         should_invalidate_opposite := true
         bpr_fvg_invalidation_reason := "Entered opposite zone (supply)"
 
-    if should_invalidate_opposite and not trade_entered
+    if should_invalidate_opposite and not has_position
         // Only invalidate if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
@@ -1959,7 +1972,7 @@ if use_mss_ob and eng_ob_active and na(target_fractal_level_mss)
 // ============================================================================
 // Check if price has crossed the fractal level (wick or close through)
 // Don't trigger new entries while a trade is active, on same bar as exit, or within cooldown
-if use_mss_ob and eng_ob_active and not entry_signal_active and not trade_entered and not in_cooldown and not max_trades_hit and not na(target_fractal_level_mss)
+if use_mss_ob and eng_ob_active and not entry_signal_active and not has_position and not in_cooldown and not max_trades_hit and not na(target_fractal_level_mss)
     bool fractal_crossed = false
 
     if eng_ob_is_bullish
@@ -1998,7 +2011,7 @@ if use_mss_ob and eng_ob_active and not entry_signal_active and not trade_entere
 // Entry triggered when price CLOSES below FVG bottom (bearish) or above FVG top (bullish)
 // Don't trigger new entries while a trade is active or within cooldown period
 // IMPORTANT: Only check at bar close (barstate.isconfirmed) to wait for candle to fully close
-if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_entered and not in_cooldown and not max_trades_hit and barstate.isconfirmed
+if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not has_position and not in_cooldown and not max_trades_hit and barstate.isconfirmed
     bool close_through_fvg = false
 
     if bpr_fvg_is_bullish
@@ -2147,7 +2160,7 @@ if use_bpr_fvg and bpr_fvg_active and not entry_signal_active and not trade_ente
 // ============================================================================
 // After BPR FVG entry triggers, check for 1 more bar if an INV FVG pattern forms
 // If found with overlap, upgrade from BPR to INV FVG (cancel BPR order, place INV order)
-if use_inverted_fvg and entry_signal_active and active_entry_strategy == "BPR FVG" and not trade_entered and not na(bpr_entry_triggered_bar) and bar_index >= 2
+if use_inverted_fvg and entry_signal_active and active_entry_strategy == "BPR FVG" and not has_position and not na(bpr_entry_triggered_bar) and bar_index >= 2
     // Check if we're within the 1-bar grace period
     int bars_since_bpr_trigger = bar_index - bpr_entry_triggered_bar
 
@@ -2267,7 +2280,7 @@ if use_breaker_block and eng_ob_active and not entry_signal_active
 // ENTRY SIGNAL TIMEOUT - Works for ALL strategies
 // ============================================================================
 // Invalidate entry signal after N bars if limit order doesn't fill
-if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
+if entry_signal_active and not has_position and not na(entry_signal_bar_index)
     int bars_since_entry_signal = bar_index - entry_signal_bar_index
     if bars_since_entry_signal >= entry_timeout_bars
         // Entry signal timed out - clear ALL strategy-specific state
@@ -2357,7 +2370,8 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
         entry_price := na
         entry_tp := na
         entry_sl := na
-        order_placed := false
+        pending_entry_order := false
+        pending_order_bar := na
 
         // Delete TP/SL boxes (both original and live)
         if not na(tp_box)
@@ -2377,7 +2391,7 @@ if entry_signal_active and not trade_entered and not na(entry_signal_bar_index)
 // GENERIC ENTRY EXECUTION - Works for all strategies
 // ============================================================================
 // When any entry signal becomes active, place the trade ONCE
-if entry_signal_active and not trade_entered and not order_placed and not na(entry_price)
+if entry_signal_active and not has_position and not pending_entry_order and not na(entry_price)
     // Calculate position size based on risk
     // SIMPLIFIED FORMULA: Position Size = Risk Amount / (Stop Ticks × Point Value)
     //
@@ -2401,16 +2415,6 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
     // Otherwise use raw calculated size
     float position_size = use_trailing_stop ? math.floor(position_size_raw / 2) * 2 : position_size_raw
 
-    // Calculate breakeven + 1 tick (direction-aware for commission coverage)
-    if entry_is_bullish
-        breakeven_plus_tick := entry_price + syminfo.mintick
-    else
-        breakeven_plus_tick := entry_price - syminfo.mintick
-
-    // Calculate quantities for trailing stop split (now guaranteed to be whole numbers)
-    float tp_qty = use_trailing_stop ? position_size / 2 : 0.0
-    float trail_qty = use_trailing_stop ? position_size / 2 : 0.0
-
     // Place limit order at entry level (DO NOT place exit orders yet - must wait for entry to fill)
     if entry_is_bullish
         // Enter long position with limit order at entry level
@@ -2420,119 +2424,80 @@ if entry_signal_active and not trade_entered and not order_placed and not na(ent
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
 
     // Mark that order has been placed for this signal
-    order_placed := true
-    order_placed_bar := bar_index
+    pending_entry_order := true
+    pending_order_bar := bar_index
 
 // ============================================================================
-// TRADE EXECUTION - Track when limit order is filled
+// TRADE VISUALS - Create TP/SL boxes when position opens
 // ============================================================================
-// STEP 3: Create GREEN/RED boxes when trade is entered (generic for all strategies)
-// Use order_placed instead of entry_signal_active to handle cases where setup invalidates after order placement
+// Create visual indicators when trade is entered (position_just_opened is handled in state machine)
+if position_just_opened and not na(entry_price)
+    // Delete old boxes first (both original and live)
+    if not na(tp_box)
+        box.delete(tp_box)
+    if not na(sl_box)
+        box.delete(sl_box)
+    if not na(live_tp_box)
+        box.delete(live_tp_box)
+        live_tp_box := na
+    if not na(live_sl_box)
+        box.delete(live_sl_box)
+        live_sl_box := na
 
-if order_placed and not trade_entered
-    // Check if we now have an open position (limit order was filled)
-    // Use strategy.opentrades to reliably detect when entry order fills
-    if strategy.opentrades > 0
-        trade_entered := true
+    // Create new TP box (green) and SL box (red) with strategy text on SL box only
+    if entry_is_bullish
+        // Bullish: TP is above entry
+        tp_box := box.new(bar_index, entry_tp, bar_index + 1, entry_price,
+                         border_color=color.green,
+                         bgcolor=color.new(color.green, 85),
+                         border_width=1,
+                         extend=extend.none)
+        // SL is below entry
+        sl_box := box.new(bar_index, entry_price, bar_index + 1, entry_sl,
+                         border_color=color.red,
+                         bgcolor=color.new(color.red, 85),
+                         border_width=1,
+                         extend=extend.none,
+                         text=active_entry_strategy,
+                         text_color=color.black,
+                         text_size=size.small)
+    else
+        // Bearish: TP is below entry
+        tp_box := box.new(bar_index, entry_price, bar_index + 1, entry_tp,
+                         border_color=color.green,
+                         bgcolor=color.new(color.green, 85),
+                         border_width=1,
+                         extend=extend.none)
+        // SL is above entry
+        sl_box := box.new(bar_index, entry_sl, bar_index + 1, entry_price,
+                         border_color=color.red,
+                         bgcolor=color.new(color.red, 85),
+                         border_width=1,
+                         extend=extend.none,
+                         text=active_entry_strategy,
+                         text_color=color.black,
+                         text_size=size.small)
 
-        // Record the deepest level where this trade was executed (becomes new zone edge)
-        // This prevents taking multiple trades at the same zone level
-        if entry_is_bullish
-            // Bullish trade from demand zone - record the lowest low as the new zone edge
-            demand_trade_executed_level := demand_lowest_low
-        else
-            // Bearish trade from supply zone - record the highest high as the new zone edge
-            supply_trade_executed_level := supply_highest_high
+    // Create trade type label showing which strategy is being used
+    if not na(trade_type_label)
+        label.delete(trade_type_label)
 
-        // Place TP and SL orders now that trade has entered
-        if use_trailing_stop
-            // Trailing stop mode: place TP order for 50% and SL for 100%
-            // Calculate TP quantity (half of position)
-            float tp_qty = math.abs(strategy.position_size) / 2
-
-            if entry_is_bullish
-                // Long position: place SELL limit at TP (50%) and STOP for all (100%)
-                strategy.order("TP Order", strategy.short, qty=tp_qty, limit=entry_tp)
-                strategy.exit("Full SL", "Long", stop=entry_sl)
-            else
-                // Short position: place BUY limit at TP (50%) and STOP for all (100%)
-                strategy.order("TP Order", strategy.long, qty=tp_qty, limit=entry_tp)
-                strategy.exit("Full SL", "Short", stop=entry_sl)
-        else
-            // Standard exit: full position at TP/SL
-            if entry_is_bullish
-                strategy.exit("TP/SL Long", "Long", limit=entry_tp, stop=entry_sl)
-            else
-                strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=entry_sl)
-
-        // Create TP and SL indicator boxes (only when trade is actually entered)
-        // This completes the standard visual flow: YELLOW → BLUE → GREEN/RED
-        // Delete old boxes first (both original and live)
-        if not na(tp_box)
-            box.delete(tp_box)
-        if not na(sl_box)
-            box.delete(sl_box)
-        if not na(live_tp_box)
-            box.delete(live_tp_box)
-            live_tp_box := na
-        if not na(live_sl_box)
-            box.delete(live_sl_box)
-            live_sl_box := na
-
-        // Create new TP box (green) and SL box (red) with strategy text on SL box only
-        if entry_is_bullish
-            // Bullish: TP is above entry
-            tp_box := box.new(bar_index, entry_tp, bar_index + 1, entry_price,
-                             border_color=color.green,
-                             bgcolor=color.new(color.green, 85),
-                             border_width=1,
-                             extend=extend.none)
-            // SL is below entry
-            sl_box := box.new(bar_index, entry_price, bar_index + 1, entry_sl,
-                             border_color=color.red,
-                             bgcolor=color.new(color.red, 85),
-                             border_width=1,
-                             extend=extend.none,
-                             text=active_entry_strategy,
-                             text_color=color.black,
-                             text_size=size.small)
-        else
-            // Bearish: TP is below entry
-            tp_box := box.new(bar_index, entry_price, bar_index + 1, entry_tp,
-                             border_color=color.green,
-                             bgcolor=color.new(color.green, 85),
-                             border_width=1,
-                             extend=extend.none)
-            // SL is above entry
-            sl_box := box.new(bar_index, entry_sl, bar_index + 1, entry_price,
-                             border_color=color.red,
-                             bgcolor=color.new(color.red, 85),
-                             border_width=1,
-                             extend=extend.none,
-                             text=active_entry_strategy,
-                             text_color=color.black,
-                             text_size=size.small)
-
-        // Create trade type label showing which strategy is being used
-        if not na(trade_type_label)
-            label.delete(trade_type_label)
-
-        // Position label at entry price, slightly to the left of current bar
-        color label_color = entry_is_bullish ? color.green : color.red
-        trade_type_label := label.new(bar_index, entry_price, active_entry_strategy,
-                                      xloc=xloc.bar_index,
-                                      yloc=yloc.price,
-                                      color=color.new(label_color, 80),
-                                      textcolor=color.white,
-                                      size=size.small,
-                                      style=label.style_label_left,
-                                      textalign=text.align_left)
+    // Position label at entry price, slightly to the left of current bar
+    color label_color = entry_is_bullish ? color.green : color.red
+    trade_type_label := label.new(bar_index, entry_price, active_entry_strategy,
+                                  xloc=xloc.bar_index,
+                                  yloc=yloc.price,
+                                  color=color.new(label_color, 80),
+                                  textcolor=color.white,
+                                  size=size.small,
+                                  style=label.style_label_left,
+                                  textalign=text.align_left)
 
 // ============================================================================
 // TRAILING STOP ACTIVATION - When TP is hit, switch to trailing stop
 // ============================================================================
 // Monitor if TP was hit and activate trailing stop for remaining 50%
-if use_trailing_stop and trade_entered and not tp_hit
+if use_trailing_stop and has_position and not tp_hit
     bool tp_reached = false
 
     if entry_is_bullish
@@ -2571,7 +2536,7 @@ if use_trailing_stop and trade_entered and not tp_hit
 // ============================================================================
 // Update trailing stop on every bar to trail price by trail_offset distance
 // CRITICAL: Always maintain a stop order for fallback protection
-if use_trailing_stop and tp_hit and trade_entered and strategy.position_size != 0
+if use_trailing_stop and tp_hit and has_position
     // Calculate ATR for trailing stop distance
     float atr_value = ta.atr(trailing_atr_length)
     float trail_offset = atr_value * trailing_atr_multiplier
@@ -2612,7 +2577,7 @@ if use_trailing_stop and tp_hit and trade_entered and strategy.position_size != 
 // ============================================================================
 // This is a simpler alternative to trailing stop - just locks in breakeven earlier
 // Does NOT close any position, just moves the stop loss
-if use_be_at_half_tp and not use_trailing_stop and trade_entered and not half_tp_hit and strategy.position_size != 0
+if use_be_at_half_tp and not use_trailing_stop and has_position and not half_tp_hit
     // Calculate 50% TP level
     float tp_distance = math.abs(entry_tp - entry_price)
     float half_tp_distance = tp_distance / 2
@@ -2647,61 +2612,8 @@ if use_be_at_half_tp and not use_trailing_stop and trade_entered and not half_tp
             strategy.cancel("TP/SL Short")
             strategy.exit("TP/SL Short", "Short", limit=entry_tp, stop=breakeven_level)
 
-// Check if trade has exited (TP or SL hit)
-if trade_entered and strategy.position_size == 0
-    // FIRST: Close any remaining position and cancel all pending orders
-    strategy.close_all()    // Close any lingering positions (safety check)
-    strategy.cancel_all()   // Cancel all pending orders (prevent re-entry)
-
-    // Record the exit bar to prevent same-bar re-entry
-    last_exit_bar := bar_index
-
-    // Clear frozen grades
-    eng_ob_grade := ""
-    bpr_fvg_grade := ""
-
-    // Reset trade flag and order placement flag
-    trade_entered := false
-    order_placed := false
-    order_placed_bar := -1
-
-    // Clear entry signal state (CRITICAL: prevent duplicate orders after exit)
-    entry_signal_active := false
-    active_entry_strategy := ""
-    entry_is_bullish := false
-    entry_price := na
-    entry_tp := na
-    entry_sl := na
-    entry_signal_bar_index := na
-
-    // Clear BPR FVG state (if it was the active strategy)
-    bpr_fvg_active := false
-    bpr_fvg_is_bullish := false
-    bpr_fvg_top := na
-    bpr_fvg_bottom := na
-    bpr_fvg_invalidation_level := na
-    bpr_fvg_bar_index := na
-    bpr_fvg_candle_high := na
-    bpr_fvg_candle_low := na
-    if not na(bpr_fvg_box)
-        box.delete(bpr_fvg_box)
-        bpr_fvg_box := na
-    bpr_entry_triggered_bar := na
-
-    // Clear Inverted FVG state (if it was the active strategy)
-    inv_fvg_active := false
-    inv_fvg_is_bullish := false
-
-    // Reset trailing stop state
-    tp_hit := false
-    breakeven_plus_tick := na
-    trailing_high_water_mark := na
-    current_trailing_stop := na
-
-    // Reset breakeven at 50% TP state
-    half_tp_hit := false
-    breakeven_level := na
-
+// Persist TP/SL boxes when trade closes (visual cleanup handled separately from state machine)
+if position_just_closed
     // Persist TP/SL boxes for the day (don't delete, just stop extending)
     // Add them to daily arrays so they stay visible until 20:00
     if not na(tp_box)
@@ -2717,8 +2629,10 @@ if trade_entered and strategy.position_size == 0
     if not na(live_sl_box)
         array.push(daily_sl_boxes, live_sl_box)
         live_sl_box := na
-
-    // Use helper functions to clear state (reduces scope count)
+    // Delete BPR FVG box if it exists
+    if not na(bpr_fvg_box)
+        box.delete(bpr_fvg_box)
+        bpr_fvg_box := na
 
 // ============================================================================
 // INTRABAR TRADE CLEANUP - REMOVED
@@ -2727,8 +2641,8 @@ if trade_entered and strategy.position_size == 0
 // The regular exit handler handles all trade exits (including intrabar fills)
 // Unfilled limit orders will be cleaned up at 9 AM reset or when new setups form
 
-// Update TP/SL boxes to extend one bar at a time while trade is entered (only show when in trade)
-if trade_entered and not na(tp_box) and not na(sl_box)
+// Update TP/SL boxes to extend one bar at a time while in position
+if has_position and not na(tp_box) and not na(sl_box)
     box.set_right(tp_box, bar_index + 1)
     box.set_right(sl_box, bar_index + 1)
 
@@ -2825,7 +2739,7 @@ if bpr_fvg_active
             should_clear_zombie := true
             zombie_reason := "entered opposite zone"
 
-    if should_clear_zombie and not trade_entered
+    if should_clear_zombie and not has_position
         // Only clear zombie state if trade hasn't been entered yet
         // Save invalidation info for label
         bpr_fvg_invalidated_bar := bar_index
@@ -2882,7 +2796,7 @@ if inv_fvg_active
             should_clear_inv_zombie := true
             inv_zombie_reason := "entered opposite zone"
 
-    if should_clear_inv_zombie and not trade_entered
+    if should_clear_inv_zombie and not has_position
         // Only clear zombie state if trade hasn't been entered yet
         inv_fvg_active := false
         inv_fvg_is_bullish := false
@@ -3098,11 +3012,7 @@ if show_debug_table
     // #0 Status
     string status = "-"
     color status_bg = value_bg
-    // Check for state conflict first (highest priority)
-    if state_conflict_detected and not na(state_conflict_bar) and (bar_index - state_conflict_bar) <= 3
-        status := "STATE CONFLICT"
-        status_bg := color.new(color.orange, 50)
-    else if not in_trading_window
+    if not in_trading_window
         status := "Inactive"
     else if max_trades_hit
         status := "MAX TRADES"
@@ -3110,7 +3020,7 @@ if show_debug_table
     else if in_cooldown
         status := "Cooldown"
         status_bg := color.new(color.orange, 85)
-    else if trade_entered and strategy.position_size != 0
+    else if has_position
         status := "In Trade"
         status_bg := entry_is_bullish ? color.new(color.green, 80) : color.new(color.red, 80)
     else if entry_signal_active
@@ -3161,7 +3071,7 @@ if show_debug_table
     // #4 Position/Risk/Tick
     string pos_text = str.tostring(strategy.position_size)
     string risk_text = "-"
-    if trade_entered and not na(entry_price) and not na(entry_sl)
+    if has_position and not na(entry_price) and not na(entry_sl)
         float stop_dist = math.abs(entry_price - entry_sl)
         float actual_risk = math.abs(strategy.position_size) * stop_dist * point_value
         risk_text := "$" + str.tostring(actual_risk, "#.##")
