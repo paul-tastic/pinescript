@@ -3090,11 +3090,8 @@ if show_debug_table
         table.cell(debugTable, 0, 6, "#6 Fractal", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 6, fractal_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
-        // #7 Timeout - Show both setup and entry counters (using actual tracked variables)
-        string timeout_text = "S:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars)
-        if entry_signal_active or has_position
-            // Entry phase started - show both (setup frozen, entry incrementing or frozen)
-            timeout_text += " | E:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
+        // #7 Timeout - Show both setup and entry counters
+        string timeout_text = "Setup:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
         color timeout_bg = value_bg
         // Highlight if either counter is near timeout
         if (not entry_signal_active and not has_position and setup_bars_elapsed >= setup_timeout_bars * 0.8) or (entry_signal_active and not has_position and entry_bars_elapsed >= entry_timeout_bars * 0.8)
@@ -3102,10 +3099,12 @@ if show_debug_table
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-        // #8 Settings - Show current timeout settings
-        string settings_text = "Setup:" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_timeout_bars) + " | Grace:" + str.tostring(grace_ticks, "#.#") + "t"
-        table.cell(debugTable, 0, 8, "#8 Settings", text_color=color.white, bgcolor=label_bg, text_size=size.small)
-        table.cell(debugTable, 1, 8, settings_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
+        // #8 ENG OB candle info
+        string eng_info = "-"
+        if not na(eng_ob_candle_high) and not na(eng_ob_candle_low)
+            eng_info := "OB: " + str.tostring(eng_ob_candle_low, format.mintick) + "-" + str.tostring(eng_ob_candle_high, format.mintick)
+        table.cell(debugTable, 0, 8, "#8 OB Range", text_color=color.white, bgcolor=label_bg, text_size=size.small)
+        table.cell(debugTable, 1, 8, eng_info, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
     else if show_bpr_section or show_inv_section or show_invalidated
         // BPR FVG or Inverted FVG Section
@@ -3131,11 +3130,8 @@ if show_debug_table
         table.cell(debugTable, 0, 6, "#6 Size/Lvls", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 6, size_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
-        // #7 Timeout - Show both setup and entry counters (using actual tracked variables)
-        string timeout_text = "S:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars)
-        if entry_signal_active or has_position
-            // Entry phase started - show both (setup frozen, entry incrementing or frozen)
-            timeout_text += " | E:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
+        // #7 Timeout - Show both setup and entry counters
+        string timeout_text = "Setup:" + str.tostring(setup_bars_elapsed) + "/" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_bars_elapsed) + "/" + str.tostring(entry_timeout_bars)
         color timeout_bg = value_bg
         // Highlight if either counter is near timeout
         if (not entry_signal_active and not has_position and setup_bars_elapsed >= setup_timeout_bars * 0.8) or (entry_signal_active and not has_position and entry_bars_elapsed >= entry_timeout_bars * 0.8)
@@ -3143,16 +3139,16 @@ if show_debug_table
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-        // #8 Settings - Show current timeout settings (or invalidation reason if invalidated)
-        string settings_text = ""
-        color settings_bg = value_bg
+        // #8 Invalidation reason (or formation range if active)
+        string inval_text = "-"
+        color inval_bg = value_bg
         if show_invalidated
-            settings_text := bpr_fvg_last_invalidation_reason
-            settings_bg := color.new(color.orange, 70)
-        else
-            settings_text := "Setup:" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_timeout_bars) + " | Grace:" + str.tostring(grace_ticks, "#.#") + "t"
-        table.cell(debugTable, 0, 8, "#8 Settings", text_color=color.white, bgcolor=label_bg, text_size=size.small)
-        table.cell(debugTable, 1, 8, settings_text, text_color=color.black, bgcolor=settings_bg, text_size=size.small)
+            inval_text := bpr_fvg_last_invalidation_reason
+            inval_bg := color.new(color.orange, 70)
+        else if not na(bpr_fvg_formation_low) and not na(bpr_fvg_formation_high)
+            inval_text := "Range: " + str.tostring(bpr_fvg_formation_low, format.mintick) + "-" + str.tostring(bpr_fvg_formation_high, format.mintick)
+        table.cell(debugTable, 0, 8, "#8 Formation", text_color=color.white, bgcolor=label_bg, text_size=size.small)
+        table.cell(debugTable, 1, 8, inval_text, text_color=color.black, bgcolor=inval_bg, text_size=size.small)
 
     // #9 Zombie/State Conflict Detection (shown for all sections)
     if zombie_detected != ""
