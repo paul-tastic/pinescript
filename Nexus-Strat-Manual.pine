@@ -3074,7 +3074,7 @@ if show_debug_table
     else if bpr_fvg_active
         strat_text := "BPR FVG (detected)"
     else if eng_ob_active
-        strat_text := "MSS OB (detected)"
+        strat_text := "ENG OB (setup)"
     table.cell(debugTable, 0, 1, "#1 Strategy", text_color=color.white, bgcolor=label_bg, text_size=size.small)
     table.cell(debugTable, 1, 1, strat_text, text_color=color.black, bgcolor=strat_bg, text_size=size.small)
 
