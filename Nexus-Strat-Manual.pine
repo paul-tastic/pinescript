@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.3.4", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.3.5", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -565,7 +565,8 @@ if strategy.position_size != 0 and not trade_entered and not order_placed
                   color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
 
 // GHOST STATE: We think we're in trade but no position exists
-if strategy.position_size == 0 and trade_entered
+// IMPORTANT: Exclude normal TP/SL exits - those increment strategy.closedtrades
+if strategy.position_size == 0 and trade_entered and strategy.closedtrades == last_closed_trades
     // Reset state
     trade_entered := false
     entry_signal_active := false
