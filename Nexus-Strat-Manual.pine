@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.4.0", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.2", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -3102,12 +3102,10 @@ if show_debug_table
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-        // #8 Bar Indices - Show the actual counter values we're tracking
-        string bar_text = "Setup:" + str.tostring(setup_bars_elapsed) + " | Entry:" + str.tostring(entry_bars_elapsed)
-        if not na(eng_ob_bar_index)
-            bar_text += " | ENG@" + str.tostring(eng_ob_bar_index)
-        table.cell(debugTable, 0, 8, "#8 Counters", text_color=color.white, bgcolor=label_bg, text_size=size.small)
-        table.cell(debugTable, 1, 8, bar_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
+        // #8 Settings - Show current timeout settings
+        string settings_text = "Setup:" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_timeout_bars) + " | Grace:" + str.tostring(grace_ticks, "#.#") + "t"
+        table.cell(debugTable, 0, 8, "#8 Settings", text_color=color.white, bgcolor=label_bg, text_size=size.small)
+        table.cell(debugTable, 1, 8, settings_text, text_color=color.black, bgcolor=value_bg, text_size=size.small)
 
     else if show_bpr_section or show_inv_section or show_invalidated
         // BPR FVG or Inverted FVG Section
@@ -3145,18 +3143,16 @@ if show_debug_table
         table.cell(debugTable, 0, 7, "#7 Timeout", text_color=color.white, bgcolor=label_bg, text_size=size.small)
         table.cell(debugTable, 1, 7, timeout_text, text_color=color.black, bgcolor=timeout_bg, text_size=size.small)
 
-        // #8 Invalidation
-        string inval_text = "-"
-        color inval_bg = value_bg
+        // #8 Settings - Show current timeout settings (or invalidation reason if invalidated)
+        string settings_text = ""
+        color settings_bg = value_bg
         if show_invalidated
-            inval_text := bpr_fvg_last_invalidation_reason
-            inval_bg := color.new(color.orange, 70)
-        else if bpr_fvg_invalidation_reason != ""
-            inval_text := bpr_fvg_invalidation_reason
-        else if inv_fvg_invalidation_reason != ""
-            inval_text := inv_fvg_invalidation_reason
-        table.cell(debugTable, 0, 8, "#8 Inval", text_color=color.white, bgcolor=label_bg, text_size=size.small)
-        table.cell(debugTable, 1, 8, inval_text, text_color=color.black, bgcolor=inval_bg, text_size=size.small)
+            settings_text := bpr_fvg_last_invalidation_reason
+            settings_bg := color.new(color.orange, 70)
+        else
+            settings_text := "Setup:" + str.tostring(setup_timeout_bars) + " | Entry:" + str.tostring(entry_timeout_bars) + " | Grace:" + str.tostring(grace_ticks, "#.#") + "t"
+        table.cell(debugTable, 0, 8, "#8 Settings", text_color=color.white, bgcolor=label_bg, text_size=size.small)
+        table.cell(debugTable, 1, 8, settings_text, text_color=color.black, bgcolor=settings_bg, text_size=size.small)
 
     // #9 Zombie/State Conflict Detection (shown for all sections)
     if zombie_detected != ""
