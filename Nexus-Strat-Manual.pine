@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.4.8", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.9", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -1689,17 +1689,15 @@ if bpr_fvg_active and barstate.isconfirmed
             inv_fvg_overlap_box := na
 
         // Clear entry signal state (prevents order placement after invalidation)
-        // BUT: Don't clear pending_entry_order, entry_price, entry_tp, entry_sl - we need these for fill detection!
         if entry_signal_active and (active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG")
             entry_signal_active := false
-            // DON'T clear these - needed for TP/SL boxes when fill is detected:
-            // active_entry_strategy := ""
-            // entry_price := na
-            // entry_tp := na
-            // entry_sl := na
+            active_entry_strategy := ""
+            entry_price := na
+            entry_tp := na
+            entry_sl := na
             entry_signal_bar_index := na
-            // DON'T clear pending_entry_order here - we still need to detect fills even after invalidation
-            // pending_entry_order := false
+            pending_entry_order := false
+            pending_order_bar := na
 
 // INVALIDATION: BPR FVG timeout after N bars without entry signal
 if bpr_fvg_active and not entry_signal_active and not na(bpr_fvg_bar_index)
