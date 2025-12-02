@@ -2843,7 +2843,8 @@ if eng_ob_active and not has_position and zombie_detected == ""
 // Only show if user has enabled it
 if show_trade_summary
     // Max 10 trades displayed, 12 columns: #, Entry Time, Exit Time, Entry, Exit, Qty, Dir, Strategy, Grade, 1H Trend, P&L, Result
-    var int MAX_TRADE_ROWS = 11  // 1 header row + 10 trade rows
+    // Plus 1 legend row at bottom for grade abbreviations
+    var int MAX_TRADE_ROWS = 12  // 1 header row + 10 trade rows + 1 legend row
     var table tradeTable = table.new(position.top_right, 12, MAX_TRADE_ROWS, border_width=1)
 
     // Clear and populate trade summary table
@@ -2915,6 +2916,21 @@ if show_trade_summary
             table.cell(tradeTable, 9, row, h1_trend, text_color=color.white, bgcolor=trend_bg, text_size=size.small)
             table.cell(tradeTable, 10, row, pnl_str, text_color=color.white, bgcolor=row_bg, text_size=size.small)
             table.cell(tradeTable, 11, row, result, text_color=color.white, bgcolor=result_bg, text_size=size.small)
+
+    // Grade Legend row at the bottom (row 11)
+    color legend_bg = color.new(color.gray, 50)
+    table.cell(tradeTable, 0, 11, "Grade:", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 1, 11, "S=Session", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 2, 11, "M=Multi-Sess", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 3, 11, "D=Deep", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 4, 11, "F=Fresh", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 5, 11, "E=Engulf", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 6, 11, "G=FVG", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 7, 11, "R=Round#", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 8, 11, "", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 9, 11, "", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 10, 11, "", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
+    table.cell(tradeTable, 11, 11, "", text_color=color.white, bgcolor=legend_bg, text_size=size.tiny)
 
 // ============================================================================
 // SETUP GRADE CALCULATION (Letter System: SMDFEGR)
