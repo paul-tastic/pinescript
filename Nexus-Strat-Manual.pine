@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.4.9", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.10", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -1991,7 +1991,8 @@ if bpr_fvg_active and not na(bpr_fvg_box)
         box.set_bgcolor(bpr_fvg_box, color.new(color.blue, 90))
 
 // STEP 2: Extend Inverted FVG overlap box and change fill to BLUE when entry signal activates
-if inv_fvg_active and not na(inv_fvg_overlap_box)
+// Stop extending once trade enters (has_position) - TP/SL boxes take over
+if inv_fvg_active and not na(inv_fvg_overlap_box) and not has_position
     box.set_right(inv_fvg_overlap_box, bar_index + 1)
 
     // Change fill to blue when Inverted FVG entry strategy activates (limit order placed)
