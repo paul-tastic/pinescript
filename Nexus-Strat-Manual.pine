@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.4.10", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.11", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -540,6 +540,10 @@ if position_just_opened
     else if active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG"
         trade_grade_to_store := bpr_fvg_grade
     array.push(trade_grades, trade_grade_to_store)
+
+    // Cancel protective SL (was placed with entry order for same-candle protection)
+    // Now replace with proper TP/SL orders
+    strategy.cancel("Protective SL")
 
     // Place TP and SL orders now that trade has entered
     if use_trailing_stop
@@ -2501,13 +2505,19 @@ if entry_signal_active and not has_position and not pending_entry_order and not 
     // Otherwise use raw calculated size
     float position_size = use_trailing_stop ? math.floor(position_size_raw / 2) * 2 : position_size_raw
 
-    // Place limit order at entry level (DO NOT place exit orders yet - must wait for entry to fill)
+    // Place limit order at entry level with protective SL
+    // The protective SL is placed immediately so it's active if entry and SL hit on same candle
+    // It will be replaced with proper TP/SL orders once position_just_opened fires
     if entry_is_bullish
         // Enter long position with limit order at entry level
         strategy.entry("Long", strategy.long, qty=position_size, limit=entry_price)
+        // Protective SL - active immediately in case entry and SL hit on same candle
+        strategy.exit("Protective SL", "Long", stop=entry_sl)
     else
         // Enter short position with limit order at entry level
         strategy.entry("Short", strategy.short, qty=position_size, limit=entry_price)
+        // Protective SL - active immediately in case entry and SL hit on same candle
+        strategy.exit("Protective SL", "Short", stop=entry_sl)
 
     // Mark that order has been placed for this signal
     pending_entry_order := true
