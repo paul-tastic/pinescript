@@ -1,5 +1,5 @@
 //@version=5
-strategy("Nexus Strategy Manual v1.4.11", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
+strategy("Nexus Strategy Manual v1.4.12", overlay=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1)
 
 // ============================================================================
 // INPUTS - MANUAL ZONES
@@ -329,6 +329,13 @@ bool position_just_closed = not has_position and was_in_position
 var bool pending_entry_order = false
 var int pending_order_bar = na
 
+// Pending trade data - stored when order is placed, used when trade closes for summary table
+// This ensures array sync even if position_just_opened doesn't fire (same-bar trades)
+var string pending_strategy = ""
+var string pending_1h_trend = ""
+var string pending_direction = ""
+var string pending_grade = ""
+
 // Track the bar on which the last trade exited (prevent same-bar re-entry)
 var int last_exit_bar = -1
 
@@ -525,21 +532,8 @@ if position_just_opened
     else
         supply_trade_executed_level := supply_highest_high
 
-    // Capture trade entry data for summary table
-    array.push(trade_entry_times, time)
-    array.push(trade_entry_prices, strategy.position_avg_price)
-    array.push(trade_strategies, active_entry_strategy)
-    array.push(trade_1h_trends, current_1h_trend)
-    array.push(trade_quantities, math.abs(strategy.position_size))
-    array.push(trade_directions, entry_is_bullish ? "Long" : "Short")
-
-    // Store the frozen grade based on which strategy triggered
-    string trade_grade_to_store = ""
-    if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
-        trade_grade_to_store := eng_ob_grade
-    else if active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG"
-        trade_grade_to_store := bpr_fvg_grade
-    array.push(trade_grades, trade_grade_to_store)
+    // Trade entry data is now captured when trade CLOSES (in closedtrades section)
+    // This ensures arrays stay in sync even for same-bar trades
 
     // Cancel protective SL (was placed with entry order for same-candle protection)
     // Now replace with proper TP/SL orders
@@ -624,10 +618,13 @@ if position_just_closed
 
 // TRACK TRADE P&L - when closedtrades increments
 if current_closed_trades > last_closed_trades
-    // A new trade just closed - get the P&L from the most recent closed trade
-    float trade_pnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
-    float exit_price = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
-    float trade_entry_price = strategy.closedtrades.entry_price(strategy.closedtrades - 1)
+    // A new trade just closed - get data from the most recent closed trade
+    int trade_idx = strategy.closedtrades - 1
+    float trade_pnl = strategy.closedtrades.profit(trade_idx)
+    float exit_price = strategy.closedtrades.exit_price(trade_idx)
+    float trade_entry_price = strategy.closedtrades.entry_price(trade_idx)
+    int trade_entry_time = strategy.closedtrades.entry_time(trade_idx)
+    float trade_qty = math.abs(strategy.closedtrades.size(trade_idx))
 
     // Update daily stats
     today_trade_count += 1
@@ -644,7 +641,17 @@ if current_closed_trades > last_closed_trades
     else if result == "LOSS"
         today_losses += 1
 
-    // Capture trade exit data for summary table
+    // Capture BOTH entry and exit data for summary table (ensures arrays stay in sync)
+    // Entry data - use closedtrades functions for timing/price, pending vars for strategy info
+    array.push(trade_entry_times, trade_entry_time)
+    array.push(trade_entry_prices, trade_entry_price)
+    array.push(trade_strategies, pending_strategy)
+    array.push(trade_1h_trends, pending_1h_trend)
+    array.push(trade_quantities, trade_qty)
+    array.push(trade_directions, pending_direction)
+    array.push(trade_grades, pending_grade)
+
+    // Exit data
     array.push(trade_exit_times, time)
     array.push(trade_exit_prices, exit_price)
     array.push(trade_pnls, trade_pnl)
@@ -2522,6 +2529,19 @@ if entry_signal_active and not has_position and not pending_entry_order and not 
     // Mark that order has been placed for this signal
     pending_entry_order := true
     pending_order_bar := bar_index
+
+    // Store trade data for summary table (used when trade closes)
+    // This ensures arrays stay in sync even for same-bar trades where position_just_opened doesn't fire
+    pending_strategy := active_entry_strategy
+    pending_1h_trend := current_1h_trend
+    pending_direction := entry_is_bullish ? "Long" : "Short"
+    // Store the frozen grade based on which strategy triggered
+    if active_entry_strategy == "MSS OB" or active_entry_strategy == "Breaker Block"
+        pending_grade := eng_ob_grade
+    else if active_entry_strategy == "BPR FVG" or active_entry_strategy == "Inverted FVG"
+        pending_grade := bpr_fvg_grade
+    else
+        pending_grade := ""
 
 // ============================================================================
 // TRADE VISUALS - Create TP/SL boxes when position opens
